@@ -208,9 +208,10 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 
 ### 版本管理（git，防误删/误改）
 工作区是 git 仓库（2026-08-07 初始化，首提交含全部核心资产 + 业务数据）。
+- **远程备份**：`git@github.com:chenyuxiangg/zteam.git`（`origin`，SSH 免密；新机器恢复：`git clone git@github.com:chenyuxiangg/zteam.git ~/cyx/req-review`）；
 - **日常提交**（推荐每次改动后）：
   ```bash
-  cd ~/cyx/req-review && git add -A && git commit -m "描述改动"
+  cd ~/cyx/req-review && git add -A && git commit -m "描述改动" && git push
   ```
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；
