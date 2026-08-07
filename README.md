@@ -83,7 +83,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 bash ~/cyx/req-review/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检
 bash ~/cyx/req-review/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
 bash ~/cyx/req-review/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash ~/cyx/req-review/uninstall.sh --full               # 连工作区数据一起删除（交互输入 yes；agent/自动化场景用 REQREVIEW_FULL_YES=1 免交互）
+bash ~/cyx/req-review/uninstall.sh --full               # 清空运行期数据（analysis/artifacts/review/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -216,7 +216,7 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；
 - **忽略项**：`logs/`、`__pycache__/`、`status.lock`（运行噪音，不入库）；`status.json`、`input/`、`analysis/`、`review/`、`artifacts/` 等业务数据全部入库；
-- **教训**：2026-08-07 工作区曾被 `uninstall.sh --full` 误删，靠会话 DB 重建——纳入 git 后此类事故可直接 `git restore` 秒级恢复。
+- **教训**：2026-08-07 工作区曾被旧版 `uninstall.sh --full`（删除整个工作区）误删，靠会话 DB 重建——现 `--full` 已改为只清空运行期数据、保留项目资产；纳入 git 后即使误删也可 `git restore` 秒级恢复。
 
 
 - 投放唯一入口是 `input/`；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
