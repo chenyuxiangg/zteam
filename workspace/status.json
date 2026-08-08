@@ -9,9 +9,9 @@
       "archive/snake-linux/legacy-review-r1-20260807.md",
       "review/snake-linux/snake-linux-r2.md"
     ],
-    "failures": 1,
+    "failures": 0,
     "created_at": "2026-08-07T16:40:46Z",
-    "updated_at": "2026-08-08T05:05:55Z",
+    "updated_at": "2026-08-08T05:40:10Z",
     "stages": {
       "plan": {
         "round": 1,
@@ -38,9 +38,11 @@
         "status": "done"
       },
       "test": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
+        "round": 1,
+        "product": "tests/snake-linux/snake-linux-r1/",
+        "reviews": [
+          "tests/snake-linux/snake-linux-r1-review.md"
+        ],
         "status": "pending"
       },
       "quality": {
@@ -63,7 +65,7 @@
       }
     },
     "claimed_by": "test-developer",
-    "claimed_at": "2026-08-08T05:05:55Z",
-    "worker_pid": 1596299
+    "claimed_at": "2026-08-08T05:40:10Z",
+    "worker_pid": 1662593
   }
 }
