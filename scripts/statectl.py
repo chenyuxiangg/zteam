@@ -65,8 +65,9 @@ def rel_artifact(project: str, rid: str) -> str:
 
 
 def rel_stage_product(cfg: dict, project: str, rid: str, n: int) -> str:
-    """阶段产出物路径（相对 workspace/）：{dir}/{project}/{rid}-r{n}.md"""
-    return f"{cfg['dir']}/{project}/{rid}-r{n}.md"
+    """阶段产出物路径（相对 workspace/）：file → {dir}/{project}/{rid}-r{n}.md；dir → {dir}/{project}/{rid}-r{n}/（文件集）"""
+    base = f"{cfg['dir']}/{project}/{rid}-r{n}"
+    return base + (".md" if cfg.get("kind", "file") == "file" else "/")
 
 
 def rel_stage_review(cfg: dict, project: str, rid: str, n: int) -> str:
@@ -173,12 +174,12 @@ SECURITY_REVIEWER_MODEL = os.environ.get("SECURITY_REVIEWER_MODEL", "deepseek-v4
 RELEASER_MODEL = os.environ.get("RELEASER_MODEL", "deepseek-v4-flash")
 
 # ---- 阶段流水线定义（需求 approved 后按序推进）----
-# 成对阶段（产出者 + 评审者）；产物：{dir}/{project}/{req_id}-r{N}.md（产出）/ {dir}/{project}/{req_id}-r{N}-review.md（评审）
+# 成对阶段（产出者 + 评审者）；kind: file=md 文档产物 / dir=文件集产物（代码/测试目录）
 STAGES = [
-    {"name": "plan",     "designer": "dev-plan-designer",  "reviewer": "dev-plan-reviewer",  "dir": "plans"},
-    {"name": "testplan", "designer": "test-plan-designer", "reviewer": "test-plan-reviewer", "dir": "testplans"},
-    {"name": "code",     "designer": "code-developer",     "reviewer": "code-reviewer",      "dir": "code"},
-    {"name": "test",     "designer": "test-developer",     "reviewer": "test-reviewer",      "dir": "tests"},
+    {"name": "plan",     "designer": "dev-plan-designer",  "reviewer": "dev-plan-reviewer",  "dir": "plans",     "kind": "file"},
+    {"name": "testplan", "designer": "test-plan-designer", "reviewer": "test-plan-reviewer", "dir": "testplans", "kind": "file"},
+    {"name": "code",     "designer": "code-developer",     "reviewer": "code-reviewer",      "dir": "code",      "kind": "dir"},
+    {"name": "test",     "designer": "test-developer",     "reviewer": "test-reviewer",      "dir": "tests",     "kind": "dir"},
 ]
 # 单角色门禁阶段（评审不通过不前进；连续失败达上限 → blocked）
 GATES = [
@@ -575,6 +576,10 @@ def build_worker_query(role: str, key: str, e: dict):
     if phase == "design":
         out = rel_stage_product(cfg, project, rid, n)
         prev_review = e["stages"].get(stage, {}).get("reviews") or []
+        if cfg.get("kind") == "dir":
+            task1 = f"1. 按角色文件的输出模板与工作原则产出本阶段成果；在 {out} 目录内创建全部源码/产物文件（文件集，含 README 说明）；"
+        else:
+            task1 = "1. 按角色文件的输出模板与工作原则产出本阶段成果；"
         q = [
             f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 完成需求 {key}（项目 {project}）的【{stage}】阶段第 {n} 轮产出。",
             "输入文件：",
@@ -584,8 +589,8 @@ def build_worker_query(role: str, key: str, e: dict):
             q.append(f"- 本阶段上一轮评审意见（修改轮必须逐条回应）：{prev_review[-1]}")
         q += [
             "任务：",
-            "1. 按角色文件的输出模板与工作原则产出本阶段成果；",
-            f"2. 写入 {out}；",
+            task1,
+            f"2. 产物写入 {out}；",
             f"3. 运行 python3 scripts/statectl.py release_stage_design {key} {stage} {out} 完成状态更新（该命令会校验产物存在）；",
             "4. 完成后无需汇报，过程留痕在 worker 日志即可。",
         ]
@@ -740,7 +745,19 @@ def write_artifact(key: str, e: dict) -> None:
         prod = s.get("product")
         if prod:
             full = os.path.join(WORKSPACE_DIR, prod)
-            if os.path.exists(full):
+            if os.path.isdir(full):  # 文件集产物（代码/测试目录）：列出文件树并嵌入文本文件
+                files = sorted(os.listdir(full))
+                parts += [f"## {stg['name']} 阶段终版（{prod}）", "",
+                          "文件清单：`" + "`, `".join(files) + "`", ""]
+                for fn in files:
+                    fp = os.path.join(full, fn)
+                    if os.path.isfile(fp):
+                        try:
+                            with open(fp, encoding="utf-8") as f:
+                                parts += [f"### {prod}{fn}", "", f.read().strip(), ""]
+                        except (UnicodeDecodeError, OSError):
+                            parts += [f"### {prod}{fn}", "", "（二进制文件，仅列清单）", ""]
+            elif os.path.exists(full):
                 with open(full, encoding="utf-8") as f:
                     parts += [f"## {stg['name']} 阶段终版（{prod}）", "", f.read().strip(), ""]
         for rp in s.get("reviews", []):
