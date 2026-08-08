@@ -26,7 +26,8 @@
    - 测试脚本（按测试方案用例表实现，P0 全覆盖；可运行：`python3 -m pytest` 或自带 main 直接执行）；
    - `README.md`：运行方式、依赖、结果判定标准、与测试方案用例映射；
 4. **实际运行测试**：记录通过/失败用例（README 或运行日志）；测试失败需区分"被测代码缺陷"与"测试自身错误"；
-5. 运行 `python3 scripts/statectl.py release_stage_design {project}/{req_id} test workspace/tests/{project}/{req_id}-r{N}/`（校验目录存在）。
+5. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} test reviewing workspace/tests/{project}/{req_id}-r{N}/`（严格校验状态迁移 + 校验目录存在）。
+6. **启动时（第 0 步）必须执行**：`python3 scripts/statectl.py set_status {project}/{req_id} test working`（标记执行中）。
 
 修改轮（第 N 轮）：读取上一版测试目录 + 评审意见 → 逐条回应 → 产出 `r{N}/` 新目录 → 重复第 5 步。
 
@@ -43,5 +44,5 @@
 ## 4. 完成标志
 
 - 测试文件集写入 `workspace/tests/{project}/{req_id}-r{N}/`（含 README.md，可运行）；
-- 运行 `release_stage_design {project}/{req_id} test {产物目录}` 成功（状态 → `test_reviewing`）；
+- 运行 `set_status {project}/{req_id} test reviewing {产物目录}` 成功（状态 → `test_reviewing`）；
 - 无越界行为。

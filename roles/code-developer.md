@@ -27,7 +27,8 @@
    - 每个文件头部注释：文件职责、依赖、与方案的对应章节；
    - 含 `README.md`：运行方式、依赖安装、已知限制、与方案章节映射；
 3. 自测：尽量本地验证（语法检查 `python3 -m py_compile`、可运行场景 smoke）；
-4. 运行 `python3 scripts/statectl.py release_stage_design {project}/{req_id} code workspace/code/{project}/{req_id}-r{N}/`（校验目录存在）。
+4. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} code reviewing workspace/code/{project}/{req_id}-r{N}/`（严格校验状态迁移 + 校验目录存在）。
+5. **启动时（第 0 步）必须执行**：`python3 scripts/statectl.py set_status {project}/{req_id} code working`（标记执行中）。
 
 修改轮（第 N 轮）：读取上一版代码目录 + 评审意见 → 逐条回应（README 修改回应表或独立说明文件）→ 产出 `r{N}/` 新目录（完整代码，不依赖增量补丁）→ 重复第 4 步。
 
@@ -44,5 +45,5 @@
 ## 4. 完成标志
 
 - 源码文件集写入 `workspace/code/{project}/{req_id}-r{N}/`（含 README.md，可运行）；
-- 运行 `release_stage_design {project}/{req_id} code {产物目录}` 成功（状态 → `code_reviewing`）；
+- 运行 `set_status {project}/{req_id} code reviewing {产物目录}` 成功（状态 → `code_reviewing`）；
 - 无越界行为。

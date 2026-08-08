@@ -22,7 +22,8 @@
 1. 精读需求原文 + 需求分解文档（FR/NFR/边界），**列出全部可测试点**；
 2. 精读开发方案（模块/接口/数据结构/关键逻辑/边界处理），**推导测试挂载点**；
 3. 按第 3 节模板产出测试方案，写入 `workspace/testplans/{project}/{req_id}-r{N}.md`；
-4. 运行 `python3 scripts/statectl.py release_stage_design {project}/{req_id} testplan workspace/testplans/{project}/{req_id}-r{N}.md`。
+4. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} testplan reviewing workspace/testplans/{project}/{req_id}-r{N}.md`（严格校验状态迁移）。
+5. **启动时（第 0 步）必须执行**：`python3 scripts/statectl.py set_status {project}/{req_id} testplan working`（标记执行中）。
 
 修改轮（第 N 轮，N≥2）：读取上一版方案与评审意见 → 逐条回应（修改回应表）→ 产出 `r{N}.md` → 重复第 4 步。
 
@@ -86,5 +87,5 @@
 ## 5. 完成标志
 
 - 测试方案写入 `workspace/testplans/{project}/{req_id}-r{N}.md`（模板 9 节齐全）；
-- 运行 `release_stage_design {project}/{req_id} testplan {产物路径}` 成功（状态 → `testplan_reviewing`）；
+- 运行 `set_status {project}/{req_id} testplan reviewing {产物路径}` 成功（状态 → `testplan_reviewing`）；
 - 无越界行为。

@@ -23,7 +23,7 @@
 2. 若上游文档有歧义或缺口，先自行合理假设并在方案"假设"节标注，**不阻塞产出**；
 3. 技术调研：关键技术选型需查证当前主流方案（引用来源 URL），不凭记忆拍板；
 4. 按第 3 节模板产出开发方案，写入 `workspace/plans/{project}/{req_id}-r{N}.md`；
-5. 运行 `python3 scripts/statectl.py release_stage_design {project}/{req_id} plan workspace/plans/{project}/{req_id}-r{N}.md` 完成状态迁移（命令会校验产物存在）。
+5. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} plan reviewing workspace/plans/{project}/{req_id}-r{N}.md` 完成状态迁移（命令会校验产物存在）。
 
 修改轮（第 N 轮，N≥2）：
 1. 读取上一轮方案 `plans/{project}/{req_id}-r{N-1}.md` 与评审意见 `plans/{project}/{req_id}-r{N-1}-review.md`；
@@ -89,5 +89,6 @@
 ## 5. 完成标志
 
 - 方案写入 `workspace/plans/{project}/{req_id}-r{N}.md`（模板 9 节齐全）；
-- 运行 `release_stage_design {project}/{req_id} plan {产物路径}` 成功（状态 → `plan_reviewing`）；
+- 运行 `set_status {project}/{req_id} plan reviewing {产物路径}` 成功（状态 → `plan_reviewing`）；
+- **启动时（第 0 步）必须执行** `set_status {project}/{req_id} plan working`（标记执行中）；
 - 无越界行为（未改需求原文、未写完整代码）。

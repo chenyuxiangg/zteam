@@ -212,19 +212,61 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 | `security`（门禁） | — | security-reviewer | `security/` | pro |
 | `release`（终态） | — | releaser | `release/` | flash |
 
-**release 命令**（下半部 worker 完成产物后调用，自动校验产物存在并写审计）：
+### 7.5.1 阶段四态状态机（每个阶段独立）
+
+每阶段四态：`claimed`（tick 认领）→ `working`（执行者启动，**必须**调 set_status）→ `reviewing`（产出落盘/评审者启动）→ `done`（评审 PASS）。
+评审 FAIL → 回 `working` 重做；连续 FAIL 达 `max_rounds` → `blocked`（质量门禁不放行）。
+
+**状态更新命令**（所有角色共用一个状态设置脚本，严格迁移校验，乱跳拒绝）：
 
 ```bash
-python3 scripts/statectl.py release_stage_design {key} {stage} {产物}          # *_designing → *_reviewing
-python3 scripts/statectl.py release_stage_review {key} {stage} {评审意见} PASS|FAIL  # *_reviewing → *_done / 重做
-python3 scripts/statectl.py release_gate {key} {stage} {门禁结论} PASS|FAIL     # *_gating → *_done / 重试
-python3 scripts/statectl.py release_release {key} {发布说明}                     # releasing → released（完整交付物归档）
+python3 scripts/statectl.py set_status {key} {stage} working              # 执行者/评审者启动时（第 0 步必须）
+python3 scripts/statectl.py set_status {key} {stage} reviewing {产物}     # 产出完成 → 待评审（需产物路径）
+python3 scripts/statectl.py release_stage_review {key} {stage} {评审意见} PASS|FAIL  # 评审完成
+python3 scripts/statectl.py release_gate {key} {stage} {门禁结论} PASS|FAIL          # 门禁
+python3 scripts/statectl.py release_release {key} {发布说明}                        # 发布（released）
 ```
 
-- 每阶段 `stages[stage]` 独立记 `round`/`product`/`reviews`/`status`（与需求评审轮次互不干扰）；
-- 阶段评审 FAIL → 回 `{stage}_designing` 重做（带上一轮评审意见）；连续 FAIL 达 `max_rounds` → `blocked`（质量门禁不放行，人工介入 `requeue`）；
-- 门禁（quality/security）FAIL 同样重试，达上限 → `blocked`；
-- `released` 为完整交付终态：`artifacts/{project}/{req_id}.md` 升级为**最终交付物**（结论摘要 + 需求原文 + 最终分析 + 需求评审历史 + 各阶段终版产物 + 门禁结论 + 发布说明），notify 推送 🚀。
+**迁移校验表**（`set_status` 严格强制）：
+
+| 当前状态 | → working | → reviewing | → done |
+|----------|-----------|-------------|--------|
+| `claimed` | ✅（执行者启动） | ❌ | ❌ |
+| `working` | ❌ | ✅（需产物路径） | ❌ |
+| `reviewing` | ✅（FAIL 打回） | ✅（评审者启动幂等） | ✅（PASS） |
+| `done` | ❌ | ❌ | ❌ |
+
+### 7.5.2 巡检兜底（guard_recovery，核心可靠性机制）
+
+上半部 tick 内置巡检：阶段 `claimed/working/reviewing` 超时（`state_since` > 20 分钟）时自动补正，**不依赖 worker 进程**：
+
+| 状态 | 产物存在？ | 结论 | 自动处理 |
+|------|-----------|------|---------|
+| `claimed`/`working` | ✅ 阶段产物存在 | — | 补 `reviewing`（干完没设状态） |
+| `claimed`/`working` | ❌ 且 worker 已死 | — | 回滚上一完成态（failures+1） |
+| `reviewing` | ✅ 评审产物存在 | PASS | 补 `done`（终态自动归档） |
+| `reviewing` | ✅ 评审产物存在 | FAIL/无结论 | 回 `working` 重做（轮次+1，达上限 → blocked） |
+| `reviewing` | ❌ 且 worker 已死 | — | 回滚上一完成态（failures+1） |
+| 任意 | ❌ 但 worker 存活 | — | 等待（慢任务不打扰） |
+
+巡检动作全部写 GUARD 审计行（`logs/pipeline.log`），可追溯。
+
+### 7.5.3 状态表结构（每需求一张状态表，JSON）
+
+每需求 entry 的 `stages` 即其状态表：从需求分析到发布全部阶段的记录，每阶段含
+`state`（四态）/`state_since`（状态起始时间）/`timeline`（全部迁移历史）/`product`（终版产物）/`reviews`（评审意见列表）/`round`。
+
+```json
+"stages": {
+  "plan": {
+    "state": "done", "state_since": "2026-08-08T06:10:12Z", "round": 1,
+    "product": "plans/snake-linux/snake-linux-r1.md",
+    "reviews": ["plans/snake-linux/snake-linux-r1-review.md"],
+    "timeline": [{"t": "...", "to": "claimed"}, {"t": "...", "to": "working"}, {"t": "...", "to": "reviewing"}, {"t": "...", "to": "done"}]
+  },
+  "testplan": { "...": "..." }
+}
+```
 
 ## 8. 上半部脚本与下半部 worker 职责划分
 | 组件 | 部分 | 职责 | 禁止 |

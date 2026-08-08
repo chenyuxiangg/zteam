@@ -26,15 +26,16 @@ zteam/                     # 资产层（git 跟踪）
 ## 完成标志（三件套，缺一不可）
 
 1. **产物落盘**：按指令写 `workspace/{阶段目录}/{project}/{req_id}-r{N}.md`（每轮新文件，不覆盖旧版本）；
-2. **调用状态机 release 命令**（状态迁移由 `scripts/statectl.py` 完成，禁止手改 status.json）：
-   - 需求分析：`release_analyze {key} {产物}`（`analyzing → analyzed`）；
-   - 需求评审：`release_review {key} {产物} PASS|FAIL`（`reviewing → approved|needs_fix`）；
-   - 阶段产出：`release_stage_design {key} {stage} {产物}`（`{stage}_designing → {stage}_reviewing`）；
-   - 阶段评审：`release_stage_review {key} {stage} {产物} PASS|FAIL`（`{stage}_reviewing → {stage}_done` / 重做）；
+2. **状态更新**（状态迁移由 `scripts/statectl.py` 完成，**严格迁移校验**，禁止手改 status.json）：
+   - **启动时（第 0 步）必须执行** `set_status {key} {stage} working`（标记执行中；评审者标记 reviewing）；
+   - 需求分析完成：`release_analyze {key} {产物}`（置为等待评审）；
+   - 需求评审：`release_review {key} {产物} PASS|FAIL`；
+   - 阶段产出完成：`set_status {key} {stage} reviewing {产物}`（标记待评审）；
+   - 阶段评审：`release_stage_review {key} {stage} {产物} PASS|FAIL`；
    - 门禁评审：`release_gate {key} {stage} {产物} PASS|FAIL`（quality/security）；
-   - 发布：`release_release {key} {发布说明}`（`releasing → released`，生成最终交付物归档）；
-   - release 会自动清空 claim 字段、写审计日志、按 max_rounds 处理强制归档/blocked；
-3. **审计日志**：release 命令自动写入 `workspace/logs/pipeline.log`（格式见 `docs/state-machine.md` 第 10 节），无需手动追加。
+   - 发布：`release_release {key} {发布说明}`（`released` 终态 + 完整交付归档）；
+   - **巡检兜底**：若你漏设状态，上半部巡检会在超时后按产物存在性与结论自动补正（GUARD 审计），无需人工；
+3. **审计日志**：状态命令自动写入 `workspace/logs/pipeline.log`（格式见 `docs/state-machine.md` 第 10 节），无需手动追加。
 
 ## 失败时
 
