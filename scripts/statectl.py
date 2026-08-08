@@ -384,6 +384,13 @@ def new_stages() -> dict:
     return d
 
 
+def ensure_stages(e: dict) -> dict:
+    """兼容旧 entry（阶段化改造前无 stages 字段）：缺失时初始化。"""
+    if "stages" not in e or not isinstance(e.get("stages"), dict):
+        e["stages"] = new_stages()
+    return e["stages"]
+
+
 def prev_done_state(e: dict) -> str:
     """当前中间态所属阶段的上一完成态（回滚目标）。"""
     s = e["status"]
@@ -488,6 +495,8 @@ def claim(st: dict, rid: str, role: str) -> bool:
     if not act or act[0] != role:
         return False
     _, stage, phase = act
+    if stage != "req":
+        ensure_stages(e)
     if phase == "design":
         new_state = "analyzing" if stage == "req" else f"{stage}_designing"
     elif phase == "review":
@@ -513,6 +522,7 @@ def build_worker_query(role: str, key: str, e: dict):
     if not act or act[0] != role:
         raise RuntimeError(f"角色 {role} 与需求 {key} 当前状态 {e.get('status')} 不匹配")
     _, stage, phase = act
+    ensure_stages(e)
     cn = ROLE_CN.get(role, role)
     rolefile = ROLE_FILES.get(role, f"roles/{role}.md")
     # ---- 需求阶段（向后兼容：round 在顶层） ----
@@ -636,11 +646,11 @@ def stage_inputs(e: dict) -> list:
     if e.get("analysis"):
         outs.append(("需求分析（approved 终版）", e["analysis"]))
     for stg in STAGES:
-        prod = e["stages"].get(stg["name"], {}).get("product")
+        prod = (e.get("stages") or {}).get(stg["name"], {}).get("product")
         if prod:
             outs.append((f"{stg['name']} 阶段终版", prod))
     for g in GATES:
-        prod = e["stages"].get(g["name"], {}).get("product")
+        prod = (e.get("stages") or {}).get(g["name"], {}).get("product")
         if prod:
             outs.append((f"{g['name']} 门禁结论", prod))
     return outs
@@ -922,6 +932,7 @@ def release_stage_design(rid: str, stage: str, product: str) -> int:
         if not e or e["status"] != expect:
             print(f"release_stage_design: {rid} 状态不是 {expect}，拒绝", file=sys.stderr)
             return 1
+        ensure_stages(e)
         full = os.path.join(WORKSPACE_DIR, product)
         if not os.path.exists(full):
             alarms = []
@@ -954,6 +965,7 @@ def release_stage_review(rid: str, stage: str, product: str, conclusion: str) ->
         if not e or e["status"] != expect:
             print(f"release_stage_review: {rid} 状态不是 {expect}，拒绝", file=sys.stderr)
             return 1
+        ensure_stages(e)
         full = os.path.join(WORKSPACE_DIR, product)
         if not os.path.exists(full):
             alarms = []
@@ -999,6 +1011,7 @@ def release_gate(rid: str, stage: str, product: str, conclusion: str) -> int:
         if not e or e["status"] != expect:
             print(f"release_gate: {rid} 状态不是 {expect}，拒绝", file=sys.stderr)
             return 1
+        ensure_stages(e)
         full = os.path.join(WORKSPACE_DIR, product)
         if not os.path.exists(full):
             alarms = []
@@ -1040,6 +1053,7 @@ def release_release(rid: str, product: str) -> int:
         if not e or e["status"] != "releasing":
             print(f"release_release: {rid} 状态不是 releasing，拒绝", file=sys.stderr)
             return 1
+        ensure_stages(e)
         full = os.path.join(WORKSPACE_DIR, product)
         if not os.path.exists(full):
             alarms = []
