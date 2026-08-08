@@ -23,7 +23,7 @@
 ## 1. 一键诊断（DFx）
 
 ```bash
-cd ~/cyx/zteam && python3 scripts/statectl.py diagnose
+cd <工作区> && python3 scripts/statectl.py diagnose
 ```
 
 - 15 项检查（D1–D14）：状态文件合法性、目录完整性、条目 schema、非法状态、中间态滞留、claim 残留、引用文件缺失、归档一致性、未登记输入、状态锁、**gateway 运行**、**cron job 存在性**、worker 进程数、日志可写；
@@ -79,7 +79,7 @@ cd ~/cyx/zteam && python3 scripts/statectl.py diagnose
 | 优先级 | 可能原因 | 检查 | 修复 |
 |---|---|---|---|
 | 1 | **模型名不存在**（最常见） | `workspace/logs/pipeline.log` 的 `SPAWN` 行看 model；worker 日志里的 API 报错 | 改 `statectl.py` 第 43–48 行常量；可用模型 `curl https://api.deepseek.com/models` |
-| 2 | API key 缺失/失效 | worker 日志报 401 | 检查 `~/.hermes/.env` 的 `DEEPSEEK_API_KEY` |
+| 2 | API key 缺失/失效 | worker 日志报 401 | 检查 `$HERMES_HOME/.env` 的 `DEEPSEEK_API_KEY` |
 | 3 | `hermes` 不在 PATH（gateway 环境） | `journalctl --user -u hermes-gateway` 看 spawn 报错 | 薄壳里用绝对路径调用（当前已用 `python3` 绝对路径） |
 | 4 | 配额/限流（429） | worker 日志 | 等下一轮（stale 恢复自动重试）或换模型 |
 

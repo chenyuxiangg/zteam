@@ -1,5 +1,10 @@
 # 需求分析与多轮评审自动流水线（方案 B）
 
+> **路径约定**（迁移友好，全文统一）：
+> - `<工作区>` = 项目根目录（git clone 下来的目录，可放在任意路径，如 `~/cyx/zteam`）；
+> - `$HERMES_HOME` = Hermes 配置目录（默认 `~/.hermes`）；
+> - 除特殊说明外，命令均在 `<工作区>` 下执行（`cd <工作区>` 后运行）。
+
 基于 **cron + 文件消息池** 的无人值守多角色流水线。调度采用**上半部 / 下半部**架构（对应 Linux 中断处理模型）：**上半部只唤醒（秒级、零 token），下半部干活（分钟级、独立进程、不受 cron 3 分钟硬中断限制）**。
 
 需求分析师与需求评审师是两个独立角色，各自独立绑定模型，通过共享工作区 `workspace/status.json` + 文件目录实现"自动感知"，多轮"分析 → 评审 → 修改 → 再评审"直至通过，全程无人值守。
@@ -61,11 +66,11 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 2. **创建三个 cron job**（全部 `no_agent` 纯脚本，不需要模型）：
 
 ```bash
-# 前提：CLI 只接受 ~/.hermes/scripts/ 下的真实文件（软链会被拒绝），
+# 前提：CLI 只接受 $HERMES_HOME/scripts/（默认 ~/.hermes/scripts/）下的真实文件（软链会被拒绝），
 # 因此先建 2 行 exec 薄壳（本流水线已建好，逻辑唯一实现在工作区）：
-#   ~/.hermes/scripts/watchdog-analyst.sh   -> exec python3 /home/zyzs/cyx/zteam/scripts/watchdog-analyst.py
-#   ~/.hermes/scripts/watchdog-reviewer.sh  -> exec python3 /home/zyzs/cyx/zteam/scripts/watchdog-reviewer.py
-#   ~/.hermes/scripts/watchdog-weekly.sh    -> exec python3 /home/zyzs/cyx/zteam/scripts/watchdog-weekly.py
+#   $HERMES_HOME/scripts/watchdog-analyst.sh   -> exec python3 <工作区>/scripts/watchdog-analyst.py
+#   $HERMES_HOME/scripts/watchdog-reviewer.sh  -> exec python3 <工作区>/scripts/watchdog-reviewer.py
+#   $HERMES_HOME/scripts/watchdog-weekly.sh    -> exec python3 <工作区>/scripts/watchdog-weekly.py
 
 hermes cron create "*/5 * * * *" --name req-analyst-top  --script watchdog-analyst.sh  --no-agent --repeat 0
 hermes cron create "*/5 * * * *" --name req-reviewer-top --script watchdog-reviewer.sh --no-agent --repeat 0
@@ -81,10 +86,10 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 ## 安装与卸载
 
 ```bash
-bash ~/cyx/zteam/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
-bash ~/cyx/zteam/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
-bash ~/cyx/zteam/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash ~/cyx/zteam/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
+bash install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
+bash uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
+bash uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -100,7 +105,7 @@ bash ~/cyx/zteam/uninstall.sh --full               # 清空数据层 workspace/�
    ```
 3. **一键安装（含 gateway 自启）**：
    ```bash
-   cd zteam && bash install.sh --with-gateway
+   cd <工作区> && bash install.sh --with-gateway
    ```
    该命令幂等完成：目录骨架 → cron 薄壳（按当前路径生成）→ 3 个 cron job → gateway 未运行则自动安装启动（用户级 systemd 服务，开机自启）→ 末尾自动 `diagnose` 自检，全绿才 exit 0。
 4. **验证**：
@@ -117,7 +122,7 @@ bash ~/cyx/zteam/uninstall.sh --full               # 清空数据层 workspace/�
    - **无 systemd 环境**（WSL/Docker 等）→ `--with-gateway` 自动启动失败时会提示手动方案（`hermes gateway run` 前台 / `sudo hermes gateway install --system`），不会静默假装成功。
 
 - **install 幂等**：重复执行只会补齐缺失项（已存在则跳过），末尾自动跑 `diagnose` 自检；**工作区迁移后重跑 install 即可**（薄壳按当前路径重新生成）；
-- **uninstall 默认安全**：只拆 cron job 与 `~/.hermes/scripts/` 薄壳，`workspace/status.json`/产物/日志原样保留；`--full` 才删数据且有确认；
+- **uninstall 默认安全**：只拆 cron job 与 `$HERMES_HOME/scripts/` 薄壳，`workspace/status.json`/产物/日志原样保留；`--full` 才删数据且有确认；
 - 两者都**不碰 gateway**（它同时服务 Hermes 其他功能）。
 
 ## 模型配置
@@ -180,7 +185,7 @@ bash ~/cyx/zteam/uninstall.sh --full               # 清空数据层 workspace/�
 ### zbot 职责约束（严格模式）
 zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其他请求（闲聊、通用问答、编程等）一律拒绝。
 - **单一事实来源**：`roles/bot.md`（职责边界 + 人格定义）；
-- **注入机制**：`install.sh` 把 `roles/bot.md` 内容写入 `~/.hermes/gateway.json` 的 `platforms.telegram.channel_overrides[<chat_id>].system_prompt`（频道级提示词，追加不覆盖默认能力；用 gateway.json 而非 config.yaml 是因为后者注释会被重写丢失）；
+- **注入机制**：`install.sh` 把 `roles/bot.md` 内容写入 `$HERMES_HOME/gateway.json` 的 `platforms.telegram.channel_overrides[<chat_id>].system_prompt`（频道级提示词，追加不覆盖默认能力；用 gateway.json 而非 config.yaml 是因为后者注释会被重写丢失）；
 - **生效**：改 `roles/bot.md` 后重跑 `python3 scripts/bot_config.py install` + `systemctl --user restart hermes-gateway`；
 - **卸载**：`uninstall.sh` 自动移除该配置（gateway.json 空壳自清理）；手动：`python3 scripts/bot_config.py uninstall`。
 
@@ -188,7 +193,7 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 1. Telegram 里找 **@BotFather** → `/newbot` → 拿到 bot token；
 2. 配置（二选一）：
    - 交互式：`hermes gateway setup` 按向导填写；
-   - 手动：token 写入 `~/.hermes/.env` 的 `TELEGRAM_BOT_TOKEN=`（建议同时设 `TELEGRAM_ALLOWED_USERS`（你的用户 ID，限制只响应你）与 `TELEGRAM_HOME_CHANNEL`（目标 chat id，投递落点））；
+   - 手动：token 写入 `$HERMES_HOME/.env` 的 `TELEGRAM_BOT_TOKEN=`（建议同时设 `TELEGRAM_ALLOWED_USERS`（你的用户 ID，限制只响应你）与 `TELEGRAM_HOME_CHANNEL`（目标 chat id，投递落点））；
 3. `hermes gateway restart`；
 4. **给 bot 发一条消息**（建立会话、确认 home channel）；
 5. 验证：`hermes cron run req-result-notify`——最近有归档会收到推送；无消息 = 正常（空输出不推送）。
@@ -198,7 +203,7 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 ### 当前状态（2026-08-07 实测）
 - ✅ **四通道全部打通**：①告警推送 ②结果推送 ③聊天查询/干预 ④聊天投放需求——均已实证可用
 - ✅ **zbot 职责约束已生效**（2026-08-07 用户实测）：严格模式——只处理流水线操作，越界请求（闲聊/通用问答等）一律拒绝；定义在 `roles/bot.md`，install/uninstall 自动注入/移除（gateway.json channel_overrides）
-- ✅ 配置：`TELEGRAM_BOT_TOKEN`（有效，@zyzs_bot）、`TELEGRAM_ALLOWED_USERS=6525650097`、`TELEGRAM_HOME_CHANNEL=6525650097`（DM 落点）均在 `~/.hermes/.env`
+- ✅ 配置：`TELEGRAM_BOT_TOKEN`（有效，@zyzs_bot）、`TELEGRAM_ALLOWED_USERS=6525650097`、`TELEGRAM_HOME_CHANNEL=6525650097`（DM 落点）均在 `$HERMES_HOME/.env`
 - ✅ 4 个 cron job 均 `deliver=telegram`；notify 推送链路两次端到端实证全送达（即使执行时适配器刚经历重连，网络恢复即投递成功）
 - ✅ 退出 TUI 会话后依然可用——常驻 gateway 为 systemd 服务（`hermes-gateway.service`），与终端会话无关
 - ⚠️ 已知边界：Telegram 适配器（Hermes 内置）对网络波动恢复慢（首次连接可能卡 "attempt 1/8" 数分钟～数小时，#63309 家族）；期间聊天/推送可能短暂无响应，网络恢复后自动重连。clash 节点不稳定是外部根因。**不构成功能缺口**（实测推送会送达，只是可能延迟）
@@ -209,10 +214,10 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 
 ### 版本管理（git，防误删/误改）
 工作区是 git 仓库（2026-08-07 初始化，首提交含全部核心资产 + 业务数据）。
-- **远程备份**：`git@github.com:chenyuxiangg/zteam.git`（`origin`，SSH 免密；新机器恢复：`git clone git@github.com:chenyuxiangg/zteam.git ~/cyx/zteam`）；
+- **远程备份**：`git@github.com:chenyuxiangg/zteam.git`（`origin`，SSH 免密；新机器恢复：`git clone git@github.com:chenyuxiangg/zteam.git <工作区>`）；
 - **日常提交**（推荐每次改动后）：
   ```bash
-  cd ~/cyx/zteam && git add -A && git commit -m "描述改动" && git push
+  cd <工作区> && git add -A && git commit -m "描述改动" && git push
   ```
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；
