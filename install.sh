@@ -9,10 +9,10 @@ WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$WORKSPACE/scripts"
 HERMES_SCRIPTS="$HOME/.hermes/scripts"
 
-JOBS=(req-analyst-top req-reviewer-top req-weekly-audit req-result-notify)
-SCHEDULES=("*/5 * * * *" "*/5 * * * *" "0 9 * * 1" "*/15 * * * *")
-WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-weekly.sh watchdog-notify.sh)
-WORKER_ENTRIES=(watchdog-analyst.py watchdog-reviewer.py watchdog-weekly.py watchdog-notify.py)
+JOBS=(req-analyst-top req-reviewer-top req-worker-top req-weekly-audit req-result-notify)
+SCHEDULES=("*/5 * * * *" "*/5 * * * *" "*/5 * * * *" "0 9 * * 1" "*/15 * * * *")
+WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-worker.sh watchdog-weekly.sh watchdog-notify.sh)
+WORKER_ENTRIES=(watchdog-analyst.py watchdog-reviewer.py watchdog-worker.py watchdog-weekly.py watchdog-notify.py)
 
 say() { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[install]\033[0m %s\n' "$*" >&2; }
@@ -24,8 +24,8 @@ command -v hermes  >/dev/null || die "缺少 hermes CLI（请先安装 Hermes Ag
 [ -f "$SCRIPTS_DIR/statectl.py" ] || die "未找到 $SCRIPTS_DIR/statectl.py —— install.sh 必须放在流水线工作区根目录"
 
 # ---- 1. 目录骨架（缺啥补啥，不覆盖已有文件） ----
-# 资产层在根目录（roles/docs/scripts）；数据层在 workspace/（input/analysis/review/artifacts/logs/status.json）
-mkdir -p "$WORKSPACE"/{roles,docs,scripts} "$WORKSPACE/workspace"/{input,analysis,review,artifacts,logs}
+# 资产层在根目录（roles/docs/scripts）；数据层在 workspace/（input/analysis/review/artifacts/logs + 阶段产物目录 + status.json）
+mkdir -p "$WORKSPACE"/{roles,docs,scripts} "$WORKSPACE/workspace"/{input,analysis,review,artifacts,logs,plans,testplans,code,tests,quality,security,release}
 [ -f "$WORKSPACE/workspace/status.json" ] || echo '{}' > "$WORKSPACE/workspace/status.json"
 touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt" "$WORKSPACE/workspace/status.lock"
 say "目录骨架就绪: $WORKSPACE（资产层 + workspace/ 数据层）"

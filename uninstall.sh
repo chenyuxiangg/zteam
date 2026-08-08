@@ -10,8 +10,8 @@ set -euo pipefail
 WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_SCRIPTS="$HOME/.hermes/scripts"
 
-JOBS=(req-analyst-top req-reviewer-top req-weekly-audit req-result-notify)
-WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-weekly.sh watchdog-notify.sh)
+JOBS=(req-analyst-top req-reviewer-top req-worker-top req-weekly-audit req-result-notify)
+WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-worker.sh watchdog-weekly.sh watchdog-notify.sh)
 
 say()  { printf '\033[1;32m[uninstall]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[uninstall]\033[0m %s\n' "$*" >&2; }

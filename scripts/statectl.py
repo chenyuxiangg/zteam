@@ -64,6 +64,80 @@ def rel_artifact(project: str, rid: str) -> str:
     return f"artifacts/{project}/{rid}.md"
 
 
+def rel_stage_product(cfg: dict, project: str, rid: str, n: int) -> str:
+    """阶段产出物路径（相对 workspace/）：{dir}/{project}/{rid}-r{n}.md"""
+    return f"{cfg['dir']}/{project}/{rid}-r{n}.md"
+
+
+def rel_stage_review(cfg: dict, project: str, rid: str, n: int) -> str:
+    """阶段评审意见路径：{dir}/{project}/{rid}-r{n}-review.md"""
+    return f"{cfg['dir']}/{project}/{rid}-r{n}-review.md"
+
+
+def stage_cfg(name: str):
+    """阶段名 → 配置 dict（STAGES/GATES/RELEASE）。"""
+    for stg in STAGES:
+        if stg["name"] == name:
+            return stg
+    for g in GATES:
+        if g["name"] == name:
+            return g
+    if name == RELEASE["name"]:
+        return RELEASE
+    return None
+
+
+def stage_after(name: str):
+    """返回 name 阶段的下一阶段配置（dict）或 None（已是终态）。"""
+    names = [stg["name"] for stg in STAGES] + [g["name"] for g in GATES] + [RELEASE["name"]]
+    if name not in names:
+        return None
+    idx = names.index(name)
+    if idx + 1 >= len(names):
+        return None
+    return stage_cfg(names[idx + 1])
+
+
+def next_action(e: dict):
+    """根据当前状态返回下一步动作 (role, stage, phase) 或 None。
+    phase ∈ design / review / gate / release；stage ∈ req / plan / testplan / code / test / quality / security / release。"""
+    s = e.get("status")
+    if s in ("pending", "needs_fix"):
+        return ("req-analyst", "req", "design")
+    if s == "analyzed":
+        return ("req-reviewer", "req", "review")
+    if s == "approved":
+        stg = STAGES[0]
+        return (stg["designer"], stg["name"], "design")
+    for stg in STAGES:
+        if s == f"{stg['name']}_designing":
+            return (stg["designer"], stg["name"], "design")
+        if s == f"{stg['name']}_reviewing":
+            return (stg["reviewer"], stg["name"], "review")
+        if s == f"{stg['name']}_done":
+            nxt = stage_after(stg["name"])
+            if nxt is RELEASE:
+                return (RELEASE["role"], RELEASE["name"], "release")
+            if nxt:
+                return (nxt["designer"] if "designer" in nxt else nxt["role"], nxt["name"],
+                        "design" if "designer" in nxt else "gate")
+            return None
+    for g in GATES:
+        if s == f"{g['name']}_gating":
+            return (g["role"], g["name"], "gate")
+        if s == f"{g['name']}_done":
+            nxt = stage_after(g["name"])
+            if nxt is RELEASE:
+                return (RELEASE["role"], RELEASE["name"], "release")
+            if nxt:
+                return (nxt["designer"] if "designer" in nxt else nxt["role"], nxt["name"],
+                        "design" if "designer" in nxt else "gate")
+            return None
+    if s == "releasing":
+        return (RELEASE["role"], RELEASE["name"], "release")
+    return None
+
+
 def abs_input(project: str, rid: str) -> str:
     return os.path.join(INPUT_DIR, project, rid + ".md")
 
@@ -85,6 +159,95 @@ ANALYST_MODEL = os.environ.get("ANALYST_MODEL", "deepseek-v4-flash")
 ANALYST_PROVIDER = os.environ.get("ANALYST_PROVIDER", "deepseek")
 REVIEWER_MODEL = os.environ.get("REVIEWER_MODEL", "deepseek-v4-pro")
 REVIEWER_PROVIDER = os.environ.get("REVIEWER_PROVIDER", "deepseek")
+# 阶段角色模型（设计/产出类 = flash 快；评审/门禁类 = pro 把关）
+PLAN_DESIGNER_MODEL = os.environ.get("PLAN_DESIGNER_MODEL", "deepseek-v4-flash")
+PLAN_REVIEWER_MODEL = os.environ.get("PLAN_REVIEWER_MODEL", "deepseek-v4-pro")
+TESTPLAN_DESIGNER_MODEL = os.environ.get("TESTPLAN_DESIGNER_MODEL", "deepseek-v4-flash")
+TESTPLAN_REVIEWER_MODEL = os.environ.get("TESTPLAN_REVIEWER_MODEL", "deepseek-v4-pro")
+CODE_DEVELOPER_MODEL = os.environ.get("CODE_DEVELOPER_MODEL", "deepseek-v4-flash")
+CODE_REVIEWER_MODEL = os.environ.get("CODE_REVIEWER_MODEL", "deepseek-v4-pro")
+TEST_DEVELOPER_MODEL = os.environ.get("TEST_DEVELOPER_MODEL", "deepseek-v4-flash")
+TEST_REVIEWER_MODEL = os.environ.get("TEST_REVIEWER_MODEL", "deepseek-v4-pro")
+QUALITY_REVIEWER_MODEL = os.environ.get("QUALITY_REVIEWER_MODEL", "deepseek-v4-pro")
+SECURITY_REVIEWER_MODEL = os.environ.get("SECURITY_REVIEWER_MODEL", "deepseek-v4-pro")
+RELEASER_MODEL = os.environ.get("RELEASER_MODEL", "deepseek-v4-flash")
+
+# ---- 阶段流水线定义（需求 approved 后按序推进）----
+# 成对阶段（产出者 + 评审者）；产物：{dir}/{project}/{req_id}-r{N}.md（产出）/ {dir}/{project}/{req_id}-r{N}-review.md（评审）
+STAGES = [
+    {"name": "plan",     "designer": "dev-plan-designer",  "reviewer": "dev-plan-reviewer",  "dir": "plans"},
+    {"name": "testplan", "designer": "test-plan-designer", "reviewer": "test-plan-reviewer", "dir": "testplans"},
+    {"name": "code",     "designer": "code-developer",     "reviewer": "code-reviewer",      "dir": "code"},
+    {"name": "test",     "designer": "test-developer",     "reviewer": "test-reviewer",      "dir": "tests"},
+]
+# 单角色门禁阶段（评审不通过不前进；连续失败达上限 → blocked）
+GATES = [
+    {"name": "quality",  "role": "quality-reviewer",  "dir": "quality"},
+    {"name": "security", "role": "security-reviewer", "dir": "security"},
+]
+# 终态阶段（产出发布说明；released = 完整交付物归档 + 通知）
+RELEASE = {"name": "release", "role": "releaser", "dir": "release"}
+
+# 角色 → (模型, provider) 映射（含需求阶段两个角色）
+ROLE_MODELS = {
+    "req-analyst": (ANALYST_MODEL, ANALYST_PROVIDER),
+    "req-reviewer": (REVIEWER_MODEL, REVIEWER_PROVIDER),
+    "dev-plan-designer": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
+    "dev-plan-reviewer": (PLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "test-plan-designer": (TESTPLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
+    "test-plan-reviewer": (TESTPLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "code-developer": (CODE_DEVELOPER_MODEL, ANALYST_PROVIDER),
+    "code-reviewer": (CODE_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "test-developer": (TEST_DEVELOPER_MODEL, ANALYST_PROVIDER),
+    "test-reviewer": (TEST_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "quality-reviewer": (QUALITY_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "security-reviewer": (SECURITY_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "releaser": (RELEASER_MODEL, ANALYST_PROVIDER),
+}
+# 角色 → 角色文件（worker 指令阅读文件）
+ROLE_FILES = {
+    "req-analyst": "roles/req-analyst.md",
+    "req-reviewer": "roles/req-reviewer.md",
+    "dev-plan-designer": "roles/dev-plan-designer.md",
+    "dev-plan-reviewer": "roles/dev-plan-reviewer.md",
+    "test-plan-designer": "roles/test-plan-designer.md",
+    "test-plan-reviewer": "roles/test-plan-reviewer.md",
+    "code-developer": "roles/code-developer.md",
+    "code-reviewer": "roles/code-reviewer.md",
+    "test-developer": "roles/test-developer.md",
+    "test-reviewer": "roles/test-reviewer.md",
+    "quality-reviewer": "roles/quality-reviewer.md",
+    "security-reviewer": "roles/security-reviewer.md",
+    "releaser": "roles/releaser.md",
+}
+# 角色 → 中文名（worker 指令措辞）
+ROLE_CN = {
+    "req-analyst": "需求分析师", "req-reviewer": "需求评审师",
+    "dev-plan-designer": "开发方案设计者", "dev-plan-reviewer": "开发方案评审者",
+    "test-plan-designer": "测试方案设计者", "test-plan-reviewer": "测试方案评审者",
+    "code-developer": "代码开发者", "code-reviewer": "代码评审者",
+    "test-developer": "测试开发者", "test-reviewer": "测试评审者",
+    "quality-reviewer": "质量评审者", "security-reviewer": "安全红线评审者",
+    "releaser": "发布者",
+}
+# 所有中间态（stale 恢复/回滚适用）
+def _mid_states() -> set:
+    s = {"analyzing", "reviewing", "releasing"}
+    for stg in STAGES:
+        s |= {f"{stg['name']}_designing", f"{stg['name']}_reviewing"}
+    for g in GATES:
+        s.add(f"{g['name']}_gating")
+    return s
+MID_STATES = _mid_states()
+# 所有合法状态
+def _all_states() -> set:
+    s = {"pending", "analyzing", "analyzed", "reviewing", "needs_fix", "approved", "blocked", "released"}
+    for stg in STAGES:
+        s |= {f"{stg['name']}_designing", f"{stg['name']}_reviewing", f"{stg['name']}_done"}
+    for g in GATES:
+        s |= {f"{g['name']}_gating", f"{g['name']}_done"}
+    return s
+STATE_SET = _all_states()
 
 # ---------------- 基础工具 ----------------
 
@@ -179,6 +342,7 @@ def register_new_inputs(st: dict) -> list:
                 "analysis": None,
                 "reviews": [],
                 "failures": 0,
+                "stages": new_stages(),
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
             }
@@ -200,6 +364,7 @@ def register_new_inputs(st: dict) -> list:
                 "analysis": None,
                 "reviews": [],
                 "failures": 0,
+                "stages": new_stages(),
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
             }
@@ -208,11 +373,49 @@ def register_new_inputs(st: dict) -> list:
     return registered
 
 
+def new_stages() -> dict:
+    """初始化阶段链子状态（每阶段：round/product/reviews/status）。"""
+    d = {}
+    for stg in STAGES:
+        d[stg["name"]] = {"round": 0, "product": None, "reviews": [], "status": "pending"}
+    for g in GATES:
+        d[g["name"]] = {"round": 0, "product": None, "reviews": [], "status": "pending"}
+    d[RELEASE["name"]] = {"round": 0, "product": None, "reviews": [], "status": "pending"}
+    return d
+
+
+def prev_done_state(e: dict) -> str:
+    """当前中间态所属阶段的上一完成态（回滚目标）。"""
+    s = e["status"]
+    if s == "analyzing":
+        return "pending"
+    if s == "reviewing":
+        return "analyzed"
+    if s == "releasing":
+        last = [stg["name"] for stg in STAGES] + [g["name"] for g in GATES]
+        return f"{last[-1]}_done" if last else "approved"
+    # 阶段中间态：{stage}_{designing|reviewing|gating}
+    stage, phase = s.rsplit("_", 1)
+    if phase == "reviewing":
+        return f"{stage}_designing"  # 评审卡死 → 重新产出
+    # designing/gating → 该阶段之前的完成态
+    prev_name = stage
+    order = [stg["name"] for stg in STAGES] + [g["name"] for g in GATES]
+    if prev_name in order:
+        idx = order.index(prev_name)
+        if idx == 0:
+            return "approved"
+        return f"{order[idx - 1]}_done"
+    return "approved"
+
+
 def rollback_entry(st: dict, rid: str, alarms: list, reason: str) -> None:
-    """中间态回滚：analyzing→pending / reviewing→analyzed；failures+1；达上限置 blocked。"""
+    """中间态回滚：回到该阶段的上一完成态；failures+1；达上限置 blocked。"""
     e = st[rid]
     was = e["status"]
-    prev = "pending" if was == "analyzing" else "analyzed"
+    if was not in MID_STATES:
+        return
+    prev = prev_done_state(e)
     e["status"] = prev
     e["failures"] = int(e.get("failures", 0)) + 1
     clear_claim(e)
@@ -233,7 +436,7 @@ def stale_recovery(st: dict) -> list:
     """回收卡死的 worker 认领（超时 + pid 存活检查）。返回新告警列表。"""
     alarms = []
     for rid, e in list(st.items()):
-        if e.get("status") not in ("analyzing", "reviewing"):
+        if e.get("status") not in MID_STATES:
             continue
         claimed_at = e.get("claimed_at")
         age_min = STALE_AFTER_MIN + 1  # 无 claim 时间戳视为超时
@@ -253,31 +456,46 @@ def stale_recovery(st: dict) -> list:
     return alarms
 
 
-def find_claimable(st: dict, role: str):
-    """找最老（updated_at 最早）的可认领需求。返回 (req_id, entry) 或 None。"""
+_ROLE_ALIAS = {"analyst": "req-analyst", "reviewer": "req-reviewer"}
+
+
+def find_claimable(st: dict, role: str = None):
+    """找最老（updated_at 最早）的可认领需求。返回 (req_id, entry, action) 或 None。
+    role 为 None = 任意角色；支持短名（analyst/reviewer → req-analyst/req-reviewer）。"""
+    role = _ROLE_ALIAS.get(role, role)
     cands = []
     for rid, e in st.items():
-        if role == "analyst" and e.get("status") in ("pending", "needs_fix"):
-            cands.append((e.get("updated_at", ""), rid, e))
-        elif role == "reviewer" and e.get("status") == "analyzed":
-            cands.append((e.get("updated_at", ""), rid, e))
+        act = next_action(e)
+        if not act:
+            continue
+        if role and act[0] != role:
+            continue
+        cands.append((e.get("updated_at", ""), rid, e, act))
     if not cands:
         return None
     cands.sort(key=lambda x: x[0])
-    return cands[0][1], cands[0][2]
+    rid, e, act = cands[0][1], cands[0][2], cands[0][3]
+    return rid, e, act
 
 
 def claim(st: dict, rid: str, role: str) -> bool:
-    """原子认领（compare-and-swap）：仅目标状态匹配时迁入中间态并写 claim 字段。"""
+    """原子认领（compare-and-swap）：仅当 role 匹配 next_action 时迁入中间态并写 claim 字段。"""
     e = st.get(rid)
     if not e:
         return False
-    ok = (role == "analyst" and e["status"] in ("pending", "needs_fix")) or (
-        role == "reviewer" and e["status"] == "analyzed"
-    )
-    if not ok:
+    role = _ROLE_ALIAS.get(role, role)
+    act = next_action(e)
+    if not act or act[0] != role:
         return False
-    new_state = "analyzing" if role == "analyst" else "reviewing"
+    _, stage, phase = act
+    if phase == "design":
+        new_state = "analyzing" if stage == "req" else f"{stage}_designing"
+    elif phase == "review":
+        new_state = "reviewing" if stage == "req" else f"{stage}_reviewing"
+    elif phase == "gate":
+        new_state = f"{stage}_gating"
+    else:  # release
+        new_state = "releasing"
     log(f"CLAIM {rid} by={role} from={e['status']}")
     e["status"] = new_state
     e["claimed_by"] = role
@@ -290,50 +508,149 @@ def claim(st: dict, rid: str, role: str) -> bool:
 def build_worker_query(role: str, key: str, e: dict):
     """构造下半部 worker 的启动指令。返回 (round_n, query)。key 格式 '<project>/<req_id>'。"""
     project, rid = split_key(key)
-    if role == "analyst":
-        n = int(e["round"]) + 1
-        out = rel_analysis(project, rid, n)
+    role = _ROLE_ALIAS.get(role, role)
+    act = next_action(e)
+    if not act or act[0] != role:
+        raise RuntimeError(f"角色 {role} 与需求 {key} 当前状态 {e.get('status')} 不匹配")
+    _, stage, phase = act
+    cn = ROLE_CN.get(role, role)
+    rolefile = ROLE_FILES.get(role, f"roles/{role}.md")
+    # ---- 需求阶段（向后兼容：round 在顶层） ----
+    if stage == "req":
+        if phase == "design":
+            n = int(e["round"]) + 1
+            out = rel_analysis(project, rid, n)
+            q = [
+                f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 完成需求 {key}（项目 {project}）的第 {n} 轮分析/修改。",
+                "输入文件：",
+                f"- 需求原文：{rel_input(project, rid)}",
+            ]
+            if e.get("analysis"):
+                q.append(f"- 上一版分析（修改轮必读）：{e['analysis']}")
+            if e.get("reviews"):
+                q.append(f"- 最新评审意见（修改轮必须逐条回应）：{e['reviews'][-1]}")
+            q += [
+                "任务：",
+                "1. 按角色文件的输出模板与工作原则产出本轮分析报告；",
+                f"2. 写入 {out}；",
+                f"3. 运行 python3 scripts/statectl.py release_analyze {key} {out} 完成状态更新（该命令会校验产物存在）；",
+                "4. 完成后无需汇报，过程留痕在 worker 日志即可。",
+            ]
+            return n, "\n".join(q)
+        else:  # review
+            n = int(e["round"]) + 1
+            out = rel_review(project, rid, n)
+            analysis_file = e.get("analysis") or rel_analysis(project, rid, n)
+            q = [
+                f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 评审需求 {key}（项目 {project}）的第 {n} 轮分析。",
+                "输入文件：",
+                f"- 需求原文：{rel_input(project, rid)}",
+                f"- 分析报告：{analysis_file}",
+                f"注意：本需求 max_rounds={e.get('max_rounds', DEFAULT_MAX_ROUNDS)}，第 {n} 轮仍 FAIL 将由状态机自动强制归档，你无需关心。",
+                "任务：",
+                "1. 按角色文件的检查清单与输出模板评审；",
+                f"2. 结论 PASS 或 FAIL，写入 {out}；",
+                f"3. 运行 python3 scripts/statectl.py release_review {key} {out} PASS|FAIL 完成状态更新（该命令会校验产物存在）；",
+                "4. 完成后无需汇报。",
+            ]
+            return n, "\n".join(q)
+    # ---- 阶段链（plan/testplan/code/test/quality/security/release） ----
+    cfg = stage_cfg(stage)
+    assert cfg is not None, f"未知阶段 {stage}"
+    n = int(e["stages"].get(stage, {}).get("round", 0)) + 1
+    prev_products = stage_inputs(e)  # 本阶段的输入产物（需求原文 + 上游终版）
+    if phase == "design":
+        out = rel_stage_product(cfg, project, rid, n)
+        prev_review = e["stages"].get(stage, {}).get("reviews") or []
         q = [
-            f"你是本流水线的【需求分析师】下半部 worker。严格遵循 roles/req-analyst.md 完成需求 {key}（项目 {project}）的第 {n} 轮分析/修改。",
+            f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 完成需求 {key}（项目 {project}）的【{stage}】阶段第 {n} 轮产出。",
             "输入文件：",
-            f"- 需求原文：{rel_input(project, rid)}",
+            *[f"- {desc}：{p}" for desc, p in prev_products],
         ]
-        if e.get("analysis"):
-            q.append(f"- 上一版分析（修改轮必读）：{e['analysis']}")
-        if e.get("reviews"):
-            q.append(f"- 最新评审意见（修改轮必须逐条回应）：{e['reviews'][-1]}")
+        if prev_review:
+            q.append(f"- 本阶段上一轮评审意见（修改轮必须逐条回应）：{prev_review[-1]}")
         q += [
             "任务：",
-            "1. 按 roles/req-analyst.md 的输出模板与工作原则产出本轮分析报告；",
+            "1. 按角色文件的输出模板与工作原则产出本阶段成果；",
             f"2. 写入 {out}；",
-            f"3. 运行 python3 scripts/statectl.py release_analyze {key} {out} 完成状态更新（该命令会校验产物存在）；",
+            f"3. 运行 python3 scripts/statectl.py release_stage_design {key} {stage} {out} 完成状态更新（该命令会校验产物存在）；",
             "4. 完成后无需汇报，过程留痕在 worker 日志即可。",
         ]
         return n, "\n".join(q)
-    else:  # reviewer
-        n = int(e["round"]) + 1
-        out = rel_review(project, rid, n)
-        analysis_file = e.get("analysis") or rel_analysis(project, rid, n)
+    if phase == "review":
+        out = rel_stage_review(cfg, project, rid, n)
+        product = e["stages"].get(stage, {}).get("product")
         q = [
-            f"你是本流水线的【需求评审师】下半部 worker。严格遵循 roles/req-reviewer.md 评审需求 {key}（项目 {project}）的第 {n} 轮分析。",
+            f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 评审需求 {key}（项目 {project}）的【{stage}】阶段第 {n} 轮成果。",
             "输入文件：",
-            f"- 需求原文：{rel_input(project, rid)}",
-            f"- 分析报告：{analysis_file}",
-            f"注意：本需求 max_rounds={e.get('max_rounds', DEFAULT_MAX_ROUNDS)}，第 {n} 轮仍 FAIL 将由状态机自动强制归档，你无需关心。",
+            f"- 本阶段成果：{product}",
+            *[f"- {desc}：{p}" for desc, p in prev_products],
             "任务：",
-            "1. 按 roles/req-reviewer.md 的检查清单与输出模板评审；",
+            "1. 按角色文件的检查清单与输出模板评审；",
             f"2. 结论 PASS 或 FAIL，写入 {out}；",
-            f"3. 运行 python3 scripts/statectl.py release_review {key} {out} PASS|FAIL 完成状态更新（该命令会校验产物存在）；",
+            f"3. 运行 python3 scripts/statectl.py release_stage_review {key} {stage} {out} PASS|FAIL 完成状态更新（该命令会校验产物存在）；",
             "4. 完成后无需汇报。",
         ]
         return n, "\n".join(q)
+    if phase == "gate":
+        out = rel_stage_product(cfg, project, rid, n)
+        q = [
+            f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 对需求 {key}（项目 {project}）执行【{stage}】门禁评审（第 {n} 轮）。",
+            "输入文件：",
+            *[f"- {desc}：{p}" for desc, p in prev_products],
+            "任务：",
+            "1. 按角色文件的检查清单与输出模板完成门禁评审；",
+            f"2. 结论 PASS 或 FAIL，写入 {out}；",
+            f"3. 运行 python3 scripts/statectl.py release_gate {key} {stage} {out} PASS|FAIL 完成状态更新（该命令会校验产物存在）；",
+            "4. 完成后无需汇报。",
+        ]
+        return n, "\n".join(q)
+    # release
+    out = rel_stage_product(RELEASE, project, rid, n)
+    q = [
+        f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 为需求 {key}（项目 {project}）执行发布（第 {n} 轮）。",
+        "输入文件：",
+        *[f"- {desc}：{p}" for desc, p in prev_products],
+        "任务：",
+        "1. 按角色文件的输出模板产出发布说明；",
+        f"2. 写入 {out}；",
+        f"3. 运行 python3 scripts/statectl.py release_release {key} {out} 完成状态更新（该命令会校验产物存在并生成最终交付物归档）；",
+        "4. 完成后无需汇报。",
+    ]
+    return n, "\n".join(q)
+
+
+def stage_inputs(e: dict) -> list:
+    """当前状态阶段的输入产物清单 [(描述, 相对路径), ...]（需求原文 + 上游各阶段终版）。"""
+    s = e["status"]
+    outs = []
+    if e.get("analysis"):
+        # analysis/{project}/{rid}-r{N}.md → input/{project}/{rid}.md
+        parts = e["analysis"].split("/")
+        if len(parts) >= 3 and parts[0] == "analysis":
+            outs.append(("需求原文", f"input/{parts[1]}/{parts[2].rsplit('-', 1)[0]}.md"))
+        elif e.get("reviews"):
+            rp = e["reviews"][0].split("/")
+            if len(rp) >= 3:
+                outs.append(("需求原文", f"input/{rp[1]}/{rp[2].rsplit('-', 1)[0]}.md"))
+    if e.get("analysis"):
+        outs.append(("需求分析（approved 终版）", e["analysis"]))
+    for stg in STAGES:
+        prod = e["stages"].get(stg["name"], {}).get("product")
+        if prod:
+            outs.append((f"{stg['name']} 阶段终版", prod))
+    for g in GATES:
+        prod = e["stages"].get(g["name"], {}).get("product")
+        if prod:
+            outs.append((f"{g['name']} 门禁结论", prod))
+    return outs
 
 
 def spawn_worker(role: str, key: str, round_n: int, query: str) -> int:
     """setsid 拉起下半部 worker（独立会话，脱离 cron 进程组，不受 3 分钟限制）。"""
     project, rid = split_key(key)
-    model = ANALYST_MODEL if role == "analyst" else REVIEWER_MODEL
-    provider = ANALYST_PROVIDER if role == "analyst" else REVIEWER_PROVIDER
+    role = _ROLE_ALIAS.get(role, role)
+    model, provider = ROLE_MODELS.get(role, (ANALYST_MODEL, ANALYST_PROVIDER))
     os.makedirs(LOG_DIR, exist_ok=True)
     logf = open(os.path.join(LOG_DIR, worker_log_name(project, rid, round_n)), "ab")
     cmd = ["hermes", "chat", "-q", query, "-m", model, "-Q"]
@@ -363,23 +680,30 @@ def drain_alarms(new_alarms: list) -> str:
 
 
 def write_artifact(key: str, e: dict) -> None:
-    """评审通过（含强制）后归档：结论摘要 + 原文 + 最终分析 + 全部评审历史。
+    """归档：approved（需求评审）或 released（完整交付物）。
     key 格式 '<project>/<req_id>' → artifacts/<project>/<req_id>.md。"""
     project, rid = split_key(key)
     os.makedirs(os.path.join(ARTIFACT_DIR, project), exist_ok=True)
     reviews = e.get("reviews") or []
     forced = e.get("forced", False)
-    parts = [f"# 需求评审归档：{rid}", "",
+    status = e.get("status", "approved")
+    stg_done = [n for n, s in (e.get("stages") or {}).items() if s.get("status") == "done"]
+    is_released = status == "released"
+    parts = [f"# 需求交付归档：{rid}", "",
              f"> 项目：{project} ｜ 归档：{rel_artifact(project, rid)}", ""]
     # 结论摘要区（快速全貌：接手开发 / 审计核对的第一屏）
     parts += ["## 结论摘要", "",
-              f"- 状态：**{e.get('status', 'approved')}**（{'⚠️ 达到轮次上限强制归档，需人工复核' if forced else '正常评审通过'}）",
-              f"- 最终轮次：r{e.get('round', 1)}（共 {len(reviews)} 轮评审）",
-              f"- 最终分析：`{e.get('analysis', '')}`",
-              f"- 评审历史：{' → '.join('`' + r + '`' for r in reviews) if reviews else '（无）'}（最后一轮为最终评审）",
+              f"- 状态：**{status}**（{'⚠️ 达到轮次上限强制归档，需人工复核' if forced and not is_released else '完整交付' if is_released else '正常评审通过'}）",
+              f"- 需求评审轮次：r{e.get('round', 1)}（共 {len(reviews)} 轮评审）",
+              f"- 阶段进度：{' → '.join(stg_done) if stg_done else '（未进入阶段链）'}"
+              + (f" ｜ 最终发布：`{e['stages']['release']['product']}`" if is_released and e.get('stages', {}).get('release', {}).get('product') else ""),
               f"- 归档时间：{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
-              "",
-              "> 接手开发请以【需求原文 + 最终分析 + 最终评审（最后一轮）】为准；前面轮次的评审意见为过程记录（已解决或已驳回）。",
+              ""]
+    if is_released:
+        parts += [f"- 最终分析：`{e.get('analysis', '')}`",
+                  "- 阶段产物：" + ("；".join(f"{n}=`{s.get('product')}`" for n, s in (e.get('stages') or {}).items() if s.get("product")) or "（无）"),
+                  "- 发布说明：`" + e["stages"]["release"]["product"] + "`", ""]
+    parts += ["> 接手开发请以【需求原文 + 最终分析 + 各阶段终版产物 + 门禁结论】为准；过程轮次意见为过程记录（已解决或已驳回）。",
               ""]
     orig = abs_input(project, rid)
     if os.path.exists(orig):
@@ -391,17 +715,31 @@ def write_artifact(key: str, e: dict) -> None:
             with open(ap, encoding="utf-8") as f:
                 parts += [f"## 最终分析（{e['analysis']}）", "", f.read().strip(), ""]
     if reviews:
-        parts += [f"## 评审历史（{len(reviews)} 轮）", ""]
+        parts += [f"## 需求评审历史（{len(reviews)} 轮）", ""]
         for rp in reviews:
             full = os.path.join(WORKSPACE_DIR, rp)
             if os.path.exists(full):
                 with open(full, encoding="utf-8") as f:
                     parts += [f"### {rp}", "", f.read().strip(), ""]
+    # 阶段产物与评审（完整交付物）
+    for stg in STAGES + GATES:
+        s = (e.get("stages") or {}).get(stg["name"], {})
+        prod = s.get("product")
+        if prod:
+            full = os.path.join(WORKSPACE_DIR, prod)
+            if os.path.exists(full):
+                with open(full, encoding="utf-8") as f:
+                    parts += [f"## {stg['name']} 阶段终版（{prod}）", "", f.read().strip(), ""]
+        for rp in s.get("reviews", []):
+            full = os.path.join(WORKSPACE_DIR, rp)
+            if os.path.exists(full):
+                with open(full, encoding="utf-8") as f:
+                    parts += [f"### {stg['name']} 评审（{rp}）", "", f.read().strip(), ""]
     if forced:
         parts += ["## 备注", "本需求达到轮次上限被强制归档（forced=true），仍有未解决意见，请人工复核。"]
     with open(abs_artifact(project, rid), "w", encoding="utf-8") as f:
         f.write("\n".join(parts) + "\n")
-    log(f"ARCHIVE {key} file={rel_artifact(project, rid)} forced={forced}")
+    log(f"ARCHIVE {key} file={rel_artifact(project, rid)} status={status}")
 
 
 # ---------------- 上半部 tick ----------------
@@ -414,10 +752,10 @@ def analyst_tick() -> int:
         alarms += stale_recovery(st)
         found = find_claimable(st, "analyst")
         if found:
-            rid, e = found
+            rid, e, act = found
             if claim(st, rid, "analyst"):
-                n, query = build_worker_query("analyst", rid, e)
-                pid = spawn_worker("analyst", rid, n, query)
+                n, query = build_worker_query(act[0], rid, e)
+                pid = spawn_worker(act[0], rid, n, query)
                 st[rid]["worker_pid"] = pid
         write_status(st)
         out = drain_alarms(alarms)
@@ -432,10 +770,33 @@ def reviewer_tick() -> int:
         alarms = stale_recovery(st)
         found = find_claimable(st, "reviewer")
         if found:
-            rid, e = found
+            rid, e, act = found
             if claim(st, rid, "reviewer"):
-                n, query = build_worker_query("reviewer", rid, e)
-                pid = spawn_worker("reviewer", rid, n, query)
+                n, query = build_worker_query(act[0], rid, e)
+                pid = spawn_worker(act[0], rid, n, query)
+                st[rid]["worker_pid"] = pid
+        write_status(st)
+        out = drain_alarms(alarms)
+    if out:
+        print(out)
+    return 0
+
+
+def worker_tick() -> int:
+    """通用阶段 tick：注册 → stale 恢复 → 按 next_action 认领并 spawn 对应角色 worker。
+    一次只认领一个（最老优先，防唤醒风暴 + 规避 3 分钟限制）。"""
+    with acquire_lock() as _:
+        st = read_status()
+        alarms = []
+        register_new_inputs(st)
+        alarms += stale_recovery(st)
+        found = find_claimable(st)  # 任意角色
+        if found:
+            rid, e, act = found
+            role = act[0]
+            if claim(st, rid, role):
+                n, query = build_worker_query(role, rid, e)
+                pid = spawn_worker(role, rid, n, query)
                 st[rid]["worker_pid"] = pid
         write_status(st)
         out = drain_alarms(alarms)
@@ -451,14 +812,14 @@ def weekly_tick() -> int:
         for key, e in sorted(st.items()):
             project, rid = split_key(key)
             s = e.get("status")
-            if s == "approved":
+            if s in ("approved", "released"):
                 if not os.path.exists(abs_artifact(project, rid)):
-                    issues.append(f"[AUDIT] 需求 {key} 已 approved 但缺 {rel_artifact(project, rid)}")
+                    issues.append(f"[AUDIT] 需求 {key} 已 {s} 但缺 {rel_artifact(project, rid)}")
                 if e.get("forced"):
                     issues.append(f"[AUDIT] 需求 {key} 为强制归档（forced），请人工复核 {rel_artifact(project, rid)}")
             elif s == "blocked":
                 issues.append(f"[AUDIT] 需求 {key} 处于 blocked，需人工介入（python3 scripts/statectl.py requeue {key}）")
-            elif s in ("analyzing", "reviewing"):
+            elif s in MID_STATES:
                 issues.append(f"[AUDIT] 需求 {key} 滞留 {s}（中间态不应跨周存在）")
         if os.path.isdir(INPUT_DIR):
             for proj in sorted(os.listdir(INPUT_DIR)):
@@ -550,6 +911,156 @@ def release_review(rid: str, product: str, conclusion: str) -> int:
     return 0
 
 
+# ---------------- 阶段链 release（plan/testplan/code/test/quality/security/release） ----------------
+
+def release_stage_design(rid: str, stage: str, product: str) -> int:
+    """阶段产出完成后调用：校验产物 → {stage}_designing → {stage}_reviewing；记录 stages[stage].product。"""
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        expect = f"{stage}_designing"
+        if not e or e["status"] != expect:
+            print(f"release_stage_design: {rid} 状态不是 {expect}，拒绝", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, product)
+        if not os.path.exists(full):
+            alarms = []
+            rollback_entry(st, rid, alarms, reason="missing-product")
+            write_status(st)
+            print(f"release_stage_design: 产物 {product} 不存在，已回滚", file=sys.stderr)
+            return 1
+        e["stages"][stage]["product"] = product
+        e["stages"][stage]["status"] = "reviewing"
+        e["status"] = f"{stage}_reviewing"
+        clear_claim(e)
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"STAGE  {rid} {stage} design round={e['stages'][stage]['round']} file={product}")
+        log(f"STATE  {rid} {stage}_designing->{stage}_reviewing")
+    return 0
+
+
+def release_stage_review(rid: str, stage: str, product: str, conclusion: str) -> int:
+    """阶段评审完成后调用：round+1 → {stage}_done(PASS) / {stage}_designing 重做(FAIL)。
+    阶段评审 FAIL 达 max_rounds → blocked（质量门禁不放行，人工介入）。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion not in ("PASS", "FAIL"):
+        print(f"release_stage_review: conclusion 必须为 PASS 或 FAIL，收到 {conclusion!r}", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        expect = f"{stage}_reviewing"
+        if not e or e["status"] != expect:
+            print(f"release_stage_review: {rid} 状态不是 {expect}，拒绝", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, product)
+        if not os.path.exists(full):
+            alarms = []
+            rollback_entry(st, rid, alarms, reason="missing-product")
+            write_status(st)
+            print(f"release_stage_review: 产物 {product} 不存在，已回滚", file=sys.stderr)
+            return 1
+        s = e["stages"][stage]
+        s["round"] = int(s.get("round", 0)) + 1
+        s["reviews"] = s.get("reviews", []) + [product]
+        if conclusion == "PASS":
+            s["status"] = "done"
+            e["status"] = f"{stage}_done"
+        else:
+            if s["round"] >= int(e.get("max_rounds", DEFAULT_MAX_ROUNDS)):
+                e["status"] = "blocked"
+                with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                    f.write(
+                        f"[BLOCKED] 需求 {rid} 的【{stage}】阶段第 {s['round']} 轮评审仍 FAIL，"
+                        f"已达 max_rounds，已停止流转，请人工介入（requeue {rid} 重跑）。\n"
+                    )
+            else:
+                s["status"] = "pending"
+                e["status"] = f"{stage}_designing"
+        clear_claim(e)
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"REVIEW  {rid} {stage} round={s['round']} file={product} conclusion={conclusion}")
+        log(f"STATE  {rid} {stage}_reviewing->{e['status']}")
+    return 0
+
+
+def release_gate(rid: str, stage: str, product: str, conclusion: str) -> int:
+    """门禁评审完成后调用：round+1 → {stage}_done(PASS) / 重试(FAIL)；达上限 → blocked。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion not in ("PASS", "FAIL"):
+        print(f"release_gate: conclusion 必须为 PASS 或 FAIL，收到 {conclusion!r}", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        expect = f"{stage}_gating"
+        if not e or e["status"] != expect:
+            print(f"release_gate: {rid} 状态不是 {expect}，拒绝", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, product)
+        if not os.path.exists(full):
+            alarms = []
+            rollback_entry(st, rid, alarms, reason="missing-product")
+            write_status(st)
+            print(f"release_gate: 产物 {product} 不存在，已回滚", file=sys.stderr)
+            return 1
+        s = e["stages"][stage]
+        s["round"] = int(s.get("round", 0)) + 1
+        s["reviews"] = s.get("reviews", []) + [product]
+        if conclusion == "PASS":
+            s["product"] = product
+            s["status"] = "done"
+            e["status"] = f"{stage}_done"
+        else:
+            if s["round"] >= int(e.get("max_rounds", DEFAULT_MAX_ROUNDS)):
+                e["status"] = "blocked"
+                with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                    f.write(
+                        f"[BLOCKED] 需求 {rid} 的【{stage}】门禁第 {s['round']} 轮仍 FAIL，"
+                        f"已达 max_rounds，已停止流转，请人工介入。\n"
+                    )
+            else:
+                s["status"] = "pending"
+                e["status"] = f"{stage}_gating"
+        clear_claim(e)
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"GATE   {rid} {stage} round={s['round']} file={product} conclusion={conclusion}")
+        log(f"STATE  {rid} {stage}_gating->{e['status']}")
+    return 0
+
+
+def release_release(rid: str, product: str) -> int:
+    """发布完成后调用：校验产物 → releasing → released；生成最终交付物归档。"""
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e or e["status"] != "releasing":
+            print(f"release_release: {rid} 状态不是 releasing，拒绝", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, product)
+        if not os.path.exists(full):
+            alarms = []
+            rollback_entry(st, rid, alarms, reason="missing-product")
+            write_status(st)
+            print(f"release_release: 产物 {product} 不存在，已回滚", file=sys.stderr)
+            return 1
+        s = e["stages"]["release"]
+        s["round"] = int(s.get("round", 0)) + 1
+        s["product"] = product
+        s["status"] = "done"
+        e["status"] = "released"
+        clear_claim(e)
+        e["updated_at"] = now_iso()
+        write_artifact(rid, e)  # 完整交付物归档
+        write_status(st)
+        log(f"RELEASE {rid} round={s['round']} file={product}")
+        log(f"STATE  {rid} releasing->released")
+    return 0
+
+
 # ---------------- 人工/调试子命令 ----------------
 
 def cmd_register() -> int:
@@ -573,13 +1084,13 @@ def cmd_stale() -> int:
     return 0
 
 
-def cmd_next(role: str) -> int:
+def cmd_next(role: str = None) -> int:
     with acquire_lock() as _:
         st = read_status()
         found = find_claimable(st, role)
     if found:
-        rid, e = found
-        print(f"{rid}\t{e['status']}\tround={e['round']}\tmax_rounds={e.get('max_rounds')}")
+        rid, e, act = found
+        print(f"{rid}\t{e['status']}\tnext={act[0]}（{act[1]}/{act[2]}）\tround={e['round']}\tmax_rounds={e.get('max_rounds')}")
     return 0
 
 
@@ -604,7 +1115,7 @@ def cmd_setpid(rid: str, pid: str) -> int:
 def cmd_rollback(rid: str, reason: str = "manual") -> int:
     with acquire_lock() as _:
         st = read_status()
-        if rid not in st or st[rid]["status"] not in ("analyzing", "reviewing"):
+        if rid not in st or st[rid]["status"] not in MID_STATES:
             print(f"{rid} 不在中间态，无需回滚", file=sys.stderr)
             return 1
         alarms = []
@@ -679,18 +1190,22 @@ def cmd_notify() -> int:
             return 0
         new_items = []
         for key, e in sorted(st.items()):
-            if e.get("status") != "approved":
+            if e.get("status") not in ("approved", "released"):
                 continue
             upd = e.get("updated_at", "")
             if marker and upd <= marker:
                 continue
             new_items.append((key, e))
         if new_items:
-            lines = [f"📋 需求评审结果（新增 {len(new_items)} 项归档）"]
+            lines = [f"📋 流水线结果（新增 {len(new_items)} 项）"]
             for key, e in new_items:
                 project, rid = split_key(key)
-                forced = " ⚠️强制归档（需人工复核）" if e.get("forced") else ""
-                lines.append(f"✅ {key} — 第 {e.get('round', '?')} 轮通过{forced}（{rel_artifact(project, rid)}）")
+                if e.get("status") == "released":
+                    forced = " 🚀 已发布" if not e.get("forced") else " ⚠️强制发布（需人工复核）"
+                    lines.append(f"🚀 {key} — 完整交付（{rel_artifact(project, rid)}）")
+                else:
+                    forced = " ⚠️强制归档（需人工复核）" if e.get("forced") else ""
+                    lines.append(f"✅ {key} — 第 {e.get('round', '?')} 轮评审通过{forced}（{rel_artifact(project, rid)}）")
             out = "\n".join(lines)
         else:
             out = ""
@@ -703,7 +1218,6 @@ def cmd_notify() -> int:
 
 # ---------------- 诊断（DFx：一键健康检查） ----------------
 
-STATE_SET = {"pending", "analyzing", "analyzed", "reviewing", "needs_fix", "approved", "blocked"}
 REQUIRED_FIELDS = ["status", "round", "max_rounds", "forced", "analysis",
                    "reviews", "failures", "created_at", "updated_at"]
 
@@ -748,7 +1262,7 @@ def diagnose() -> int:
         s = e.get("status")
         if s not in STATE_SET:
             add("FAIL", "D4", f"{key} 非法状态 {s!r}（合法: {sorted(STATE_SET)}）")
-        if s in ("analyzing", "reviewing"):
+        if s in MID_STATES:
             ca = e.get("claimed_at")
             if not ca:
                 add("WARN", "D5", f"{key} 处于 {s} 但无 claimed_at（下个 tick 的 stale 恢复会处理）")
@@ -768,10 +1282,10 @@ def diagnose() -> int:
         for k in (e.get("analysis"),) + tuple(e.get("reviews", [])):
             if k and not os.path.exists(os.path.join(WORKSPACE_DIR, k)):
                 add("WARN", "D7", f"{key} 引用文件缺失: {k}")
-        if s == "approved":
+        if s in ("approved", "released"):
             project, rid = split_key(key)
             if not os.path.exists(abs_artifact(project, rid)):
-                add("WARN", "D8", f"{key} 已 approved 但缺 {rel_artifact(project, rid)}")
+                add("WARN", "D8", f"{key} 已 {s} 但缺 {rel_artifact(project, rid)}")
             if e.get("forced"):
                 add("WARN", "D8", f"{key} 为强制归档（forced），请人工复核未解决意见")
 
@@ -807,7 +1321,7 @@ def diagnose() -> int:
 
     # D12 cron job 存在性
     out = _sh(["hermes", "cron", "list"])
-    for name in ("req-analyst-top", "req-reviewer-top", "req-weekly-audit", "req-result-notify"):
+    for name in ("req-analyst-top", "req-reviewer-top", "req-worker-top", "req-weekly-audit", "req-result-notify"):
         if f"Name:      {name}" not in out and f"Name: {name}" not in out:
             add("WARN", "D12", f"cron job {name} 缺失（重建命令见 README 快速开始）")
 
@@ -841,6 +1355,8 @@ def main(argv) -> int:
             return analyst_tick()
         if cmd == "reviewer_tick":
             return reviewer_tick()
+        if cmd == "worker_tick":
+            return worker_tick()
         if cmd == "weekly_tick":
             return weekly_tick()
         if cmd == "diagnose":
@@ -851,12 +1367,20 @@ def main(argv) -> int:
             return release_analyze(*rest)
         if cmd == "release_review":
             return release_review(*rest)
+        if cmd == "release_stage_design":
+            return release_stage_design(*rest)
+        if cmd == "release_stage_review":
+            return release_stage_review(*rest)
+        if cmd == "release_gate":
+            return release_gate(*rest)
+        if cmd == "release_release":
+            return release_release(*rest)
         if cmd == "register":
             return cmd_register()
         if cmd == "stale":
             return cmd_stale()
         if cmd == "next":
-            return cmd_next(rest[0])
+            return cmd_next(rest[0] if rest else None)
         if cmd == "claim":
             return cmd_claim(rest[0], rest[1])
         if cmd == "setpid":

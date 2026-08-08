@@ -12,9 +12,16 @@ zteam/                       # 资产层（git 跟踪）
 ├── roles/ scripts/ docs/          # 角色定义 / 代码 / 文档
 └── workspace/                     # 数据层（运行数据，按项目组织）
     ├── input/<project>/{req_id}.md          # 需求原文（用户投放区，一个文件一个需求）
-    ├── analysis/<project>/{req_id}-r{N}.md  # 分析报告（N = 轮次，每轮新文件，不覆盖）
-    ├── review/<project>/{req_id}-r{N}.md    # 评审意见
-    ├── artifacts/<project>/{req_id}.md      # 终版产出（评审通过后归档，含结论摘要+最终分析+全部评审历史）
+    ├── analysis/<project>/{req_id}-r{N}.md  # 需求分析报告（N = 轮次，每轮新文件，不覆盖）
+    ├── review/<project>/{req_id}-r{N}.md    # 需求评审意见
+    ├── plans/<project>/{req_id}-r{N}.md     # 开发方案（阶段链产物，同名 -review.md 为评审意见）
+    ├── testplans/<project>/{req_id}-r{N}.md # 测试方案
+    ├── code/<project>/{req_id}-r{N}.md      # 代码交付（含源码/说明；评审意见同目录 -review.md）
+    ├── tests/<project>/{req_id}-r{N}.md     # 测试代码与执行报告
+    ├── quality/<project>/{req_id}-r{N}.md   # 质量门禁结论
+    ├── security/<project>/{req_id}-r{N}.md  # 安全红线门禁结论
+    ├── release/<project>/{req_id}-r{N}.md   # 发布说明（released 终态）
+    ├── artifacts/<project>/{req_id}.md      # 终版产出（评审通过 / 完整交付后归档）
     ├── logs/                      # pipeline.log（审计）+ worker-*.log（下半部明细）
     └── status.json                # 状态机（唯一事实来源；key = <project>/<req_id>）
 ```
@@ -77,6 +84,8 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 
 ## 3. 状态集合
 
+### 3.1 需求阶段（评审通过后进入阶段链）
+
 | 状态 | 含义 | 持有者 |
 |------|------|--------|
 | `pending` | 已登记，等待分析师认领 | 无（可被上半部·分析师认领） |
@@ -84,8 +93,23 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 | `analyzed` | 分析完成，等待评审 | 无（可被上半部·评审师认领） |
 | `reviewing` | 评审 worker 处理中（中间态，防竞态） | reviewer worker |
 | `needs_fix` | 评审未通过，等待分析师修改 | 无（可被上半部·分析师认领） |
-| `approved` | 评审通过，已归档（终态） | — |
+| `approved` | 需求评审通过（进入阶段链的起点，非终态） | — |
 | `blocked` | 处理失败达到上限，需人工介入（终态） | — |
+
+### 3.2 阶段链状态（需求 approved 后按序推进）
+
+阶段序列：`plan` → `testplan` → `code` → `test` → `quality`（门禁）→ `security`（门禁）→ `release`（终态）。
+
+| 状态模式 | 含义 | 持有者 |
+|----------|------|--------|
+| `{stage}_designing` | 阶段产出者处理中（中间态） | 该阶段 designer/developer |
+| `{stage}_reviewing` | 阶段评审者处理中（中间态） | 该阶段 reviewer |
+| `{stage}_done` | 阶段评审通过（等待下一阶段认领） | — |
+| `{stage}_gating` | 门禁评审处理中（quality/security，中间态） | 门禁评审者 |
+| `releasing` | 发布者处理中（中间态） | releaser |
+| `released` | 完整交付（终态：最终交付物归档 + 通知） | — |
+
+阶段评审 FAIL：回 `{stage}_designing`（下一轮重做）；连续 FAIL 达 `max_rounds` → `blocked`（质量门禁不放行）。
 
 ## 4. 状态迁移表（唯一合法路径）
 
@@ -95,6 +119,13 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 | `analyzed` | 上半部·评审师认领 | 原子置 `reviewing`（写 claim）；worker 写 `review/{project}/{req_id}-r{N}.md` | `approved` 或 `needs_fix` |
 | `needs_fix` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{project}/{req_id}-r{N+1}.md` | `analyzed` |
 | `analyzed`（N = max_rounds） | 轮次已达上限 | 强制归档，置 `approved` + `forced: true` | `approved` |
+| `approved` | 上半部·通用 tick 认领 | 原子置 `plan_designing`；worker 写 `plans/{project}/{req_id}-r{N}.md` | `plan_reviewing` |
+| `{stage}_designing` | 上半部·通用 tick 认领 | 原子置 `{stage}_reviewing`（记 `stages[stage].product`） | `{stage}_reviewing` |
+| `{stage}_reviewing` | 上半部·通用 tick 认领 | worker 写 `{dir}/{project}/{req_id}-r{N}-review.md` | `{stage}_done` 或 `{stage}_designing` |
+| `{stage}_done` | 上半部·通用 tick 认领 | 推进下一阶段（design/gate/release） | 下一阶段中间态 |
+| `{stage}_gating` | 上半部·通用 tick 认领 | worker 写门禁结论 | `{stage}_done` 或 重试 |
+| `releasing` | 上半部·通用 tick 认领 | worker 写发布说明 `release/{project}/{req_id}-r{N}.md` | `released` |
+| `released` | 发布完成 | **完整交付物归档**（结论摘要+各阶段终版+门禁结论+发布说明）+ 通知 | `released`（终态） |
 | 任意非终态 | 失败 ≥ 2 次 | 置 `blocked`，告警 | `blocked` |
 | `blocked` | 人工处理后重投 | 重置失败计数，状态回 `pending` | `pending` |
 
@@ -167,11 +198,39 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 - 手动回滚中间态：`python3 scripts/statectl.py rollback <req_id>`；
 - 全程可审计：`workspace/logs/pipeline.log`（每步状态迁移）+ `workspace/logs/worker-*.log`（每次下半部执行明细）。
 
-## 8. 上半部脚本与下半部 worker 职责划分
+## 7.5 阶段流水线（需求 approved 后自动推进）
 
+需求评审 `approved` 后由通用 tick（`watchdog-worker.py`）驱动阶段链，无需人工干预：
+
+| 阶段 | 产出者角色 | 评审者角色 | 产物目录 | 模型 |
+|------|-----------|-----------|---------|------|
+| `plan` | dev-plan-designer | dev-plan-reviewer | `plans/` | flash / pro |
+| `testplan` | test-plan-designer | test-plan-reviewer | `testplans/` | flash / pro |
+| `code` | code-developer | code-reviewer | `code/` | flash / pro |
+| `test` | test-developer | test-reviewer | `tests/` | flash / pro |
+| `quality`（门禁） | — | quality-reviewer | `quality/` | pro |
+| `security`（门禁） | — | security-reviewer | `security/` | pro |
+| `release`（终态） | — | releaser | `release/` | flash |
+
+**release 命令**（下半部 worker 完成产物后调用，自动校验产物存在并写审计）：
+
+```bash
+python3 scripts/statectl.py release_stage_design {key} {stage} {产物}          # *_designing → *_reviewing
+python3 scripts/statectl.py release_stage_review {key} {stage} {评审意见} PASS|FAIL  # *_reviewing → *_done / 重做
+python3 scripts/statectl.py release_gate {key} {stage} {门禁结论} PASS|FAIL     # *_gating → *_done / 重试
+python3 scripts/statectl.py release_release {key} {发布说明}                     # releasing → released（完整交付物归档）
+```
+
+- 每阶段 `stages[stage]` 独立记 `round`/`product`/`reviews`/`status`（与需求评审轮次互不干扰）；
+- 阶段评审 FAIL → 回 `{stage}_designing` 重做（带上一轮评审意见）；连续 FAIL 达 `max_rounds` → `blocked`（质量门禁不放行，人工介入 `requeue`）；
+- 门禁（quality/security）FAIL 同样重试，达上限 → `blocked`；
+- `released` 为完整交付终态：`artifacts/{project}/{req_id}.md` 升级为**最终交付物**（结论摘要 + 需求原文 + 最终分析 + 需求评审历史 + 各阶段终版产物 + 门禁结论 + 发布说明），notify 推送 🚀。
+
+## 8. 上半部脚本与下半部 worker 职责划分
 | 组件 | 部分 | 职责 | 禁止 |
 |------|------|------|------|
 | `watchdog-analyst.py` | 上半部 | 调 `statectl.py analyst_tick`：注册 workspace/input/<project>/ 新文件；stale 恢复；原子认领 `pending`/`needs_fix` → `analyzing`；按 `ANALYST_MODEL` spawn 分析师 worker；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
+| `watchdog-worker.py` | 上半部 | 调 `statectl.py worker_tick`：注册 + stale 恢复 + 按 `next_action` 认领**阶段链**任意角色（方案/测试方案/代码/测试/门禁/发布）并 spawn；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
 | analyst worker | 下半部 | 读原文/意见 → 按 `roles/req-analyst.md` 干活 → 落盘 → 调 `statectl.py release_analyze`（`analyzing→analyzed`，清 claim） | 评审、改需求原文 |
 | `watchdog-reviewer.py` | 上半部 | 调 `statectl.py reviewer_tick`：stale 恢复；原子认领 `analyzed` → `reviewing`；按 `REVIEWER_MODEL` spawn 评审 worker；无活静默 | 写产物、改分析文档、直接调 LLM |
 | reviewer worker | 下半部 | 读原文/分析 → 按 `roles/req-reviewer.md` 评审 → 落盘 → 调 `statectl.py release_review`（`reviewing→approved\|needs_fix`，清 claim） | 修改分析文档 |

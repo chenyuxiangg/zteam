@@ -25,19 +25,21 @@
 ┌─ 上半部（cron no_agent 纯脚本，秒级，零 token，3 分钟内绰绰有余）────┐
 │  watchdog-analyst.py   注册新需求 / stale 恢复 / 原子认领 / spawn 分析师 worker │
 │  watchdog-reviewer.py  stale 恢复 / 原子认领 / spawn 评审 worker            │
+│  watchdog-worker.py    阶段链调度：方案/测试方案/代码/测试/门禁/发布 认领+spawn │
 │  watchdog-weekly.py    每周一致性巡检（只告警）                             │
 │  watchdog-notify.py    每 15 分钟：有新归档才输出报告（cron deliver 推送）    │
 └──────────────────────────────────────────────────────────────┬────────────┘
                           setsid hermes chat -q -m <model> &
 ┌──────────────────────────────────────────────────────────────▼────────────┐
 │ ── 下半部（独立 Hermes 进程，分钟级，无 3 分钟限制，进程级持久）──          │
-│   analyst worker → 读原文/查资料 → 按 roles/req-analyst.md 产出需求分解文档（FR/NFR/竞品分析）│
-│                    → statectl.py release_analyze（状态落定）               │
-│   reviewer worker → 读原文/分析 → 按 roles/req-reviewer.md 评审                │
-│                    → statectl.py release_review（状态落定 + 归档）         │
+│   需求阶段：analyst → req-analyst.md 产出需求分解文档 → release_analyze      │
+│             reviewer → req-reviewer.md 评审 → release_review（PASS→阶段链） │
+│   阶段链：  方案设计→方案评审→测试方案→测试方案评审→代码→代码评审→          │
+│             测试开发→测试评审→质量门禁→安全门禁→发布（released 完整交付）    │
 └─────────────────────────────────────────────────────────────────────────────┘
-       状态机：pending → analyzing → analyzed → reviewing → needs_fix ↺ / approved
-       （状态机全部确定性逻辑集中在 scripts/statectl.py，flock 串行化）
+       状态机：pending → analyzing → analyzed → reviewing → approved
+       → plan → testplan → code → test → quality → security → released（终态）
+      （状态机全部确定性逻辑集中在 scripts/statectl.py，flock 串行化）
 ```
 
 ## 目录结构
@@ -53,24 +55,28 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 └── workspace/                 # 数据层（运行数据，按项目组织；uninstall --full 清空对象）
     ├── status.json            # 状态机（唯一事实来源；key = <project>/<req_id>）
     ├── input/<project>/<req_id>.md          # 需求原文投放区
-    ├── analysis/<project>/<req_id>-r{N}.md  # 分析报告（只保留最新轮，历史轮次进 archive/）
-    ├── review/<project>/<req_id>-r{N}.md    # 评审意见（只保留最新轮，历史轮次进 archive/）
+    ├── analysis/<project>/<req_id>-r{N}.md  # 需求分析（只保留最新轮，历史轮次进 archive/）
+    ├── review/<project>/<req_id>-r{N}.md    # 需求评审意见（只保留最新轮，历史轮次进 archive/）
+    ├── plans/ testplans/ code/ tests/       # 阶段链产物（方案/测试方案/代码/测试，按项目子目录）
+    ├── quality/ security/ release/          # 门禁结论 / 发布说明（按项目子目录）
     ├── archive/<project>/                   # 历史轮次归档（legacy-r{N}-20260807.md 格式，人工整理用）
-    ├── artifacts/<project>/<req_id>.md      # 终版产出：结论摘要 + 需求原文 + 最终分析 + 全部评审历史（接手开发看这里）
+    ├── artifacts/<project>/<req_id>.md      # 终版产出：结论摘要 + 需求原文 + 最终分析 + 各阶段终版 + 评审历史（接手开发看这里）
     └── logs/                  # pipeline.log（审计）+ worker-*.log（下半部明细）+ alarms.txt
 ```
 
 ## 快速开始（3 步）
 
 1. **投放需求**：把需求原文放入 `workspace/input/<project>/req-001.md`（可一次放多个；上半部脚本会自动登记）；
-2. **创建三个 cron job**（全部 `no_agent` 纯脚本，不需要模型）：
+2. **创建 cron job**（全部 `no_agent` 纯脚本，不需要模型；**推荐直接用 `bash install.sh` 一键创建，见下节**）：
 
 ```bash
 # 前提：CLI 只接受 $HERMES_HOME/scripts/（默认 ~/.hermes/scripts/）下的真实文件（软链会被拒绝），
 # 因此先建 2 行 exec 薄壳（本流水线已建好，逻辑唯一实现在工作区）：
 #   $HERMES_HOME/scripts/watchdog-analyst.sh   -> exec python3 <工作区>/scripts/watchdog-analyst.py
 #   $HERMES_HOME/scripts/watchdog-reviewer.sh  -> exec python3 <工作区>/scripts/watchdog-reviewer.py
+#   $HERMES_HOME/scripts/watchdog-worker.sh    -> exec python3 <工作区>/scripts/watchdog-worker.py
 #   $HERMES_HOME/scripts/watchdog-weekly.sh    -> exec python3 <工作区>/scripts/watchdog-weekly.py
+#   $HERMES_HOME/scripts/watchdog-notify.sh    -> exec python3 <工作区>/scripts/watchdog-notify.py
 
 hermes cron create "*/5 * * * *" --name req-analyst-top  --script watchdog-analyst.sh  --no-agent --repeat 0
 hermes cron create "*/5 * * * *" --name req-reviewer-top --script watchdog-reviewer.sh --no-agent --repeat 0
