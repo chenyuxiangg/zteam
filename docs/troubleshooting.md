@@ -100,7 +100,7 @@ cd ~/cyx/req-review && python3 scripts/statectl.py diagnose
 ### S10 有告警但收不到推送
 | 原因 | 说明 |
 |---|---|
-| job 的 `deliver=local`（当前默认） | 告警只保存不推送；要推送需连接平台（如 Telegram）并 `hermes cron edit <job_id> --deliver telegram` |
+| job 的 `deliver=local`（纯本地模式） | 告警/结果只保存不推送。install.sh 默认 `telegram`（可用 `REQREVIEW_DELIVER=local` 覆盖）；若收不到推送，先 `hermes cron list` 看 Deliver 是否为 telegram，不符则重跑 `bash install.sh` 自动校正，或手动 `hermes cron edit <job_id> --deliver telegram` |
 | 上半部无活时静默是**设计** | 空 stdout = 不投递；只有 BLOCKED/FORCED/异常才输出 |
 
 ## 3. 数据视图速查（哪里看什么）

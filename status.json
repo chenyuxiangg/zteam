@@ -1,1 +1,16 @@
-{}
+{
+  "snake-linux": {
+    "status": "approved",
+    "round": 2,
+    "max_rounds": 3,
+    "forced": false,
+    "analysis": "analysis/snake-linux-r2.md",
+    "reviews": [
+      "review/snake-linux-r1.md",
+      "review/snake-linux-r2.md"
+    ],
+    "failures": 0,
+    "created_at": "2026-08-07T16:40:46Z",
+    "updated_at": "2026-08-07T16:57:45Z"
+  }
+}

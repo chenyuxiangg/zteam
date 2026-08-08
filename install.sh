@@ -44,17 +44,25 @@ EOF
 done
 say "cron 薄壳已就绪: $HERMES_SCRIPTS/{watchdog-*.sh}"
 
-# ---- 3. cron jobs（幂等：按名查重，存在则跳过） ----
+# ---- 3. cron jobs（幂等：按名查重；已存在但 deliver 不符则校正，保证重装/迁移后推送配置不丢） ----
 LIST="$(hermes cron list 2>/dev/null || true)"
-DELIVER_ARGS=()
-[ -n "${REQREVIEW_DELIVER:-}" ] && DELIVER_ARGS=(--deliver "$REQREVIEW_DELIVER")
+# 期望 deliver：默认 telegram（对齐 README：告警/结果自动推送到消息平台，tick 脚本无活静默不会刷屏）；
+# 可用 REQREVIEW_DELIVER=local 覆盖为纯本地模式（输出只存 ~/.hermes/cron/output/）。
+EXPECT_DELIVER="${REQREVIEW_DELIVER:-telegram}"
 for i in "${!JOBS[@]}"; do
   name="${JOBS[$i]}"
-  if echo "$LIST" | grep -q "Name:.*$name"; then
-    say "job 已存在，跳过: $name"
+  if echo "$LIST" | grep -q "Name:[[:space:]]*${name}\$"; then
+    jid="$(echo "$LIST" | grep -B1 "Name:[[:space:]]*${name}\$" | head -1 | awk '{print $1}')"
+    cur="$(echo "$LIST" | grep -A 6 "Name:[[:space:]]*${name}\$" | grep "Deliver:" | awk '{print $2}')"
+    if [ "$cur" != "$EXPECT_DELIVER" ]; then
+      hermes cron edit "$jid" --deliver "$EXPECT_DELIVER" >/dev/null
+      say "job deliver 校正: $name $cur → $EXPECT_DELIVER"
+    else
+      say "job 已存在且 deliver 正确，跳过: $name"
+    fi
   else
-    hermes cron create "${SCHEDULES[$i]}" --name "$name" --script "${WRAPPERS[$i]}" --no-agent --repeat 0 "${DELIVER_ARGS[@]}" >/dev/null
-    say "已创建 job: $name (${SCHEDULES[$i]})${DELIVER_ARGS:+ [deliver: $REQREVIEW_DELIVER]}"
+    hermes cron create "${SCHEDULES[$i]}" --name "$name" --script "${WRAPPERS[$i]}" --no-agent --repeat 0 --deliver "$EXPECT_DELIVER" >/dev/null
+    say "已创建 job: $name (${SCHEDULES[$i]}) [deliver: $EXPECT_DELIVER]"
   fi
 done
 

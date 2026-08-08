@@ -192,7 +192,7 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 4. **给 bot 发一条消息**（建立会话、确认 home channel）；
 5. 验证：`hermes cron run req-result-notify`——最近有归档会收到推送；无消息 = 正常（空输出不推送）。
 
-> 新机器安装时可直接带投递目标：`REQREVIEW_DELIVER=telegram bash install.sh`。
+> install.sh 默认所有 job `deliver=telegram`（告警/结果自动推送，tick 脚本无活静默不会刷屏）；纯本地模式用 `REQREVIEW_DELIVER=local bash install.sh` 覆盖。**已存在的 job 若 deliver 不符，重跑 install.sh 会自动校正**（2026-08-08 修复：此前默认 local 导致结果不推送）。
 
 ### 当前状态（2026-08-07 实测）
 - ✅ **四通道全部打通**：①告警推送 ②结果推送 ③聊天查询/干预 ④聊天投放需求——均已实证可用
