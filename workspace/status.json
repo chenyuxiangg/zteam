@@ -70,5 +70,155 @@
         "status": "done"
       }
     }
+  },
+  "tetris/tetris": {
+    "status": "code_designing",
+    "round": 1,
+    "max_rounds": 3,
+    "forced": false,
+    "analysis": "analysis/tetris/tetris-r1.md",
+    "reviews": [
+      "review/tetris/tetris-r1.md"
+    ],
+    "failures": 0,
+    "stages": {
+      "plan": {
+        "round": 1,
+        "product": "workspace/plans/tetris/tetris-r1.md",
+        "reviews": [
+          "plans/tetris/tetris-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-08T15:48:50Z",
+        "timeline": [
+          {
+            "t": "2026-08-08T15:40:19Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-08T15:40:28Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-08T15:44:20Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T15:46:08Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T15:48:50Z",
+            "to": "done"
+          }
+        ],
+        "status": "pending"
+      },
+      "testplan": {
+        "round": 1,
+        "product": "workspace/testplans/tetris/tetris-r1.md",
+        "reviews": [
+          "testplans/tetris/tetris-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-08T15:57:57Z",
+        "timeline": [
+          {
+            "t": "2026-08-08T15:50:24Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-08T15:50:43Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-08T15:53:44Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T15:55:47Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T15:57:57Z",
+            "to": "done"
+          }
+        ],
+        "status": "pending"
+      },
+      "code": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": "working",
+        "state_since": "2026-08-08T16:00:43Z",
+        "timeline": [
+          {
+            "t": "2026-08-08T16:00:28Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-08T16:00:43Z",
+            "to": "working"
+          }
+        ],
+        "status": "pending"
+      },
+      "test": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": [],
+        "status": "pending"
+      },
+      "quality": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": [],
+        "status": "pending"
+      },
+      "security": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": [],
+        "status": "pending"
+      },
+      "release": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": [],
+        "status": "pending"
+      },
+      "req": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "status": "pending",
+        "state": "working",
+        "state_since": "2026-08-08T15:24:13Z",
+        "timeline": [
+          {
+            "t": "2026-08-08T15:24:13Z",
+            "to": "working"
+          }
+        ]
+      }
+    },
+    "created_at": "2026-08-08T15:18:43Z",
+    "updated_at": "2026-08-08T16:00:43Z",
+    "claimed_by": "code-developer",
+    "claimed_at": "2026-08-08T16:00:28Z",
+    "worker_pid": 2869252
   }
 }

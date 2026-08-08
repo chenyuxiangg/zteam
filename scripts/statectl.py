@@ -105,10 +105,13 @@ def next_action(e: dict):
     s = e.get("status")
     if s in ("pending", "needs_fix"):
         return ("req-analyst", "req", "design")
-    if s == "analyzing" and not e.get("claimed_by"):
-        # 评审 FAIL 打回后的重做等待态（四态机 req working，无 claim 可认领）
+    if s == "analyzing":
+        # 执行中（含已认领）或评审 FAIL 打回待重做（无 claim）——动作一致，认领与否由 claim 的 claimed_by 校验把关
         return ("req-analyst", "req", "design")
     if s == "analyzed":
+        return ("req-reviewer", "req", "review")
+    if s == "reviewing":
+        # 评审中（已认领）——build_worker_query 在 claim 后调用需要此映射
         return ("req-reviewer", "req", "review")
     if s == "approved":
         stg = STAGES[0]
@@ -384,12 +387,16 @@ def new_stages() -> dict:
     d = {}
     for stg in STAGES:
         d[stg["name"]] = {"round": 0, "product": None, "reviews": [], "state": None,
-                          "state_since": None, "timeline": [], "status": "pending"}
+                          "state_since": None, "timeline": []}
     for g in GATES:
         d[g["name"]] = {"round": 0, "product": None, "reviews": [], "state": None,
-                        "state_since": None, "timeline": [], "status": "pending"}
+                        "state_since": None, "timeline": []}
     d[RELEASE["name"]] = {"round": 0, "product": None, "reviews": [], "state": None,
-                          "state_since": None, "timeline": [], "status": "pending"}
+                          "state_since": None, "timeline": []}
+    # req 阶段：顶层 status 表达（pending→analyzing→analyzed→approved），无 dir/角色，
+    # 但为统一四态机/巡检（active_stage、guard_recovery 访问 stages['req']）保留占位子记录
+    d["req"] = {"round": 0, "product": None, "reviews": [], "state": None,
+                "state_since": None, "timeline": []}
     return d
 
 
@@ -398,10 +405,15 @@ def ensure_stages(e: dict) -> dict:
     if "stages" not in e or not isinstance(e.get("stages"), dict):
         e["stages"] = new_stages()
     for stg in STAGES + GATES + [RELEASE]:
-        s = e["stages"].setdefault(stg["name"], {"round": 0, "product": None, "reviews": [], "status": "pending"})
+        s = e["stages"].setdefault(stg["name"], {"round": 0, "product": None, "reviews": []})
         s.setdefault("state", None)
         s.setdefault("state_since", None)
         s.setdefault("timeline", [])
+    # req 占位子记录（同 new_stages 注释：顶层 status 表达，四态/巡检统一访问）
+    s = e["stages"].setdefault("req", {"round": 0, "product": None, "reviews": []})
+    s.setdefault("state", None)
+    s.setdefault("state_since", None)
+    s.setdefault("timeline", [])
     return e["stages"]
 
 
@@ -429,14 +441,17 @@ def set_stage_state(st: dict, rid: str, stage: str, state: str, product: str = N
     now = now_iso()
     # ---- 严格迁移校验 ----
     if state == "working":
-        if cur not in ("claimed", "reviewing"):
+        # None = 老 entry 缺 stages 子记录（ensure_stages 补出的占位）→ 视为 claimed 放行
+        if cur not in ("claimed", "reviewing", None):
             return False, f"{stage} 阶段当前状态 {cur!r} 不允许进入 working（仅 claimed/reviewing 可）"
     elif state == "reviewing":
-        if product is None:
+        # 幂等豁免 product：req 阶段产出走 release_analyze（自带校验）；阶段链评审者启动（cur 已 reviewing）无产物
+        if product is None and stage != "req" and cur != "reviewing":
             return False, "reviewing 必须携带产物路径（product）"
         if cur not in ("working", "reviewing"):
             return False, f"{stage} 阶段当前状态 {cur!r} 不允许进入 reviewing（仅 working 可；reviewing 幂等）"
-        s["product"] = product
+        if product:
+            s["product"] = product
     elif state == "done":
         if cur != "reviewing":
             return False, f"{stage} 阶段当前状态 {cur!r} 不允许进入 done（仅 reviewing 可）"
@@ -453,7 +468,9 @@ def set_stage_state(st: dict, rid: str, stage: str, state: str, product: str = N
         if state == "working":
             e["status"] = "analyzing"
         elif state == "reviewing":
-            e["status"] = "analyzed"  # 等待评审（旧体系语义）；评审者认领时 claim 置 reviewing
+            # 评审者启动幂等（顶层已是 reviewing，claim 置）→ 保持；仅旧体系分析师产出路径（analyzing）置 analyzed 等待评审
+            if e.get("status") not in ("reviewing",):
+                e["status"] = "analyzed"
         elif state == "done":
             e["status"] = "approved"
     elif stage == RELEASE["name"]:
@@ -553,6 +570,10 @@ def find_claimable(st: dict, role: str = None):
     role = _ROLE_ALIAS.get(role, role)
     cands = []
     for rid, e in st.items():
+        # 已认领（含等待评审/执行中）不参与认领竞争——next_action 已覆盖已认领态（供 build_worker_query 用），
+        # 认领资格必须在此显式过滤，否则已认领需求会被再次返回导致 claim 失败
+        if e.get("claimed_by") or e.get("claimed_at"):
+            continue
         act = next_action(e)
         if not act:
             continue
@@ -578,12 +599,12 @@ def claim(st: dict, rid: str, role: str) -> bool:
     if e.get("claimed_by") or e.get("claimed_at"):
         return False  # 已有认领（等待/处理中）——阶段链 {stage}_reviewing 等状态 claim 后状态不变，必须查 claim 字段防重复认领
     _, stage, phase = act
-    if stage != "req":
-        cur_state = ensure_stages(e)[stage].get("state")
-        if cur_state is None:  # 仅阶段首次认领时设 claimed；working/reviewing（等待/重做）不覆盖
-            ensure_stages(e)[stage]["state"] = "claimed"
-            ensure_stages(e)[stage]["state_since"] = now_iso()
-            ensure_stages(e)[stage].setdefault("timeline", []).append({"t": now_iso(), "to": "claimed"})
+    # req 阶段同样写 stages['req'] 四态（claimed），保证 set_status 迁移校验/巡检统一可用
+    cur_state = ensure_stages(e)[stage].get("state")
+    if cur_state is None:  # 仅阶段首次认领时设 claimed；working/reviewing（等待/重做）不覆盖
+        ensure_stages(e)[stage]["state"] = "claimed"
+        ensure_stages(e)[stage]["state_since"] = now_iso()
+        ensure_stages(e)[stage].setdefault("timeline", []).append({"t": now_iso(), "to": "claimed"})
     if phase == "design":
         new_state = "analyzing" if stage == "req" else f"{stage}_designing"
     elif phase == "review":
@@ -1365,15 +1386,29 @@ def cmd_requeue(rid: str) -> int:
 def cmd_set_status(rid: str, stage: str, state: str, product: str = None) -> int:
     """统一状态设置脚本（所有角色共用）：set_status {key} {stage} {working|reviewing|done} [product]。
     严格迁移校验：working（claimed/reviewing 可）→ reviewing（working 可，需 product）→ done（reviewing 可）。
-    claimed 由 tick 认领设置，不对外开放。"""
+    claimed 由 tick 认领设置，不对外开放。
+    claim 生命周期（关键，防重复 spawn）：worker 启动（working）保留 claim；产出完成（reviewing 非幂等）与
+    评审落定（done）清 claim——评审者启动（reviewing 幂等）保留 claim。曾无条件 clear_claim 导致
+    worker 执行中 claim 被清、tick 重复认领同一需求并发 spawn 两个 worker 写同一产物（tetris/tetris 实测）。"""
     with acquire_lock() as _:
         st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"set_status: {rid} 不存在", file=sys.stderr)
+            return 1
+        before = ensure_stages(e)[stage].get("state")
         ok, err = set_stage_state(st, rid, stage, state, product)
         if not ok:
             print(f"set_status: {err}", file=sys.stderr)
             return 1
         e = st[rid]
-        clear_claim(e)
+        if state == "working":
+            pass  # 执行中：保留 claim（防 tick 重复认领）
+        elif state == "reviewing" and stage != "req" and before != "reviewing":
+            clear_claim(e)  # 阶段链产出完成（working→reviewing）：清 claim 等待评审者认领
+        else:  # req 评审者幂等（req 产出完成走 release_analyze，自带清 claim）、done
+            if state == "done":
+                clear_claim(e)
         write_status(st)
         log(f"STATE  {rid} {stage}={state} product={product or '-'}")
     return 0
@@ -1399,7 +1434,6 @@ def cmd_resume(rid: str, stage: str, phase: str) -> int:
                 print(f"resume: {stage} 阶段无产物（product 为空），无法恢复完成态", file=sys.stderr)
                 return 1
             new_state = f"{stage}_done"
-            e["stages"][stage]["status"] = "done"
         elif phase == "gating":
             new_state = f"{stage}_gating"
         else:
