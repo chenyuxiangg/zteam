@@ -1,6 +1,6 @@
 {
   "snake-linux/snake-linux": {
-    "status": "test_designing",
+    "status": "released",
     "round": 2,
     "max_rounds": 3,
     "forced": false,
@@ -11,7 +11,7 @@
     ],
     "failures": 0,
     "created_at": "2026-08-07T16:40:46Z",
-    "updated_at": "2026-08-08T05:40:10Z",
+    "updated_at": "2026-08-08T06:20:01Z",
     "stages": {
       "plan": {
         "round": 1,
@@ -38,34 +38,37 @@
         "status": "done"
       },
       "test": {
-        "round": 1,
-        "product": "tests/snake-linux/snake-linux-r1/",
+        "round": 2,
+        "product": "tests/snake-linux/snake-linux-r2/",
         "reviews": [
-          "tests/snake-linux/snake-linux-r1-review.md"
+          "tests/snake-linux/snake-linux-r1-review.md",
+          "tests/snake-linux/snake-linux-r2-review.md"
         ],
-        "status": "pending"
+        "status": "done"
       },
       "quality": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
-        "status": "pending"
+        "round": 2,
+        "product": "quality/snake-linux/snake-linux-r1.md",
+        "reviews": [
+          "quality/snake-linux/snake-linux-r1.md",
+          "quality/snake-linux/snake-linux-r1.md"
+        ],
+        "status": "done"
       },
       "security": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
-        "status": "pending"
+        "round": 1,
+        "product": "security/snake-linux/snake-linux-r1.md",
+        "reviews": [
+          "security/snake-linux/snake-linux-r1.md"
+        ],
+        "status": "done"
       },
       "release": {
-        "round": 0,
-        "product": null,
+        "round": 1,
+        "product": "release/snake-linux/snake-linux-r1.md",
         "reviews": [],
-        "status": "pending"
+        "status": "done"
       }
-    },
-    "claimed_by": "test-developer",
-    "claimed_at": "2026-08-08T05:40:10Z",
-    "worker_pid": 1662593
+    }
   }
 }
