@@ -1,6 +1,6 @@
 {
   "snake-linux/snake-linux": {
-    "status": "plan_done",
+    "status": "testplan_done",
     "round": 2,
     "max_rounds": 3,
     "forced": false,
@@ -11,7 +11,7 @@
     ],
     "failures": 0,
     "created_at": "2026-08-07T16:40:46Z",
-    "updated_at": "2026-08-08T04:38:43Z",
+    "updated_at": "2026-08-08T04:48:24Z",
     "stages": {
       "plan": {
         "round": 1,
@@ -22,10 +22,12 @@
         "status": "done"
       },
       "testplan": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
-        "status": "pending"
+        "round": 1,
+        "product": "testplans/snake-linux/snake-linux-r1.md",
+        "reviews": [
+          "testplans/snake-linux/snake-linux-r1-review.md"
+        ],
+        "status": "done"
       },
       "code": {
         "round": 0,
