@@ -440,26 +440,27 @@ def rollback_entry(st: dict, rid: str, alarms: list, reason: str) -> None:
 
 
 def stale_recovery(st: dict) -> list:
-    """回收卡死的 worker 认领（超时 + pid 存活检查）。返回新告警列表。"""
+    """回收卡死的 worker 认领（超时 + pid 存活检查）。返回新告警列表。
+    仅处理"有 claim 字段"的中间态——release 后清 claim 的中间态是等待认领（正常），不回滚。"""
     alarms = []
     for rid, e in list(st.items()):
         if e.get("status") not in MID_STATES:
             continue
         claimed_at = e.get("claimed_at")
-        age_min = STALE_AFTER_MIN + 1  # 无 claim 时间戳视为超时
-        if claimed_at:
-            try:
-                t = datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
-                age_min = (datetime.now(timezone.utc) - t).total_seconds() / 60.0
-            except ValueError:
-                pass
+        if not claimed_at:
+            continue  # 无 claim = 等待认领（阶段链的正常等待态），不是卡死
+        try:
+            t = datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
+            age_min = (datetime.now(timezone.utc) - t).total_seconds() / 60.0
+        except ValueError:
+            age_min = STALE_AFTER_MIN + 1  # 无法解析时间戳视为超时
         if age_min < STALE_AFTER_MIN:
             continue
         pid = e.get("worker_pid")
         if pid and pid_alive(pid):
             log(f"SKIP  {rid} worker pid={pid} 仍存活（慢任务，等待）")
             continue
-        rollback_entry(st, rid, alarms, reason="no-claim" if not claimed_at else "stale")
+        rollback_entry(st, rid, alarms, reason="stale")
     return alarms
 
 
@@ -494,6 +495,8 @@ def claim(st: dict, rid: str, role: str) -> bool:
     act = next_action(e)
     if not act or act[0] != role:
         return False
+    if e.get("claimed_by") or e.get("claimed_at"):
+        return False  # 已有认领（等待/处理中）——阶段链 {stage}_reviewing 等状态 claim 后状态不变，必须查 claim 字段防重复认领
     _, stage, phase = act
     if stage != "req":
         ensure_stages(e)
@@ -1157,6 +1160,43 @@ def cmd_requeue(rid: str) -> int:
     return 0
 
 
+def cmd_resume(rid: str, stage: str, phase: str) -> int:
+    """人工恢复中间态：resume {key} {stage} {designing|reviewing|gating|releasing|done}。
+    用于误回滚/数据修复后恢复到指定阶段状态（reviewing/done 需该阶段产物已存在）。"""
+    if phase not in ("designing", "reviewing", "gating", "releasing", "done"):
+        print(f"resume: phase 必须为 designing/reviewing/gating/releasing/done，收到 {phase!r}", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        ensure_stages(e)
+        if phase == "releasing":
+            new_state = "releasing"
+        elif phase == "done":
+            if not e["stages"].get(stage, {}).get("product"):
+                print(f"resume: {stage} 阶段无产物（product 为空），无法恢复完成态", file=sys.stderr)
+                return 1
+            new_state = f"{stage}_done"
+            e["stages"][stage]["status"] = "done"
+        elif phase == "gating":
+            new_state = f"{stage}_gating"
+        else:
+            new_state = f"{stage}_{phase}"
+        if phase == "reviewing" and not e["stages"].get(stage, {}).get("product"):
+            print(f"resume: {stage} 阶段无产物（product 为空），无法恢复评审态", file=sys.stderr)
+            return 1
+        e["status"] = new_state
+        clear_claim(e)
+        e["failures"] = 0
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"RESUME {rid} -> {new_state} (manual)")
+    return 0
+
+
 def cmd_list() -> int:
     with acquire_lock() as _:
         st = read_status()
@@ -1403,6 +1443,8 @@ def main(argv) -> int:
             return cmd_rollback(*rest)
         if cmd == "requeue":
             return cmd_requeue(rest[0])
+        if cmd == "resume":
+            return cmd_resume(rest[0], rest[1], rest[2])
         if cmd == "list":
             return cmd_list()
         if cmd == "get":
