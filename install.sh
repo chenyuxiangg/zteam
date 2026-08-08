@@ -30,8 +30,20 @@ mkdir -p "$WORKSPACE"/{roles,docs,scripts} "$WORKSPACE/workspace"/{input,analysi
 touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt" "$WORKSPACE/workspace/status.lock"
 say "目录骨架就绪: $WORKSPACE（资产层 + workspace/ 数据层）"
 
-# ---- 1.5 zbot 职责注入（roles/bot.md → gateway.json，幂等；重启 gateway 生效） ----
+# ---- 1.5 zbot 职责注入（roles/bot.md → gateway.json，幂等） ----
+# gateway.json 内容变化才重启 gateway（幂等 install 零干扰；REQREVIEW_NO_RESTART=1 跳过重启）
+GW_JSON_FILE="${HERMES_HOME:-$HOME/.hermes}/gateway.json"
+GW_MD5_BEFORE="$(md5sum "$GW_JSON_FILE" 2>/dev/null | cut -d' ' -f1)"
 python3 "$SCRIPTS_DIR/bot_config.py" install
+GW_MD5_AFTER="$(md5sum "$GW_JSON_FILE" 2>/dev/null | cut -d' ' -f1)"
+if [ "${REQREVIEW_NO_RESTART:-0}" != "1" ] && [ "$GW_MD5_BEFORE" != "$GW_MD5_AFTER" ]; then
+  if systemctl --user is-active hermes-gateway >/dev/null 2>&1; then
+    systemctl --user restart hermes-gateway
+    say "zbot 职责已变更，gateway 已重启（Telegram 适配器重连中，正常现象）"
+  else
+    warn "gateway 未运行（跳过重启）；zbot 职责将在下次 gateway 启动时生效"
+  fi
+fi
 
 # ---- 2. cron 薄壳（按当前工作区路径生成 → 工作区可迁移，迁移后重跑 install 即可） ----
 mkdir -p "$HERMES_SCRIPTS"

@@ -29,6 +29,7 @@ fi
 # ---- 1. 移除 zbot 职责配置（数据删除前执行——bot_config.py 在工作区内，删数据后无法再调用） ----
 if [ -f "$WORKSPACE/scripts/bot_config.py" ]; then
   python3 "$WORKSPACE/scripts/bot_config.py" uninstall || warn "zbot 职责配置移除失败（可手动: python3 scripts/bot_config.py uninstall）"
+  say "zbot 职责配置已移除；gateway 内存中旧配置无害（job 已移除），如需立即生效: systemctl --user restart hermes-gateway"
 else
   warn "未找到 bot_config.py，跳过 zbot 配置移除"
 fi

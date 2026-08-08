@@ -81,10 +81,10 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 ## 安装与卸载
 
 ```bash
-bash ~/cyx/req-review/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检
+bash ~/cyx/req-review/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
 bash ~/cyx/req-review/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
 bash ~/cyx/req-review/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/workspace/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
