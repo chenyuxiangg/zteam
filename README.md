@@ -84,7 +84,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 bash ~/cyx/req-review/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检
 bash ~/cyx/req-review/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
 bash ~/cyx/req-review/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/workspace/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -133,7 +133,7 @@ bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 worksp
 1. **直接改常量（推荐）**：编辑 `scripts/statectl.py` 第 43–48 行即可，立即生效；
 2. **环境变量覆盖**：`ANALYST_MODEL` / `REVIEWER_MODEL` 等同名环境变量优先。⚠️ **坑**：cron job 由 gateway（systemd 服务）执行，交互 shell 里 `export` 的变量**到不了 gateway 进程**——环境变量覆盖只对手动运行（`python3 scripts/statectl.py ...`）生效；要让 gateway 场景也走环境变量，需 `systemctl --user edit hermes-gateway` 在 `[Service]` 下加 `Environment=ANALYST_MODEL=...` 再 `hermes gateway restart`。
 
-**验证生效**：`tail logs/pipeline.log` 中 `SPAWN` 行带实际模型（`... model=deepseek-v4-flash ...`）。
+**验证生效**：`tail workspace/logs/pipeline.log` 中 `SPAWN` 行带实际模型（`... model=deepseek-v4-flash ...`）。
 
 > 可用模型以上游 API 实际返回为准（`curl https://api.deepseek.com/models`）；当前 API 仅有 `deepseek-v4-flash` 与 `deepseek-v4-pro`。
 

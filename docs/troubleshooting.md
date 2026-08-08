@@ -11,9 +11,9 @@
 ① 一键诊断：python3 scripts/statectl.py diagnose   ← 覆盖 80% 的问题，先跑它
 ② 看状态：  python3 scripts/statectl.py list / get <req_id>
 ③ 看调度：  hermes cron status  （gateway 是否运行、下次触发）
-④ 看日志：  tail logs/pipeline.log      （状态迁移审计）
-            tail logs/worker-*.log      （worker 明细，看失败原因）
-            cat logs/alarms.txt         （待投递告警）
+④ 看日志：  tail workspace/logs/pipeline.log      （状态迁移审计）
+            tail workspace/logs/worker-*.log      （worker 明细，看失败原因）
+            cat workspace/logs/alarms.txt         （待投递告警）
 ⑤ 看进程：  ps aux | grep "hermes chat"（worker 是否在跑）
 ⑥ 修复 → 复跑 diagnose 确认 → 收工
 ```
@@ -43,15 +43,15 @@ cd ~/cyx/req-review && python3 scripts/statectl.py diagnose
 ### S2 卡在 `analyzing` / `reviewing` 不动
 | 优先级 | 可能原因 | 检查 | 修复 |
 |---|---|---|---|
-| 1 | **worker 还在跑**（慢，正常） | `ps aux | grep "hermes chat"`；`diagnose` D13 | 等。`logs/pipeline.log` 会有 `SKIP ... 仍存活` |
-| 2 | **worker 已死**（崩溃/被杀） | worker 日志 `tail logs/worker-{id}-r{N}.log`；`diagnose` D5（claimed_at 超 20 分钟） | 不用管——**下个 tick 的 stale 恢复自动回滚重试**（≤5 分钟）；想立刻重试：`python3 scripts/statectl.py rollback <req_id>` |
+| 1 | **worker 还在跑**（慢，正常） | `ps aux | grep "hermes chat"`；`diagnose` D13 | 等。`workspace/logs/pipeline.log` 会有 `SKIP ... 仍存活` |
+| 2 | **worker 已死**（崩溃/被杀） | worker 日志 `tail workspace/logs/worker-{id}-r{N}.log`；`diagnose` D5（claimed_at 超 20 分钟） | 不用管——**下个 tick 的 stale 恢复自动回滚重试**（≤5 分钟）；想立刻重试：`python3 scripts/statectl.py rollback <req_id>` |
 | 3 | worker 反复秒退 | worker 日志尾部；`hermes chat -q` 是否可用（PATH/API key/模型名） | 见 S7 |
 | 4 | 滞留 >24h | `diagnose` D5 会标 WARN | 人工查 worker 日志与模型/API，`rollback` 后观察 |
 
 ### S3 收到 `[BLOCKED]` 告警（连续失败 ≥2 次）
 | 步骤 | 动作 |
 |---|---|
-| 1 | 看失败根因：`tail logs/worker-{id}-r{N}.log` + `grep {id} logs/pipeline.log` |
+| 1 | 看失败根因：`tail workspace/logs/worker-{id}-r{N}.log` + `grep {id} workspace/logs/pipeline.log` |
 | 2 | 修根因（通常是 S7 的模型/API/权限问题） |
 | 3 | 重投：`python3 scripts/statectl.py requeue <req_id>`（回 pending，failures 清零） |
 | 4 | 复跑 `diagnose` 确认无 FAIL |
@@ -59,7 +59,7 @@ cd ~/cyx/req-review && python3 scripts/statectl.py diagnose
 ### S4 收到 `[FORCED]` 告警（达 max_rounds 强制归档）
 | 步骤 | 动作 |
 |---|---|
-| 1 | 复核 `artifacts/{req_id}.md` 里的"未解决意见"（含全部轮次评审历史） |
+| 1 | 复核 `workspace/artifacts/{req_id}.md` 里的"未解决意见"（含全部轮次评审历史） |
 | 2 | 意见合理 → 手工补充需求/接受现状；意见是评审误判 → `requeue` 重跑并考虑放宽检查清单 |
 | 3 | 若该需求反复 forced → 考虑提高 `max_rounds`（录入时在 status.json 条目里改）或审视需求原文质量 |
 
@@ -78,7 +78,7 @@ cd ~/cyx/req-review && python3 scripts/statectl.py diagnose
 ### S7 worker 秒退 / spawn 失败 / worker 日志为空
 | 优先级 | 可能原因 | 检查 | 修复 |
 |---|---|---|---|
-| 1 | **模型名不存在**（最常见） | `logs/pipeline.log` 的 `SPAWN` 行看 model；worker 日志里的 API 报错 | 改 `statectl.py` 第 43–48 行常量；可用模型 `curl https://api.deepseek.com/models` |
+| 1 | **模型名不存在**（最常见） | `workspace/logs/pipeline.log` 的 `SPAWN` 行看 model；worker 日志里的 API 报错 | 改 `statectl.py` 第 43–48 行常量；可用模型 `curl https://api.deepseek.com/models` |
 | 2 | API key 缺失/失效 | worker 日志报 401 | 检查 `~/.hermes/.env` 的 `DEEPSEEK_API_KEY` |
 | 3 | `hermes` 不在 PATH（gateway 环境） | `journalctl --user -u hermes-gateway` 看 spawn 报错 | 薄壳里用绝对路径调用（当前已用 `python3` 绝对路径） |
 | 4 | 配额/限流（429） | worker 日志 | 等下一轮（stale 恢复自动重试）或换模型 |
@@ -108,9 +108,9 @@ cd ~/cyx/req-review && python3 scripts/statectl.py diagnose
 | 位置 | 内容 | 何时看 |
 |---|---|---|
 | `status.json` | 状态机唯一事实来源（状态/轮次/claim/失败计数） | 一切状态的最终裁决 |
-| `logs/pipeline.log` | 每步状态迁移审计（REGISTER/CLAIM/SPAWN/ANALYZE/REVIEW/STATE/ARCHIVE） | 还原"发生了什么、何时发生" |
-| `logs/worker-{id}-r{N}.log` | 单个 worker 的完整执行明细 + API 报错 | worker 失败/秒退/慢 |
-| `logs/alarms.txt` | 待投递告警（BLOCKED/FORCED） | 有告警未收到推送时 |
+| `workspace/logs/pipeline.log` | 每步状态迁移审计（REGISTER/CLAIM/SPAWN/ANALYZE/REVIEW/STATE/ARCHIVE） | 还原"发生了什么、何时发生" |
+| `workspace/logs/worker-{id}-r{N}.log` | 单个 worker 的完整执行明细 + API 报错 | worker 失败/秒退/慢 |
+| `workspace/logs/alarms.txt` | 待投递告警（BLOCKED/FORCED） | 有告警未收到推送时 |
 | `analysis/review/artifacts/` | 各轮产物 | 质量复核/审计 |
 | `journalctl --user -u hermes-gateway -f` | gateway 自身日志（含 cron 执行、spawn 报错） | 上半部不跑/调度异常 |
 
@@ -143,7 +143,7 @@ journalctl --user -u hermes-gateway -f               # gateway 日志
 python3 scripts/statectl.py diagnose    # 无 FAIL（退出码 0）
 hermes cron status                      # "Gateway is running" + 下次触发时间
 python3 scripts/statectl.py list        # 所有条目状态符合预期（无滞留中间态）
-tail logs/pipeline.log                  # 最新审计行符合预期流转
+tail workspace/logs/pipeline.log                  # 最新审计行符合预期流转
 ```
 
 ## 6. 排查心法（三句话）
