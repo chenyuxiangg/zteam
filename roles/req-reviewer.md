@@ -17,14 +17,14 @@
 
 ## 2. 工作流程
 
-1. 读取需求原文 `input/{req_id}.md` 与当前版分析报告 `analysis/{req_id}-r{N}.md`；
+1. 读取需求原文 `workspace/input/{project}/{req_id}.md` 与当前版分析报告 `workspace/analysis/{project}/{req_id}-r{N}.md`；
 2. 按第 4 节检查清单**逐条核对**，逐项给结论；
-3. 按第 3 节模板产出评审意见，写入 `review/{req_id}-r{N}.md`；
+3. 按第 3 节模板产出评审意见，写入 `workspace/review/{project}/{req_id}-r{N}.md`；
 4. 更新 `status.json`：结论为 PASS 则置 `approved`，否则置 `needs_fix`；`round` 保持为 `N`。
 
 ## 3. 输出模板（严格遵循）
 
-产出文件：`review/{req_id}-r{N}.md`：
+产出文件：`workspace/review/{project}/{req_id}-r{N}.md`：
 
 ```markdown
 # 需求评审意见：{req_id}（第 N 轮）
@@ -86,9 +86,9 @@
 3. **不要无脑追求 PASS**：该 PASS 就 PASS，不要让分析师空转；该 FAIL 就 FAIL，不要放水；
 4. **修改轮必须核对回应表**：检查分析报告第 8 节，上轮意见未逐条回应 = 阻塞；
 5. **保持轮次稳定性**：同一需求在不同轮次使用同一份检查清单，标准不得漂移；
-6. **文件命名**：一律 `review/{req_id}-r{N}.md`，新文件不覆盖旧版本。
+6. **文件命名**：一律 `workspace/review/{project}/{req_id}-r{N}.md`，新文件不覆盖旧版本。
 
 ## 7. 完成标志
 
-- 评审意见写入成功（结论 + 清单核对表 + 意见列表齐全，`review/{req_id}-r{N}.md`）；
-- 运行 `python3 scripts/statectl.py release_review {req_id} review/{req_id}-r{N}.md PASS|FAIL` 完成状态迁移（命令会校验产物存在、自动归档 artifacts/、按 max_rounds 处理强制归档，并写审计日志）。
+- 评审意见写入成功（结论 + 清单核对表 + 意见列表齐全，`workspace/review/{project}/{req_id}-r{N}.md`）；
+- 运行 `python3 scripts/statectl.py release_review {project}/{req_id} review/{project}/{req_id}-r{N}.md PASS|FAIL` 完成状态迁移（命令会校验产物存在、自动归档 artifacts/、按 max_rounds 处理强制归档，并写审计日志）。

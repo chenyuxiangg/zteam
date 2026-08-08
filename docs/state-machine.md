@@ -8,23 +8,21 @@
 ## 1. 工作区布局与文件命名约定
 
 ```
-req-review/
-├── input/        # 需求原文：{req_id}.md（用户投放区，一个文件一个需求）
-├── analysis/     # 分析报告：{req_id}-r{N}.md（N = 轮次，每轮新文件，不覆盖）
-├── review/       # 评审意见：{req_id}-r{N}.md
-├── artifacts/    # 终版产出：{req_id}.md（评审通过后归档，含全部轮次历史）
-├── roles/        # 角色定义（analyst.md / reviewer.md）
-├── scripts/      # statectl.py（状态机唯一实现）+ 上半部入口（watchdog-analyst.py / watchdog-reviewer.py / watchdog-weekly.py）
-├── docs/         # 设计文档
-├── logs/         # 审计日志 pipeline.log + 下半部 worker 日志 worker-*.log
-├── AGENTS.md     # 流水线约定（下半部 worker 自动加载的项目上下文）
-└── status.json   # 状态机（唯一事实来源）
+req-review/                       # 资产层（git 跟踪）
+├── roles/ scripts/ docs/          # 角色定义 / 代码 / 文档
+└── workspace/                     # 数据层（运行数据，按项目组织）
+    ├── input/<project>/{req_id}.md          # 需求原文（用户投放区，一个文件一个需求）
+    ├── analysis/<project>/{req_id}-r{N}.md  # 分析报告（N = 轮次，每轮新文件，不覆盖）
+    ├── review/<project>/{req_id}-r{N}.md    # 评审意见
+    ├── artifacts/<project>/{req_id}.md      # 终版产出（评审通过后归档，含结论摘要+最终分析+全部评审历史）
+    ├── logs/                      # pipeline.log（审计）+ worker-*.log（下半部明细）
+    └── status.json                # 状态机（唯一事实来源；key = <project>/<req_id>）
 ```
 
 命名规则：
 - `req_id` = 需求原文文件名去扩展名（如 `req-001.md` → `req-001`），仅允许 `[A-Za-z0-9_-]`；
 - 轮次 `N` 从 1 开始；分析报告与评审意见的轮次号**同步递增**（r1 分析 → r1 评审 → r2 分析 → r2 评审……）；
-- 下半部 worker 日志：`logs/worker-{req_id}-r{N}.log`。
+- 下半部 worker 日志：`workspace/logs/worker-{project}-{req_id}-r{N}.log`。
 
 ## 2. 调度架构：上半部 / 下半部（核心设计）
 
@@ -46,23 +44,23 @@ req-review/
 
 ```
 t0  [上半部·分析师 tick] watchdog-analyst.sh（秒级）
-    1) 注册 input/ 下未登记的新文件 → pending
+    1) 注册 workspace/input/<project>/ 下未登记的新文件 → pending
     2) stale 恢复（见 §7.2：回收卡死的 worker 认领）
     3) 原子认领最老的 pending/needs_fix → analyzing（写 claim 字段）
     4) setsid 拉起下半部：
-       setsid hermes chat -q "严格遵循 roles/analyst.md 完成 req-001 第 N 轮..." \
+       setsid hermes chat -q "严格遵循 roles/req-analyst.md 完成 req-001 第 N 轮..." \
               -m <ANALYST_MODEL> -Q > logs/worker-req-001-rN.log 2>&1 &
     5) 无活 → 空 stdout 静默退出；异常 → 非 0 退出/输出告警（经 cron 投递）
 
 t1  [下半部·分析师 worker] 独立 Hermes 进程（分钟级，无 3 分钟限制）
-    1) 读 claim + input/{req_id}.md（修改轮还读 review/{req_id}-r{N-1}.md）
-    2) 按 roles/analyst.md 产出 analysis/{req_id}-r{N}.md
+    1) 读 claim + workspace/input/<project>/{req_id}.md（修改轮还读 review/{project}/{req_id}-r{N-1}.md）
+    2) 按 roles/req-analyst.md 产出 analysis/{project}/{req_id}-r{N}.md
     3) 原子更新状态 analyzing → analyzed（清空 claim 字段）
     4) 写审计日志，退出
 
 t2  [上半部·评审师 tick] watchdog-reviewer.sh：认领最老的 analyzed → reviewing，拉起评审 worker
 
-t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 approved 或 needs_fix
+t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → 状态置 approved 或 needs_fix
     （needs_fix 则回到 t0 进入下一轮；循环直到 approved 或 max_rounds）
 ```
 
@@ -75,7 +73,7 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
 
 - **无活** → 空 stdout（no_agent 模式空输出 = 静默，不投递、不耗 token）；
 - **异常/告警** → 非 0 退出码或人类可读的告警文本（no_agent 模式会把 stdout 原样投递到 cron 的 deliver 目标，如 Telegram）；
-- 下半部 worker 的 stdout 一律重定向到 `logs/worker-*.log`，**不进入投递通道**（避免刷屏）。
+- 下半部 worker 的 stdout 一律重定向到 `workspace/logs/worker-*.log`，**不进入投递通道**（避免刷屏）。
 
 ## 3. 状态集合
 
@@ -93,9 +91,9 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
 
 | 当前状态 | 事件 | 动作（产物） | 下一状态 |
 |----------|------|--------------|----------|
-| `pending` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{req_id}-r{N}.md` | `analyzed` |
-| `analyzed` | 上半部·评审师认领 | 原子置 `reviewing`（写 claim）；worker 写 `review/{req_id}-r{N}.md` | `approved` 或 `needs_fix` |
-| `needs_fix` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{req_id}-r{N+1}.md` | `analyzed` |
+| `pending` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{project}/{req_id}-r{N}.md` | `analyzed` |
+| `analyzed` | 上半部·评审师认领 | 原子置 `reviewing`（写 claim）；worker 写 `review/{project}/{req_id}-r{N}.md` | `approved` 或 `needs_fix` |
+| `needs_fix` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{project}/{req_id}-r{N+1}.md` | `analyzed` |
 | `analyzed`（N = max_rounds） | 轮次已达上限 | 强制归档，置 `approved` + `forced: true` | `approved` |
 | 任意非终态 | 失败 ≥ 2 次 | 置 `blocked`，告警 | `blocked` |
 | `blocked` | 人工处理后重投 | 重置失败计数，状态回 `pending` | `pending` |
@@ -111,8 +109,8 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
     "round": 2,
     "max_rounds": 3,
     "forced": false,
-    "analysis": "analysis/req-001-r2.md",
-    "reviews": ["review/req-001-r1.md", "review/req-001-r2.md"],
+    "analysis": "analysis/snake-linux/snake-linux-r2.md",
+    "reviews": ["review/snake-linux/snake-linux-r1.md", "review/snake-linux/snake-linux-r2.md"],
     "failures": 0,
     "claimed_by": "analyst",
     "claimed_at": "2026-08-02T08:05:02Z",
@@ -152,7 +150,7 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
 ### 7.1 轮次与终止
 
 - `round` 达到 `max_rounds`（默认 3）时，评审若仍为 FAIL：**强制归档**（`approved` + `forced: true`），上半部输出告警"带未解决意见通过，需人工复核"；
-- `forced: true` 的归档文件在 `artifacts/` 中保留全部轮次历史与所有评审意见，供人工复查。
+- `forced: true` 的归档文件在 `workspace/artifacts/<project>/` 中保留全部轮次历史与所有评审意见，供人工复查。
 
 ### 7.2 失败处理（无人值守必须内置）
 
@@ -160,34 +158,34 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
   1. 发现 `analyzing`/`reviewing` 且 `claimed_at` 超过 `STALE_AFTER`（默认 20 分钟）；
   2. `kill -0 $worker_pid` 检查：进程**存活** → 跳过（worker 还在跑，只是慢）；进程**已死** → 回滚（`analyzing→pending` / `reviewing→analyzed`，`failures + 1`，清空 claim 字段），下个 tick 重新唤醒；
 - **上限**：`failures ≥ 2` → 置 `blocked`，上半部脚本输出告警文本（经 cron 的 deliver 推送到 Telegram 等），提示人工介入；
-- **巡检 job**（每周一次，no_agent 脚本）：检查 `status.json` JSON 合法性、`approved` 与 `artifacts/` 一致性、是否存在滞留超过 24h 的非终态。**只告警，不改状态**。
+- **巡检 job**（每周一次，no_agent 脚本）：检查 `workspace/status.json` JSON 合法性、`approved` 与 `workspace/artifacts/<project>/` 一致性、是否存在滞留超过 24h 的非终态。**只告警，不改状态**。
 
 ### 7.3 人工介入方式
 
 - 查看进度：`python3 scripts/statectl.py list`（总览）或 `get <req_id>`（详情）；
 - 重投 `blocked` 需求：`python3 scripts/statectl.py requeue <req_id>`（等价 jq 重置：`status=pending, failures=0`）；
 - 手动回滚中间态：`python3 scripts/statectl.py rollback <req_id>`；
-- 全程可审计：`logs/pipeline.log`（每步状态迁移）+ `logs/worker-*.log`（每次下半部执行明细）。
+- 全程可审计：`workspace/logs/pipeline.log`（每步状态迁移）+ `workspace/logs/worker-*.log`（每次下半部执行明细）。
 
 ## 8. 上半部脚本与下半部 worker 职责划分
 
 | 组件 | 部分 | 职责 | 禁止 |
 |------|------|------|------|
-| `watchdog-analyst.py` | 上半部 | 调 `statectl.py analyst_tick`：注册 input/ 新文件；stale 恢复；原子认领 `pending`/`needs_fix` → `analyzing`；按 `ANALYST_MODEL` spawn 分析师 worker；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
-| analyst worker | 下半部 | 读原文/意见 → 按 `roles/analyst.md` 干活 → 落盘 → 调 `statectl.py release_analyze`（`analyzing→analyzed`，清 claim） | 评审、改需求原文 |
+| `watchdog-analyst.py` | 上半部 | 调 `statectl.py analyst_tick`：注册 workspace/input/<project>/ 新文件；stale 恢复；原子认领 `pending`/`needs_fix` → `analyzing`；按 `ANALYST_MODEL` spawn 分析师 worker；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
+| analyst worker | 下半部 | 读原文/意见 → 按 `roles/req-analyst.md` 干活 → 落盘 → 调 `statectl.py release_analyze`（`analyzing→analyzed`，清 claim） | 评审、改需求原文 |
 | `watchdog-reviewer.py` | 上半部 | 调 `statectl.py reviewer_tick`：stale 恢复；原子认领 `analyzed` → `reviewing`；按 `REVIEWER_MODEL` spawn 评审 worker；无活静默 | 写产物、改分析文档、直接调 LLM |
-| reviewer worker | 下半部 | 读原文/分析 → 按 `roles/reviewer.md` 评审 → 落盘 → 调 `statectl.py release_review`（`reviewing→approved\|needs_fix`，清 claim） | 修改分析文档 |
+| reviewer worker | 下半部 | 读原文/分析 → 按 `roles/req-reviewer.md` 评审 → 落盘 → 调 `statectl.py release_review`（`reviewing→approved\|needs_fix`，清 claim） | 修改分析文档 |
 | `watchdog-weekly.py` | 巡检 | 调 `statectl.py weekly_tick`：一致性检查（见 §7.2） | 改状态（仅告警） |
 | `statectl.py` | 共用 | 状态机全部确定性逻辑（注册/认领/release/spawn/stale/告警/归档），上下半部与人工共用同一实现 | 一切模型判断 |
 
 ## 9. 新需求录入（唯一入口）
 
-投放方式：把需求原文放入 `input/{req_id}.md`（一个文件一个需求，可一次放多个），其余全自动。
+投放方式：把需求原文放入 `workspace/input/<project>/{req_id}.md`（一个文件一个需求，可一次放多个），其余全自动。
 
 检测机制（`register_new_inputs()`，在 `analyst_tick` 内执行）：
-1. 扫描 `input/` 下所有 `*.md`；
+1. 扫描 `workspace/input/<project>/` 下所有 `*.md`；
 2. `req_id` = 文件名去 `.md` 扩展名；
-3. 若 `req_id` 尚未出现在 `status.json` 的 key 中 → 注册为 `pending`（`round: 0, max_rounds: 3, failures: 0`）；
+3. 若 `req_id` 尚未出现在 `workspace/status.json` 的 key 中 → 注册为 `pending`（`round: 0, max_rounds: 3, failures: 0`）；
 4. 同一 tick 内，新注册的需求立即参与"最老优先"认领并 spawn 分析师 worker（审计日志中 `REGISTER` 与 `CLAIM` 同秒）。
 
 ### 9.1 边界行为与使用注意
@@ -196,10 +194,10 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
 |------|------|------------------|
 | 修改已注册需求的内容（**不改文件名**） | **不会**重新检测/重新分析；状态机按 `req_id` 追踪需求 | `python3 scripts/statectl.py requeue <req_id>` 重置回 `pending` 重跑 |
 | 修改文件名 | 文件名即 ID，改名 = 全新需求（旧条目保留，不自动清理） | 如需"替换"而非"新增"，先处理旧条目 |
-| 删除 `input/` 中的文件 | `status.json` 条目**保留**（历史可审计，不自动清理） | 保留作记录，或手工编辑 status.json 删除条目 |
+| 删除 `workspace/input/<project>/` 中的文件 | `workspace/status.json` 条目**保留**（历史可审计，不自动清理） | 保留作记录，或手工编辑 status.json 删除条目 |
 | 非 `.md` 文件（`README.md`、`.gitkeep` 等） | 完全忽略 | — |
 | 中文 / 空格 / 特殊字符文件名 | 违反命名规则（仅 `[A-Za-z0-9_-]`），实现未强校验，可能引发路径问题 | 按规则命名 |
-| 文件放在 `input/` 之外 | 不生效（`input/` 是唯一入口） | 移入 `input/` |
+| 文件放在 `workspace/input/<project>/` 之外 | 不生效（`workspace/input/<project>/` 是唯一入口） | 移入 `workspace/input/<project>/` |
 | 一个文件里写多个需求 | 被当作**一个**需求分析（粒度 = 文件） | 拆成多个文件 |
 
 > 设计取舍：注册、认领、stale 恢复都放在上半部脚本（确定性逻辑，零 token，不依赖模型判断）；模型只做"活"本身（分析/评审/修改）。
@@ -210,7 +208,7 @@ t3  [下半部·评审师 worker] 产出 review/{req_id}-r{N}.md → 状态置 a
 2026-08-02T08:00:01Z REGISTER req-001 status=pending round=0
 2026-08-02T08:05:02Z CLAIM   req-001 by=analyst from=pending pid=12345
 2026-08-02T08:05:03Z SPAWN   req-001 worker=analyst pid=12345 model=deepseek-chat
-2026-08-02T08:12:00Z ANALYZE req-001 round=1 file=analysis/req-001-r1.md
+2026-08-02T08:12:00Z ANALYZE snake-linux/snake-linux round=1 file=analysis/snake-linux/snake-linux-r1.md
 2026-08-02T08:12:00Z STATE   req-001 analyzing->analyzed
 2026-08-02T08:20:03Z CLAIM   req-001 by=reviewer from=analyzed pid=23456
 2026-08-02T08:27:00Z REVIEW  req-001 round=1 file=review/req-001-r1.md conclusion=FAIL

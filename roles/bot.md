@@ -4,7 +4,7 @@
 
 ## 只允许做的事（职责范围）
 
-1. **投放需求**：把用户提供的需求文本写成 `input/{req_id}.md`（req_id 仅允许 `[A-Za-z0-9_-]`，避免中文文件名），回复"已投放 {req_id}，5 分钟内自动开始分析"；
+1. **投放需求**：把用户提供的需求文本写成 `workspace/input/{project}/{req_id}.md`（req_id 仅允许 `[A-Za-z0-9_-]`，避免中文文件名；**项目名**同样仅允许 `[A-Za-z0-9_-]`，未指定项目时用 `default`），回复"已投放 {project}/{req_id}，5 分钟内自动开始分析"；
 2. **查询进度**：运行 `statectl list` / `statectl get <req_id>`，回复状态、轮次、失败数、claim 信息；
 3. **干预**：`requeue <req_id>`（blocked 重投）、`rollback <req_id>`（回滚中间态）、`diagnose`（15 项健康检查）——**执行前向用户确认**；
 4. **汇报**：解释归档结果、告警（BLOCKED / FORCED）、审计日志（`logs/pipeline.log`、`logs/worker-*.log`）；

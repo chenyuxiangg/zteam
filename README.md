@@ -2,14 +2,14 @@
 
 基于 **cron + 文件消息池** 的无人值守多角色流水线。调度采用**上半部 / 下半部**架构（对应 Linux 中断处理模型）：**上半部只唤醒（秒级、零 token），下半部干活（分钟级、独立进程、不受 cron 3 分钟硬中断限制）**。
 
-需求分析师与需求评审师是两个独立角色，各自独立绑定模型，通过共享工作区 `status.json` + 文件目录实现"自动感知"，多轮"分析 → 评审 → 修改 → 再评审"直至通过，全程无人值守。
+需求分析师与需求评审师是两个独立角色，各自独立绑定模型，通过共享工作区 `workspace/status.json` + 文件目录实现"自动感知"，多轮"分析 → 评审 → 修改 → 再评审"直至通过，全程无人值守。
 
 ## 覆盖的需求
 
 | 原始诉求 | 实现 |
 |----------|------|
-| 分析与评审是不同角色 | `roles/analyst.md` vs `roles/reviewer.md`，两个上半部 job + 两个下半部 worker 完全分离 |
-| 一次输入多个需求 | `input/` 可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
+| 分析与评审是不同角色 | `roles/req-analyst.md` vs `roles/req-reviewer.md`，两个上半部 job + 两个下半部 worker 完全分离 |
+| 一次输入多个需求 | `workspace/input/<project>/` 可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
 | 评审结论被分析者自动感知 | 分析师上半部轮询 `needs_fix` 状态并唤醒修改 worker |
 | 分析完成被评审者自动感知 | 评审上半部轮询 `analyzed` 状态并唤醒评审 worker |
 | 多轮自动完成 | 状态机循环直至 `approved` 或 `max_rounds` 上限，失败自动重试 + stale 恢复 |
@@ -26,9 +26,9 @@
                           setsid hermes chat -q -m <model> &
 ┌──────────────────────────────────────────────────────────────▼────────────┐
 │ ── 下半部（独立 Hermes 进程，分钟级，无 3 分钟限制，进程级持久）──          │
-│   analyst worker → 读原文/查资料 → 按 roles/analyst.md 产出需求分解文档（FR/NFR/竞品分析）│
+│   analyst worker → 读原文/查资料 → 按 roles/req-analyst.md 产出需求分解文档（FR/NFR/竞品分析）│
 │                    → statectl.py release_analyze（状态落定）               │
-│   reviewer worker → 读原文/分析 → 按 roles/reviewer.md 评审                │
+│   reviewer worker → 读原文/分析 → 按 roles/req-reviewer.md 评审                │
 │                    → statectl.py release_review（状态落定 + 归档）         │
 └─────────────────────────────────────────────────────────────────────────────┘
        状态机：pending → analyzing → analyzed → reviewing → needs_fix ↺ / approved
@@ -38,25 +38,26 @@
 ## 目录结构
 
 ```
-req-review/
-├── roles/analyst.md       # 需求分析师角色定义（产品视角·麦肯锡：SCQA/MECE，含需求分解模板）
-├── roles/reviewer.md      # 需求评审师角色定义 + 12 项评审检查清单
-├── roles/bot.md           # zbot（Telegram bot）职责边界与人格定义（install 注入 gateway，uninstall 移除）
-├── scripts/bot_config.py  # zbot 职责注入/移除（install/uninstall 子命令，写 ~/.hermes/gateway.json）
-├── docs/state-machine.md  # 状态机定义（上下半部架构、状态、竞态、失败处理）
-├── scripts/               # statectl.py（状态机唯一实现）+ watchdog-analyst/reviewer/weekly.py 上半部入口
-├── AGENTS.md              # 流水线约定（下半部 worker 自动加载）
-├── input/                 # 需求原文投放区（{req_id}.md）
-├── analysis/              # 分析报告（{req_id}-r{N}.md，每轮新文件）
-├── review/                # 评审意见（{req_id}-r{N}.md）
-├── artifacts/             # 终版产出：结论摘要 + 需求原文 + 最终分析 + 全部评审历史（头部摘要区即最终结论，接手开发看这里）
-├── logs/                  # pipeline.log（审计）+ worker-*.log（下半部明细）
-└── status.json            # 状态机（唯一事实来源）
+req-review/                      # 资产层（git 跟踪，uninstall --full 保留）
+├── roles/req-analyst.md       # 需求分析师角色定义（产品视角·麦肯锡：SCQA/MECE，含需求分解模板）
+├── roles/req-reviewer.md      # 需求评审师角色定义 + 12 项评审检查清单
+├── roles/bot.md               # zbot（Telegram bot）职责边界与人格定义（install 注入 gateway，uninstall 移除）
+├── scripts/                   # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口
+├── docs/                      # state-machine.md（状态机定义）+ troubleshooting.md（问题定位）
+├── AGENTS.md                  # 流水线约定（下半部 worker 自动加载）
+└── workspace/                 # 数据层（运行数据，按项目组织；uninstall --full 清空对象）
+    ├── status.json            # 状态机（唯一事实来源；key = <project>/<req_id>）
+    ├── input/<project>/<req_id>.md          # 需求原文投放区
+    ├── analysis/<project>/<req_id>-r{N}.md  # 分析报告（只保留最新轮，历史轮次进 archive/）
+    ├── review/<project>/<req_id>-r{N}.md    # 评审意见（只保留最新轮，历史轮次进 archive/）
+    ├── archive/<project>/                   # 历史轮次归档（legacy-r{N}-20260807.md 格式，人工整理用）
+    ├── artifacts/<project>/<req_id>.md      # 终版产出：结论摘要 + 需求原文 + 最终分析 + 全部评审历史（接手开发看这里）
+    └── logs/                  # pipeline.log（审计）+ worker-*.log（下半部明细）+ alarms.txt
 ```
 
 ## 快速开始（3 步）
 
-1. **投放需求**：把需求原文放入 `input/req-001.md`（可一次放多个；上半部脚本会自动登记）；
+1. **投放需求**：把需求原文放入 `workspace/input/<project>/req-001.md`（可一次放多个；上半部脚本会自动登记）；
 2. **创建三个 cron job**（全部 `no_agent` 纯脚本，不需要模型）：
 
 ```bash
@@ -73,7 +74,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 
 > 注意：调度请用 cron 表达式（`"5m"` 会被解析成一次性任务）；`--repeat 0` = 无限循环；**job 只有在 gateway 运行时才会自动触发**（`hermes cron status` 查看；未运行时输出仍会被保存但不投递）。
 
-3. **查看结果**：`jq . status.json` 看流转；`ls artifacts/` 看终版；`tail logs/pipeline.log` 看审计；**有问题先跑 `python3 scripts/statectl.py diagnose`**（问题定位见 `docs/troubleshooting.md`）。
+3. **查看结果**：`jq . workspace/status.json` 看流转；`ls workspace/artifacts/` 看终版；`tail workspace/logs/pipeline.log` 看审计；**有问题先跑 `python3 scripts/statectl.py diagnose`**（问题定位见 `docs/troubleshooting.md`）。
 
 > 替代方案：**第 2 步可直接用一键脚本** `bash install.sh` 完成（幂等，可重复执行），见下节。
 
@@ -83,7 +84,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 bash ~/cyx/req-review/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检
 bash ~/cyx/req-review/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
 bash ~/cyx/req-review/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash ~/cyx/req-review/uninstall.sh --full               # 清空运行期数据（analysis/artifacts/review/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -107,7 +108,7 @@ bash ~/cyx/req-review/uninstall.sh --full               # 清空运行期数据�
    hermes cron status                    # 应见 "Gateway is running" + 3 active jobs
    python3 scripts/statectl.py diagnose  # 应见 0 严重问题 / 0 警告
    # 可选端到端验证（消耗少量 token）：投放一个测试需求并立即触发
-   cp 测试需求.md input/test-install.md && hermes cron run req-analyst-top
+   cp 测试需求.md workspace/input/<project>/test-install.md && hermes cron run req-analyst-top
    python3 scripts/statectl.py list      # 应见 analyzing → analyzed
    ```
 5. **场景差异说明**：
@@ -116,7 +117,7 @@ bash ~/cyx/req-review/uninstall.sh --full               # 清空运行期数据�
    - **无 systemd 环境**（WSL/Docker 等）→ `--with-gateway` 自动启动失败时会提示手动方案（`hermes gateway run` 前台 / `sudo hermes gateway install --system`），不会静默假装成功。
 
 - **install 幂等**：重复执行只会补齐缺失项（已存在则跳过），末尾自动跑 `diagnose` 自检；**工作区迁移后重跑 install 即可**（薄壳按当前路径重新生成）；
-- **uninstall 默认安全**：只拆 cron job 与 `~/.hermes/scripts/` 薄壳，`status.json`/产物/日志原样保留；`--full` 才删数据且有确认；
+- **uninstall 默认安全**：只拆 cron job 与 `~/.hermes/scripts/` 薄壳，`workspace/status.json`/产物/日志原样保留；`--full` 才删数据且有确认；
 - 两者都**不碰 gateway**（它同时服务 Hermes 其他功能）。
 
 ## 模型配置
@@ -171,7 +172,7 @@ bash ~/cyx/req-review/uninstall.sh --full               # 清空运行期数据�
 
 ### 通道③④ 查询 / 干预 / 投放（聊天即操作）
 连接后直接和 bot 对话（中文即可），Hermes 会加载 `req-review-pipeline` skill 处理：
-- **投放**："我有个新需求：<内容>" → 自动写入 `input/`（起合法 req_id）；
+- **投放**："我有个新需求：<内容>" → 自动写入 `workspace/input/<project>/`（起合法 req_id）；
 - **查询**："需求进度" / "req-003 状态" → 状态摘要回复；
 - **干预**："requeue req-003" / "rollback req-003" / "跑下诊断"；
 - 结果随时可问，或等通道②推送。
@@ -215,20 +216,20 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
   ```
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；
-- **忽略项**：`logs/`、`__pycache__/`、`status.lock`（运行噪音，不入库）；`status.json`、`input/`、`analysis/`、`review/`、`artifacts/` 等业务数据全部入库；
-- **教训**：2026-08-07 工作区曾被旧版 `uninstall.sh --full`（删除整个工作区）误删，靠会话 DB 重建——现 `--full` 已改为只清空运行期数据、保留项目资产；纳入 git 后即使误删也可 `git restore` 秒级恢复。
+- **忽略项**：`workspace/logs/`、`__pycache__/`、`status.lock`（运行噪音，不入库）；`workspace/status.json`、`workspace/input/<project>/`、`workspace/analysis/<project>/`、`workspace/review/<project>/`、`workspace/artifacts/<project>/` 等业务数据全部入库；
+- **教训**：2026-08-07 工作区曾被旧版 `uninstall.sh --full`（删除整个工作区）误删，靠会话 DB 重建——现 `--full` 已改为只清空数据层 workspace/、保留项目资产；纳入 git 后即使误删也可 `git restore` 秒级恢复。
 
 
-- 投放唯一入口是 `input/`；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
-- **归档快速阅读**：`artifacts/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
+- 投放唯一入口是 `workspace/input/<project>/`；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
+- **归档快速阅读**：`workspace/artifacts/<project>/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
 - **改内容不改文件名不会触发重新分析**——重跑用 `python3 scripts/statectl.py requeue <req_id>`；
-- 删除 `input/` 文件不会清理 `status.json` 条目（历史保留）；
+- 删除 `workspace/input/<project>/` 文件不会清理 `workspace/status.json` 条目（历史保留）；
 - 非 `.md` 文件忽略；一个文件放多个需求会被当作一个需求处理；
 - 完整边界行为表见 `docs/state-machine.md` §9.1。
 
 ## 设计文档索引
 
-- 角色：`roles/analyst.md`（产品视角·麦肯锡方法论）、`roles/reviewer.md`（12 项检查清单）、`roles/bot.md`（zbot 职责，install/uninstall 自动注入/移除）
+- 角色：`roles/req-analyst.md`（产品视角·麦肯锡方法论）、`roles/req-reviewer.md`（12 项检查清单）、`roles/bot.md`（zbot 职责，install/uninstall 自动注入/移除）
 - 状态机（含上下半部调度架构）：`docs/state-machine.md`
 - **问题定位指南（DFx）**：`docs/troubleshooting.md`
 - 流水线约定（下半部加载）：`AGENTS.md`

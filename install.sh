@@ -24,10 +24,11 @@ command -v hermes  >/dev/null || die "缺少 hermes CLI（请先安装 Hermes Ag
 [ -f "$SCRIPTS_DIR/statectl.py" ] || die "未找到 $SCRIPTS_DIR/statectl.py —— install.sh 必须放在流水线工作区根目录"
 
 # ---- 1. 目录骨架（缺啥补啥，不覆盖已有文件） ----
-mkdir -p "$WORKSPACE"/{input,analysis,review,artifacts,logs,roles,docs,scripts}
-[ -f "$WORKSPACE/status.json" ] || echo '{}' > "$WORKSPACE/status.json"
-touch "$WORKSPACE/logs/pipeline.log" "$WORKSPACE/logs/alarms.txt" "$WORKSPACE/status.lock"
-say "目录骨架就绪: $WORKSPACE"
+# 资产层在根目录（roles/docs/scripts）；数据层在 workspace/（input/analysis/review/artifacts/logs/status.json）
+mkdir -p "$WORKSPACE"/{roles,docs,scripts} "$WORKSPACE/workspace"/{input,analysis,review,artifacts,logs}
+[ -f "$WORKSPACE/workspace/status.json" ] || echo '{}' > "$WORKSPACE/workspace/status.json"
+touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt" "$WORKSPACE/workspace/status.lock"
+say "目录骨架就绪: $WORKSPACE（资产层 + workspace/ 数据层）"
 
 # ---- 1.5 zbot 职责注入（roles/bot.md → gateway.json，幂等；重启 gateway 生效） ----
 python3 "$SCRIPTS_DIR/bot_config.py" install

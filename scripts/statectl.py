@@ -25,16 +25,55 @@ from datetime import datetime, timezone
 # ---------------- 路径与常量 ----------------
 
 WORKDIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # req-review/（realpath：兼容 ~/.hermes/scripts/ 下的符号链接调用）
-INPUT_DIR = os.path.join(WORKDIR, "input")
-ANALYSIS_DIR = os.path.join(WORKDIR, "analysis")
-REVIEW_DIR = os.path.join(WORKDIR, "review")
-ARTIFACT_DIR = os.path.join(WORKDIR, "artifacts")
-LOG_DIR = os.path.join(WORKDIR, "logs")
+WORKSPACE_DIR = os.path.join(WORKDIR, "workspace")  # 运行数据层（固定资产在根目录，数据全部收进 workspace/）
+INPUT_DIR = os.path.join(WORKSPACE_DIR, "input")
+ANALYSIS_DIR = os.path.join(WORKSPACE_DIR, "analysis")
+REVIEW_DIR = os.path.join(WORKSPACE_DIR, "review")
+ARTIFACT_DIR = os.path.join(WORKSPACE_DIR, "artifacts")
+LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")
 SCRIPTS_DIR = os.path.join(WORKDIR, "scripts")
-STATUS_FILE = os.path.join(WORKDIR, "status.json")
-LOCK_FILE = os.path.join(WORKDIR, "status.lock")
+STATUS_FILE = os.path.join(WORKSPACE_DIR, "status.json")
+LOCK_FILE = os.path.join(WORKSPACE_DIR, "status.lock")
 LOG_FILE = os.path.join(LOG_DIR, "pipeline.log")
 ALARM_FILE = os.path.join(LOG_DIR, "alarms.txt")
+
+DEFAULT_PROJECT = "default"  # 未指定项目时的兜底项目
+
+
+def split_key(key: str):
+    """status key → (project, req_id)。key 格式为 '<project>/<req_id>'；兼容旧格式（无 '/' → default 项目）。"""
+    if "/" in key:
+        p, r = key.rsplit("/", 1)
+        return (p, r) if p else (DEFAULT_PROJECT, r)
+    return DEFAULT_PROJECT, key
+
+
+def rel_input(project: str, rid: str) -> str:
+    return f"input/{project}/{rid}.md"
+
+
+def rel_analysis(project: str, rid: str, n: int) -> str:
+    return f"analysis/{project}/{rid}-r{n}.md"
+
+
+def rel_review(project: str, rid: str, n: int) -> str:
+    return f"review/{project}/{rid}-r{n}.md"
+
+
+def rel_artifact(project: str, rid: str) -> str:
+    return f"artifacts/{project}/{rid}.md"
+
+
+def abs_input(project: str, rid: str) -> str:
+    return os.path.join(INPUT_DIR, project, rid + ".md")
+
+
+def abs_artifact(project: str, rid: str) -> str:
+    return os.path.join(ARTIFACT_DIR, project, rid + ".md")
+
+
+def worker_log_name(project: str, rid: str, n: int) -> str:
+    return f"worker-{project}-{rid}-r{n}.log"
 
 STALE_AFTER_MIN = int(os.environ.get("STALE_AFTER_MIN", "20"))   # 中间态超时（分钟）
 MAX_FAILURES = int(os.environ.get("MAX_FAILURES", "2"))          # 连续失败上限
@@ -114,29 +153,58 @@ def pid_alive(pid) -> bool:
 # ---------------- 状态机操作 ----------------
 
 def register_new_inputs(st: dict) -> list:
-    """input/ 下未登记文件自动注册为 pending。返回新注册的 req_id 列表。"""
+    """workspace/input/ 下未登记文件自动注册为 pending（按项目子目录）。
+    结构：input/<project>/<req_id>.md（推荐）；兼容 input/<req_id>.md 平铺 → default 项目。
+    返回新注册的 key（'<project>/<req_id>'）列表。"""
     registered = []
     if not os.path.isdir(INPUT_DIR):
         return registered
+    # 项目子目录 input/<project>/*.md
+    for proj in sorted(os.listdir(INPUT_DIR)):
+        pdir = os.path.join(INPUT_DIR, proj)
+        if not os.path.isdir(pdir):
+            continue
+        for name in sorted(os.listdir(pdir)):
+            if not name.endswith(".md"):
+                continue
+            rid = name[:-3]
+            key = f"{proj}/{rid}"
+            if key in st:
+                continue
+            st[key] = {
+                "status": "pending",
+                "round": 0,
+                "max_rounds": DEFAULT_MAX_ROUNDS,
+                "forced": False,
+                "analysis": None,
+                "reviews": [],
+                "failures": 0,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+            registered.append(key)
+            log(f"REGISTER {key} status=pending round=0 project={proj}")
+    # 兼容：input/<req_id>.md 平铺文件 → default 项目
     for name in sorted(os.listdir(INPUT_DIR)):
-        if not name.endswith(".md"):
-            continue
-        rid = name[:-3]
-        if rid in st:
-            continue
-        st[rid] = {
-            "status": "pending",
-            "round": 0,
-            "max_rounds": DEFAULT_MAX_ROUNDS,
-            "forced": False,
-            "analysis": None,
-            "reviews": [],
-            "failures": 0,
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        }
-        registered.append(rid)
-        log(f"REGISTER {rid} status=pending round=0")
+        full = os.path.join(INPUT_DIR, name)
+        if os.path.isfile(full) and name.endswith(".md"):
+            rid = name[:-3]
+            key = f"{DEFAULT_PROJECT}/{rid}"
+            if key in st:
+                continue
+            st[key] = {
+                "status": "pending",
+                "round": 0,
+                "max_rounds": DEFAULT_MAX_ROUNDS,
+                "forced": False,
+                "analysis": None,
+                "reviews": [],
+                "failures": 0,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+            registered.append(key)
+            log(f"REGISTER {key} status=pending round=0 project={DEFAULT_PROJECT}")
     return registered
 
 
@@ -219,15 +287,16 @@ def claim(st: dict, rid: str, role: str) -> bool:
     return True
 
 
-def build_worker_query(role: str, rid: str, e: dict):
-    """构造下半部 worker 的启动指令。返回 (round_n, query)。"""
+def build_worker_query(role: str, key: str, e: dict):
+    """构造下半部 worker 的启动指令。返回 (round_n, query)。key 格式 '<project>/<req_id>'。"""
+    project, rid = split_key(key)
     if role == "analyst":
         n = int(e["round"]) + 1
-        out = f"analysis/{rid}-r{n}.md"
+        out = rel_analysis(project, rid, n)
         q = [
-            f"你是本流水线的【需求分析师】下半部 worker。严格遵循 roles/analyst.md 完成需求 {rid} 的第 {n} 轮分析/修改。",
+            f"你是本流水线的【需求分析师】下半部 worker。严格遵循 roles/req-analyst.md 完成需求 {key}（项目 {project}）的第 {n} 轮分析/修改。",
             "输入文件：",
-            f"- 需求原文：input/{rid}.md",
+            f"- 需求原文：{rel_input(project, rid)}",
         ]
         if e.get("analysis"):
             q.append(f"- 上一版分析（修改轮必读）：{e['analysis']}")
@@ -235,37 +304,38 @@ def build_worker_query(role: str, rid: str, e: dict):
             q.append(f"- 最新评审意见（修改轮必须逐条回应）：{e['reviews'][-1]}")
         q += [
             "任务：",
-            f"1. 按 roles/analyst.md 的输出模板与工作原则产出本轮分析报告；",
+            "1. 按 roles/req-analyst.md 的输出模板与工作原则产出本轮分析报告；",
             f"2. 写入 {out}；",
-            f"3. 运行 python3 scripts/statectl.py release_analyze {rid} {out} 完成状态更新（该命令会校验产物存在）；",
+            f"3. 运行 python3 scripts/statectl.py release_analyze {key} {out} 完成状态更新（该命令会校验产物存在）；",
             "4. 完成后无需汇报，过程留痕在 worker 日志即可。",
         ]
         return n, "\n".join(q)
     else:  # reviewer
         n = int(e["round"]) + 1
-        out = f"review/{rid}-r{n}.md"
-        analysis_file = e.get("analysis") or f"analysis/{rid}-r{n}.md"
+        out = rel_review(project, rid, n)
+        analysis_file = e.get("analysis") or rel_analysis(project, rid, n)
         q = [
-            f"你是本流水线的【需求评审师】下半部 worker。严格遵循 roles/reviewer.md 评审需求 {rid} 的第 {n} 轮分析。",
+            f"你是本流水线的【需求评审师】下半部 worker。严格遵循 roles/req-reviewer.md 评审需求 {key}（项目 {project}）的第 {n} 轮分析。",
             "输入文件：",
-            f"- 需求原文：input/{rid}.md",
+            f"- 需求原文：{rel_input(project, rid)}",
             f"- 分析报告：{analysis_file}",
             f"注意：本需求 max_rounds={e.get('max_rounds', DEFAULT_MAX_ROUNDS)}，第 {n} 轮仍 FAIL 将由状态机自动强制归档，你无需关心。",
             "任务：",
-            f"1. 按 roles/reviewer.md 的检查清单与输出模板评审；",
+            "1. 按 roles/req-reviewer.md 的检查清单与输出模板评审；",
             f"2. 结论 PASS 或 FAIL，写入 {out}；",
-            f"3. 运行 python3 scripts/statectl.py release_review {rid} {out} PASS|FAIL 完成状态更新（该命令会校验产物存在）；",
+            f"3. 运行 python3 scripts/statectl.py release_review {key} {out} PASS|FAIL 完成状态更新（该命令会校验产物存在）；",
             "4. 完成后无需汇报。",
         ]
         return n, "\n".join(q)
 
 
-def spawn_worker(role: str, rid: str, round_n: int, query: str) -> int:
+def spawn_worker(role: str, key: str, round_n: int, query: str) -> int:
     """setsid 拉起下半部 worker（独立会话，脱离 cron 进程组，不受 3 分钟限制）。"""
+    project, rid = split_key(key)
     model = ANALYST_MODEL if role == "analyst" else REVIEWER_MODEL
     provider = ANALYST_PROVIDER if role == "analyst" else REVIEWER_PROVIDER
     os.makedirs(LOG_DIR, exist_ok=True)
-    logf = open(os.path.join(LOG_DIR, f"worker-{rid}-r{round_n}.log"), "ab")
+    logf = open(os.path.join(LOG_DIR, worker_log_name(project, rid, round_n)), "ab")
     cmd = ["hermes", "chat", "-q", query, "-m", model, "-Q"]
     if provider:
         cmd += ["--provider", provider]
@@ -277,7 +347,7 @@ def spawn_worker(role: str, rid: str, round_n: int, query: str) -> int:
         stderr=subprocess.STDOUT,
         start_new_session=True,  # 新会话：父进程（cron）被杀不影响 worker
     )
-    log(f"SPAWN {rid} worker={role} pid={p.pid} model={model} round={round_n}")
+    log(f"SPAWN {key} worker={role} pid={p.pid} model={model} round={round_n}")
     return p.pid
 
 
@@ -292,12 +362,15 @@ def drain_alarms(new_alarms: list) -> str:
     return "\n".join(lines)
 
 
-def write_artifact(rid: str, e: dict) -> None:
-    """评审通过（含强制）后归档：结论摘要 + 原文 + 最终分析 + 全部评审历史。"""
-    os.makedirs(ARTIFACT_DIR, exist_ok=True)
+def write_artifact(key: str, e: dict) -> None:
+    """评审通过（含强制）后归档：结论摘要 + 原文 + 最终分析 + 全部评审历史。
+    key 格式 '<project>/<req_id>' → artifacts/<project>/<req_id>.md。"""
+    project, rid = split_key(key)
+    os.makedirs(os.path.join(ARTIFACT_DIR, project), exist_ok=True)
     reviews = e.get("reviews") or []
     forced = e.get("forced", False)
-    parts = [f"# 需求评审归档：{rid}", ""]
+    parts = [f"# 需求评审归档：{rid}", "",
+             f"> 项目：{project} ｜ 归档：{rel_artifact(project, rid)}", ""]
     # 结论摘要区（快速全貌：接手开发 / 审计核对的第一屏）
     parts += ["## 结论摘要", "",
               f"- 状态：**{e.get('status', 'approved')}**（{'⚠️ 达到轮次上限强制归档，需人工复核' if forced else '正常评审通过'}）",
@@ -308,27 +381,27 @@ def write_artifact(rid: str, e: dict) -> None:
               "",
               "> 接手开发请以【需求原文 + 最终分析 + 最终评审（最后一轮）】为准；前面轮次的评审意见为过程记录（已解决或已驳回）。",
               ""]
-    orig = os.path.join(INPUT_DIR, rid + ".md")
+    orig = abs_input(project, rid)
     if os.path.exists(orig):
         with open(orig, encoding="utf-8") as f:
             parts += ["## 需求原文", "", f.read().strip(), ""]
     if e.get("analysis"):
-        ap = os.path.join(WORKDIR, e["analysis"])
+        ap = os.path.join(WORKSPACE_DIR, e["analysis"])
         if os.path.exists(ap):
             with open(ap, encoding="utf-8") as f:
                 parts += [f"## 最终分析（{e['analysis']}）", "", f.read().strip(), ""]
     if reviews:
         parts += [f"## 评审历史（{len(reviews)} 轮）", ""]
         for rp in reviews:
-            full = os.path.join(WORKDIR, rp)
+            full = os.path.join(WORKSPACE_DIR, rp)
             if os.path.exists(full):
                 with open(full, encoding="utf-8") as f:
                     parts += [f"### {rp}", "", f.read().strip(), ""]
     if forced:
         parts += ["## 备注", "本需求达到轮次上限被强制归档（forced=true），仍有未解决意见，请人工复核。"]
-    with open(os.path.join(ARTIFACT_DIR, rid + ".md"), "w", encoding="utf-8") as f:
+    with open(abs_artifact(project, rid), "w", encoding="utf-8") as f:
         f.write("\n".join(parts) + "\n")
-    log(f"ARCHIVE {rid} file=artifacts/{rid}.md forced={forced}")
+    log(f"ARCHIVE {key} file={rel_artifact(project, rid)} forced={forced}")
 
 
 # ---------------- 上半部 tick ----------------
@@ -375,20 +448,28 @@ def weekly_tick() -> int:
     issues = []
     with acquire_lock() as _:
         st = read_status()
-        for rid, e in sorted(st.items()):
+        for key, e in sorted(st.items()):
+            project, rid = split_key(key)
             s = e.get("status")
             if s == "approved":
-                if not os.path.exists(os.path.join(ARTIFACT_DIR, rid + ".md")):
-                    issues.append(f"[AUDIT] 需求 {rid} 已 approved 但缺 artifacts/{rid}.md")
+                if not os.path.exists(abs_artifact(project, rid)):
+                    issues.append(f"[AUDIT] 需求 {key} 已 approved 但缺 {rel_artifact(project, rid)}")
                 if e.get("forced"):
-                    issues.append(f"[AUDIT] 需求 {rid} 为强制归档（forced），请人工复核 artifacts/{rid}.md")
+                    issues.append(f"[AUDIT] 需求 {key} 为强制归档（forced），请人工复核 {rel_artifact(project, rid)}")
             elif s == "blocked":
-                issues.append(f"[AUDIT] 需求 {rid} 处于 blocked，需人工介入（python3 scripts/statectl.py requeue {rid}）")
+                issues.append(f"[AUDIT] 需求 {key} 处于 blocked，需人工介入（python3 scripts/statectl.py requeue {key}）")
             elif s in ("analyzing", "reviewing"):
-                issues.append(f"[AUDIT] 需求 {rid} 滞留 {s}（中间态不应跨周存在）")
+                issues.append(f"[AUDIT] 需求 {key} 滞留 {s}（中间态不应跨周存在）")
         if os.path.isdir(INPUT_DIR):
+            for proj in sorted(os.listdir(INPUT_DIR)):
+                pdir = os.path.join(INPUT_DIR, proj)
+                if not os.path.isdir(pdir):
+                    continue
+                for name in sorted(os.listdir(pdir)):
+                    if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
+                        issues.append(f"[AUDIT] input/{proj}/{name} 未登记（下个分析师 tick 会自动注册）")
             for name in sorted(os.listdir(INPUT_DIR)):
-                if name.endswith(".md") and name[:-3] not in st:
+                if os.path.isfile(os.path.join(INPUT_DIR, name)) and name.endswith(".md") and f"{DEFAULT_PROJECT}/{name[:-3]}" not in st:
                     issues.append(f"[AUDIT] input/{name} 未登记（下个分析师 tick 会自动注册）")
     if issues:
         print("\n".join(issues))
@@ -405,7 +486,7 @@ def release_analyze(rid: str, product: str) -> int:
         if not e or e["status"] != "analyzing":
             print(f"release_analyze: {rid} 状态不是 analyzing，拒绝", file=sys.stderr)
             return 1
-        full = os.path.join(WORKDIR, product)
+        full = os.path.join(WORKSPACE_DIR, product)
         if not os.path.exists(full):
             # 产物缺失 → 视为失败：自动回滚，交由重试/stale 兜底
             alarms = []
@@ -436,7 +517,7 @@ def release_review(rid: str, product: str, conclusion: str) -> int:
         if not e or e["status"] != "reviewing":
             print(f"release_review: {rid} 状态不是 reviewing，拒绝", file=sys.stderr)
             return 1
-        full = os.path.join(WORKDIR, product)
+        full = os.path.join(WORKSPACE_DIR, product)
         if not os.path.exists(full):
             alarms = []
             rollback_entry(st, rid, alarms, reason="missing-product")
@@ -451,10 +532,11 @@ def release_review(rid: str, product: str, conclusion: str) -> int:
             if e["round"] >= int(e.get("max_rounds", DEFAULT_MAX_ROUNDS)):
                 e["status"] = "approved"
                 e["forced"] = True
+                project, _ = split_key(rid)
                 with open(ALARM_FILE, "a", encoding="utf-8") as f:
                     f.write(
                         f"[FORCED] 需求 {rid} 第 {e['round']} 轮仍 FAIL，已达 max_rounds，"
-                        f"已强制归档（artifacts/{rid}.md），请人工复核未解决意见。\n"
+                        f"已强制归档（{rel_artifact(project, rid)}），请人工复核未解决意见。\n"
                     )
             else:
                 e["status"] = "needs_fix"
@@ -556,10 +638,10 @@ def cmd_list() -> int:
     if not st:
         print("(空：还没有需求)")
         return 0
-    print(f"{'REQ-ID':<16} {'STATUS':<10} {'ROUND':<6} {'FORCED':<7} {'FAIL':<5} UPDATED_AT")
-    for rid, e in sorted(st.items()):
+    print(f"{'REQ-ID':<32} {'STATUS':<10} {'ROUND':<6} {'FORCED':<7} {'FAIL':<5} UPDATED_AT")
+    for key, e in sorted(st.items()):
         print(
-            f"{rid:<16} {e['status']:<10} {e['round']:<6} {str(e.get('forced', False)):<7} "
+            f"{key:<32} {e['status']:<10} {e['round']:<6} {str(e.get('forced', False)):<7} "
             f"{e['failures']:<5} {e.get('updated_at', '')}"
         )
     return 0
@@ -596,18 +678,19 @@ def cmd_notify() -> int:
                 f.write(now)
             return 0
         new_items = []
-        for rid, e in sorted(st.items()):
+        for key, e in sorted(st.items()):
             if e.get("status") != "approved":
                 continue
             upd = e.get("updated_at", "")
             if marker and upd <= marker:
                 continue
-            new_items.append((rid, e))
+            new_items.append((key, e))
         if new_items:
             lines = [f"📋 需求评审结果（新增 {len(new_items)} 项归档）"]
-            for rid, e in new_items:
+            for key, e in new_items:
+                project, rid = split_key(key)
                 forced = " ⚠️强制归档（需人工复核）" if e.get("forced") else ""
-                lines.append(f"✅ {rid} — 第 {e.get('round', '?')} 轮通过{forced}（artifacts/{rid}.md）")
+                lines.append(f"✅ {key} — 第 {e.get('round', '?')} 轮通过{forced}（{rel_artifact(project, rid)}）")
             out = "\n".join(lines)
         else:
             out = ""
@@ -651,48 +734,60 @@ def diagnose() -> int:
         st = {}
         add("FAIL", "D1", "status.json 缺失")
 
-    # D2 目录完整性
-    missing = [d for d in ("input", "analysis", "review", "artifacts", "logs", "roles", "scripts", "docs")
-               if not os.path.isdir(os.path.join(WORKDIR, d))]
+    # D2 目录完整性（资产层在根目录，数据层在 workspace/）
+    missing = [d for d in ("roles", "scripts", "docs") if not os.path.isdir(os.path.join(WORKDIR, d))]
+    missing += [d for d in ("input", "analysis", "review", "artifacts", "logs")
+                if not os.path.isdir(os.path.join(WORKSPACE_DIR, d))]
     add("PASS" if not missing else "FAIL", "D2", "目录完整" if not missing else f"缺失目录: {missing}")
 
     # D3–D8 逐条目检查
-    for rid, e in st.items():
+    for key, e in st.items():
         miss_f = [f for f in REQUIRED_FIELDS if f not in e]
         if miss_f:
-            add("WARN", "D3", f"{rid} 缺字段 {miss_f}")
+            add("WARN", "D3", f"{key} 缺字段 {miss_f}")
         s = e.get("status")
         if s not in STATE_SET:
-            add("FAIL", "D4", f"{rid} 非法状态 {s!r}（合法: {sorted(STATE_SET)}）")
+            add("FAIL", "D4", f"{key} 非法状态 {s!r}（合法: {sorted(STATE_SET)}）")
         if s in ("analyzing", "reviewing"):
             ca = e.get("claimed_at")
             if not ca:
-                add("WARN", "D5", f"{rid} 处于 {s} 但无 claimed_at（下个 tick 的 stale 恢复会处理）")
+                add("WARN", "D5", f"{key} 处于 {s} 但无 claimed_at（下个 tick 的 stale 恢复会处理）")
             else:
                 try:
                     age = (datetime.now(timezone.utc) - datetime.fromisoformat(ca.replace("Z", "+00:00"))).total_seconds() / 60.0
                 except ValueError:
                     age = STALE_AFTER_MIN + 1
                 if age >= 24 * 60:
-                    add("WARN", "D5", f"{rid} 滞留 {s} 已 {age:.0f} 分钟（>24h，异常，查 worker 日志）")
+                    add("WARN", "D5", f"{key} 滞留 {s} 已 {age:.0f} 分钟（>24h，异常，查 worker 日志）")
                 elif age >= STALE_AFTER_MIN:
-                    add("WARN", "D5", f"{rid} 滞留 {s} 已 {age:.0f} 分钟（>{STALE_AFTER_MIN}min，将自动 stale 恢复；或 rollback {rid}）")
+                    add("WARN", "D5", f"{key} 滞留 {s} 已 {age:.0f} 分钟（>{STALE_AFTER_MIN}min，将自动 stale 恢复；或 rollback {key}）")
         else:
             leftover = [k for k in ("claimed_by", "claimed_at", "worker_pid") if k in e]
             if leftover:
-                add("WARN", "D6", f"{rid} 非中间态却残留 claim 字段 {leftover}（可手动清理）")
+                add("WARN", "D6", f"{key} 非中间态却残留 claim 字段 {leftover}（可手动清理）")
         for k in (e.get("analysis"),) + tuple(e.get("reviews", [])):
-            if k and not os.path.exists(os.path.join(WORKDIR, k)):
-                add("WARN", "D7", f"{rid} 引用文件缺失: {k}")
+            if k and not os.path.exists(os.path.join(WORKSPACE_DIR, k)):
+                add("WARN", "D7", f"{key} 引用文件缺失: {k}")
         if s == "approved":
-            if not os.path.exists(os.path.join(ARTIFACT_DIR, rid + ".md")):
-                add("WARN", "D8", f"{rid} 已 approved 但缺 artifacts/{rid}.md")
+            project, rid = split_key(key)
+            if not os.path.exists(abs_artifact(project, rid)):
+                add("WARN", "D8", f"{key} 已 approved 但缺 {rel_artifact(project, rid)}")
             if e.get("forced"):
-                add("WARN", "D8", f"{rid} 为强制归档（forced），请人工复核未解决意见")
+                add("WARN", "D8", f"{key} 为强制归档（forced），请人工复核未解决意见")
 
-    # D9 input/ 未登记
+    # D9 input/ 未登记（项目子目录 + 平铺兼容）
     if os.path.isdir(INPUT_DIR):
-        unreg = [n[:-3] for n in sorted(os.listdir(INPUT_DIR)) if n.endswith(".md") and n[:-3] not in st]
+        unreg = []
+        for proj in sorted(os.listdir(INPUT_DIR)):
+            pdir = os.path.join(INPUT_DIR, proj)
+            if not os.path.isdir(pdir):
+                continue
+            for name in sorted(os.listdir(pdir)):
+                if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
+                    unreg.append(f"{proj}/{name}")
+        for name in sorted(os.listdir(INPUT_DIR)):
+            if os.path.isfile(os.path.join(INPUT_DIR, name)) and name.endswith(".md") and f"{DEFAULT_PROJECT}/{name[:-3]}" not in st:
+                unreg.append(name)
         if unreg:
             add("INFO", "D9", f"input/ 未登记文件 {unreg}（下个分析师 tick 会自动注册）")
 

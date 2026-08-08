@@ -1,12 +1,14 @@
 # 需求评审归档：snake-linux
 
+> 项目：snake-linux ｜ 归档：artifacts/snake-linux/snake-linux.md
+
 ## 结论摘要
 
 - 状态：**approved**（正常评审通过）
 - 最终轮次：r2（共 2 轮评审）
-- 最终分析：`analysis/snake-linux-r2.md`
-- 评审历史：`review/snake-linux-r1.md` → `review/snake-linux-r2.md`（最后一轮为最终评审）
-- 归档时间：2026-08-08T02:05:17Z
+- 最终分析：`analysis/snake-linux/snake-linux-r2.md`
+- 评审历史：`archive/snake-linux/legacy-review-r1-20260807.md` → `review/snake-linux/snake-linux-r2.md`（最后一轮为最终评审）
+- 归档时间：2026-08-08T02:52:50Z
 
 > 接手开发请以【需求原文 + 最终分析 + 最终评审（最后一轮）】为准；前面轮次的评审意见为过程记录（已解决或已驳回）。
 
@@ -41,7 +43,7 @@
 - 代码职责分离、每个源文件可读性良好
 - 按 README 在干净 Linux 环境可跑通
 
-## 最终分析（analysis/snake-linux-r2.md）
+## 最终分析（analysis/snake-linux/snake-linux-r2.md）
 
 # 需求分解文档：snake-linux（第 2 轮）
 
@@ -214,7 +216,7 @@
 
 ## 评审历史（2 轮）
 
-### review/snake-linux-r1.md
+### archive/snake-linux/legacy-review-r1-20260807.md
 
 # 需求评审意见：snake-linux（第 1 轮）
 
@@ -251,7 +253,7 @@
 - R1-02/R1-03/R1-04 三项重要级意见建议一并修正，但若需求方有合理理由可个别遗留；
 - 第 2 轮评审将启用检查项 10（修改回应质量），需核对分析报告第 8 节逐条回应情况。
 
-### review/snake-linux-r2.md
+### review/snake-linux/snake-linux-r2.md
 
 # 需求评审意见：snake-linux（第 2 轮）
 

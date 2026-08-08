@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # req-review 流水线卸载
 # 默认: 移除 4 个 cron job + ~/.hermes/scripts 薄壳 + zbot 职责配置，【保留全部数据】(status.json/产物/日志/需求)
-# --full: 清空运行期数据（analysis/ artifacts/ review/ logs/ status.json），【保留项目资产】
-#         （scripts/ roles/ docs/ input/ 脚本/文档/git 历史）——交互确认输入 yes；或 REQREVIEW_FULL_YES=1 免交互
+# --full: 清空数据层 workspace/（input/ analysis/ review/ artifacts/ logs/ status.json），【保留项目资产】
+#         （scripts/ roles/ docs/ 脚本/文档/git 历史）——交互确认输入 yes；或 REQREVIEW_FULL_YES=1 免交互
 # 测试/部分卸载: REQREVIEW_NO_CRON=1 跳过 cron job 操作
 # 用法: bash uninstall.sh [--full]
 set -euo pipefail
@@ -21,7 +21,7 @@ FULL=0
 
 # ---- 0. --full 确认（不可恢复操作；REQREVIEW_FULL_YES=1 跳过交互，供 agent/自动化调用） ----
 if [ "$FULL" -eq 1 ] && [ "${REQREVIEW_FULL_YES:-0}" != "1" ]; then
-  echo "⚠️  --full 将清空运行期数据（analysis/ artifacts/ review/ logs/ status.json），项目资产与 git 历史保留；清空不可恢复"
+  echo "⚠️  --full 将清空数据层 workspace/（input/ analysis/ review/ artifacts/ logs/ status.json），项目资产与 git 历史保留；清空不可恢复"
   read -r -p "输入 yes 确认: " ans
   [ "$ans" = "yes" ] || { echo "已取消"; exit 1; }
 fi
@@ -61,15 +61,14 @@ done
 if [ "$FULL" -eq 1 ]; then
   # 安全校验：工作区必须是流水线目录（含 scripts/statectl.py）才允许清空
   if [ -f "$WORKSPACE/scripts/statectl.py" ] && [ "$WORKSPACE" != "$HOME" ] && [ "$WORKSPACE" != "/" ]; then
-    # 清空范围：analysis/ artifacts/ review/ logs/ + status.json（运行期数据）
-    # 保留范围：scripts/ roles/ docs/ input/ README.md AGENTS.md install.sh uninstall.sh .gitignore .git/
-    rm -rf "$WORKSPACE/analysis" "$WORKSPACE/artifacts" "$WORKSPACE/review" "$WORKSPACE/logs"
-    rm -f "$WORKSPACE/status.json" "$WORKSPACE/status.lock"
+    # 清空范围：workspace/ 整个数据层（input/ analysis/ review/ artifacts/ logs/ status.json）
+    # 保留范围：scripts/ roles/ docs/ README.md AGENTS.md install.sh uninstall.sh .gitignore .git/
+    rm -rf "$WORKSPACE/workspace"
     # 重建空骨架（与 install.sh 目录结构一致，保证 uninstall 后工作区仍可用）
-    mkdir -p "$WORKSPACE/analysis" "$WORKSPACE/artifacts" "$WORKSPACE/review" "$WORKSPACE/logs"
-    echo '{}' > "$WORKSPACE/status.json"
-    touch "$WORKSPACE/logs/pipeline.log" "$WORKSPACE/logs/alarms.txt"
-    say "已清空运行期数据（analysis/ artifacts/ review/ logs/ status.json），项目资产与 git 历史保留"
+    mkdir -p "$WORKSPACE/workspace"/{input,analysis,review,artifacts,logs}
+    echo '{}' > "$WORKSPACE/workspace/status.json"
+    touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt" "$WORKSPACE/workspace/status.lock"
+    say "已清空数据层 workspace/（input/ analysis/ review/ artifacts/ logs/ status.json），项目资产与 git 历史保留"
     say "如需同步 git 备份: cd $WORKSPACE && git add -A && git commit -m 'uninstall --full 清空运行期数据' && git push"
   else
     warn "工作区校验未通过（$WORKSPACE），拒绝清空"
