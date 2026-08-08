@@ -293,9 +293,21 @@ def drain_alarms(new_alarms: list) -> str:
 
 
 def write_artifact(rid: str, e: dict) -> None:
-    """评审通过（含强制）后归档：原文 + 最终分析 + 全部评审历史。"""
+    """评审通过（含强制）后归档：结论摘要 + 原文 + 最终分析 + 全部评审历史。"""
     os.makedirs(ARTIFACT_DIR, exist_ok=True)
+    reviews = e.get("reviews") or []
+    forced = e.get("forced", False)
     parts = [f"# 需求评审归档：{rid}", ""]
+    # 结论摘要区（快速全貌：接手开发 / 审计核对的第一屏）
+    parts += ["## 结论摘要", "",
+              f"- 状态：**{e.get('status', 'approved')}**（{'⚠️ 达到轮次上限强制归档，需人工复核' if forced else '正常评审通过'}）",
+              f"- 最终轮次：r{e.get('round', 1)}（共 {len(reviews)} 轮评审）",
+              f"- 最终分析：`{e.get('analysis', '')}`",
+              f"- 评审历史：{' → '.join('`' + r + '`' for r in reviews) if reviews else '（无）'}（最后一轮为最终评审）",
+              f"- 归档时间：{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+              "",
+              "> 接手开发请以【需求原文 + 最终分析 + 最终评审（最后一轮）】为准；前面轮次的评审意见为过程记录（已解决或已驳回）。",
+              ""]
     orig = os.path.join(INPUT_DIR, rid + ".md")
     if os.path.exists(orig):
         with open(orig, encoding="utf-8") as f:
@@ -305,18 +317,18 @@ def write_artifact(rid: str, e: dict) -> None:
         if os.path.exists(ap):
             with open(ap, encoding="utf-8") as f:
                 parts += [f"## 最终分析（{e['analysis']}）", "", f.read().strip(), ""]
-    if e.get("reviews"):
-        parts += [f"## 评审历史（{len(e['reviews'])} 轮）", ""]
-        for rp in e["reviews"]:
+    if reviews:
+        parts += [f"## 评审历史（{len(reviews)} 轮）", ""]
+        for rp in reviews:
             full = os.path.join(WORKDIR, rp)
             if os.path.exists(full):
                 with open(full, encoding="utf-8") as f:
                     parts += [f"### {rp}", "", f.read().strip(), ""]
-    if e.get("forced"):
+    if forced:
         parts += ["## 备注", "本需求达到轮次上限被强制归档（forced=true），仍有未解决意见，请人工复核。"]
     with open(os.path.join(ARTIFACT_DIR, rid + ".md"), "w", encoding="utf-8") as f:
         f.write("\n".join(parts) + "\n")
-    log(f"ARCHIVE {rid} file=artifacts/{rid}.md forced={e.get('forced', False)}")
+    log(f"ARCHIVE {rid} file=artifacts/{rid}.md forced={forced}")
 
 
 # ---------------- 上半部 tick ----------------
