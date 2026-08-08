@@ -38,7 +38,7 @@
 ## 目录结构
 
 ```
-req-review/                      # 资产层（git 跟踪，uninstall --full 保留）
+zteam/                      # 资产层（git 跟踪，uninstall --full 保留）
 ├── roles/req-analyst.md       # 需求分析师角色定义（产品视角·麦肯锡：SCQA/MECE，含需求分解模板）
 ├── roles/req-reviewer.md      # 需求评审师角色定义 + 12 项评审检查清单
 ├── roles/bot.md               # zbot（Telegram bot）职责边界与人格定义（install 注入 gateway，uninstall 移除）
@@ -63,9 +63,9 @@ req-review/                      # 资产层（git 跟踪，uninstall --full 保
 ```bash
 # 前提：CLI 只接受 ~/.hermes/scripts/ 下的真实文件（软链会被拒绝），
 # 因此先建 2 行 exec 薄壳（本流水线已建好，逻辑唯一实现在工作区）：
-#   ~/.hermes/scripts/watchdog-analyst.sh   -> exec python3 /home/zyzs/cyx/req-review/scripts/watchdog-analyst.py
-#   ~/.hermes/scripts/watchdog-reviewer.sh  -> exec python3 /home/zyzs/cyx/req-review/scripts/watchdog-reviewer.py
-#   ~/.hermes/scripts/watchdog-weekly.sh    -> exec python3 /home/zyzs/cyx/req-review/scripts/watchdog-weekly.py
+#   ~/.hermes/scripts/watchdog-analyst.sh   -> exec python3 /home/zyzs/cyx/zteam/scripts/watchdog-analyst.py
+#   ~/.hermes/scripts/watchdog-reviewer.sh  -> exec python3 /home/zyzs/cyx/zteam/scripts/watchdog-reviewer.py
+#   ~/.hermes/scripts/watchdog-weekly.sh    -> exec python3 /home/zyzs/cyx/zteam/scripts/watchdog-weekly.py
 
 hermes cron create "*/5 * * * *" --name req-analyst-top  --script watchdog-analyst.sh  --no-agent --repeat 0
 hermes cron create "*/5 * * * *" --name req-reviewer-top --script watchdog-reviewer.sh --no-agent --repeat 0
@@ -81,10 +81,10 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 ## 安装与卸载
 
 ```bash
-bash ~/cyx/req-review/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
-bash ~/cyx/req-review/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
-bash ~/cyx/req-review/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash ~/cyx/zteam/install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
+bash ~/cyx/zteam/install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
+bash ~/cyx/zteam/uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
+bash ~/cyx/zteam/uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -94,13 +94,13 @@ bash ~/cyx/req-review/uninstall.sh --full               # 清空数据层 worksp
    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
    hermes --version    # 确认 CLI 可用
    ```
-2. **拷贝工作区**：把整个 `req-review/` 目录拷到目标机任意路径（路径随意，脚本自动适配；迁移后必须重跑 install 以按新路径重建薄壳）：
+2. **拷贝工作区**：把整个 `zteam/` 目录拷到目标机任意路径（路径随意，脚本自动适配；迁移后必须重跑 install 以按新路径重建薄壳）：
    ```bash
-   scp -r req-review/ user@host:~/
+   scp -r zteam/ user@host:~/
    ```
 3. **一键安装（含 gateway 自启）**：
    ```bash
-   cd req-review && bash install.sh --with-gateway
+   cd zteam && bash install.sh --with-gateway
    ```
    该命令幂等完成：目录骨架 → cron 薄壳（按当前路径生成）→ 3 个 cron job → gateway 未运行则自动安装启动（用户级 systemd 服务，开机自启）→ 末尾自动 `diagnose` 自检，全绿才 exit 0。
 4. **验证**：
@@ -209,10 +209,10 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 
 ### 版本管理（git，防误删/误改）
 工作区是 git 仓库（2026-08-07 初始化，首提交含全部核心资产 + 业务数据）。
-- **远程备份**：`git@github.com:chenyuxiangg/zteam.git`（`origin`，SSH 免密；新机器恢复：`git clone git@github.com:chenyuxiangg/zteam.git ~/cyx/req-review`）；
+- **远程备份**：`git@github.com:chenyuxiangg/zteam.git`（`origin`，SSH 免密；新机器恢复：`git clone git@github.com:chenyuxiangg/zteam.git ~/cyx/zteam`）；
 - **日常提交**（推荐每次改动后）：
   ```bash
-  cd ~/cyx/req-review && git add -A && git commit -m "描述改动" && git push
+  cd ~/cyx/zteam && git add -A && git commit -m "描述改动" && git push
   ```
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；

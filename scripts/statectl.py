@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-req-review 流水线状态控制与上下半部调度（方案 B 唯一实现）
+zteam 流水线状态控制与上下半部调度（方案 B 唯一实现）
 
 职责划分：
 - 上半部（cron no_agent 触发）：analyst_tick / reviewer_tick / weekly_tick —— 只做
@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 # ---------------- 路径与常量 ----------------
 
-WORKDIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # req-review/（realpath：兼容 ~/.hermes/scripts/ 下的符号链接调用）
+WORKDIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # zteam/（realpath：兼容 ~/.hermes/scripts/ 下的符号链接调用）
 WORKSPACE_DIR = os.path.join(WORKDIR, "workspace")  # 运行数据层（固定资产在根目录，数据全部收进 workspace/）
 INPUT_DIR = os.path.join(WORKSPACE_DIR, "input")
 ANALYSIS_DIR = os.path.join(WORKSPACE_DIR, "analysis")
@@ -819,7 +819,7 @@ def diagnose() -> int:
     # D14 日志可写
     add("PASS" if os.access(LOG_DIR, os.W_OK) else "FAIL", "D14", "logs/ 目录可写")
 
-    print("== req-review 诊断报告 ==")
+    print("== zteam 诊断报告 ==")
     for level, code, msg in rows:
         icon = {"PASS": "✅", "WARN": "⚠️", "FAIL": "❌", "INFO": "ℹ️"}[level]
         print(f"  {icon} [{code}] {msg}")

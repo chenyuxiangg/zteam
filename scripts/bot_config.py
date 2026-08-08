@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""zbot 职责注入/移除（req-review 流水线的一部分）。
+"""zbot 职责注入/移除（zteam 流水线的一部分）。
 
 install   : 读 roles/bot.md → 写入 ~/.hermes/gateway.json 的
             platforms.telegram.channel_overrides[<chat_id>].system_prompt

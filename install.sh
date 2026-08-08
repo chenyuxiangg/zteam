@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# req-review 流水线一键安装/修复（幂等：可重复执行，已存在的组件会跳过/保持）
+# zteam 流水线一键安装/修复（幂等：可重复执行，已存在的组件会跳过/保持）
 # 用法: bash install.sh [--with-gateway]
 #   --with-gateway: gateway 未运行时自动安装并启动用户级服务（干净机器一键到位）
 #   REQREVIEW_DELIVER=telegram bash install.sh   # 创建 job 时直接带上投递目标（告警/结果推送到消息平台）
@@ -33,9 +33,9 @@ say "目录骨架就绪: $WORKSPACE（资产层 + workspace/ 数据层）"
 # ---- 1.5 zbot 职责注入（roles/bot.md → gateway.json，幂等） ----
 # gateway.json 内容变化才重启 gateway（幂等 install 零干扰；REQREVIEW_NO_RESTART=1 跳过重启）
 GW_JSON_FILE="${HERMES_HOME:-$HOME/.hermes}/gateway.json"
-GW_MD5_BEFORE="$(md5sum "$GW_JSON_FILE" 2>/dev/null | cut -d' ' -f1)"
+GW_MD5_BEFORE="$(md5sum "$GW_JSON_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
 python3 "$SCRIPTS_DIR/bot_config.py" install
-GW_MD5_AFTER="$(md5sum "$GW_JSON_FILE" 2>/dev/null | cut -d' ' -f1)"
+GW_MD5_AFTER="$(md5sum "$GW_JSON_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
 if [ "${REQREVIEW_NO_RESTART:-0}" != "1" ] && [ "$GW_MD5_BEFORE" != "$GW_MD5_AFTER" ]; then
   if systemctl --user is-active hermes-gateway >/dev/null 2>&1; then
     systemctl --user restart hermes-gateway
@@ -50,7 +50,7 @@ mkdir -p "$HERMES_SCRIPTS"
 for i in "${!WRAPPERS[@]}"; do
   cat > "$HERMES_SCRIPTS/${WRAPPERS[$i]}" <<EOF
 #!/bin/bash
-# req-review 上半部薄壳（由 install.sh 自动生成，请勿手改；工作区迁移后重跑 install.sh 重建）
+# zteam 上半部薄壳（由 install.sh 自动生成，请勿手改；工作区迁移后重跑 install.sh 重建）
 exec python3 "$SCRIPTS_DIR/${WORKER_ENTRIES[$i]}"
 EOF
   chmod +x "$HERMES_SCRIPTS/${WRAPPERS[$i]}"

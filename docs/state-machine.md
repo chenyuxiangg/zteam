@@ -8,7 +8,7 @@
 ## 1. 工作区布局与文件命名约定
 
 ```
-req-review/                       # 资产层（git 跟踪）
+zteam/                       # 资产层（git 跟踪）
 ├── roles/ scripts/ docs/          # 角色定义 / 代码 / 文档
 └── workspace/                     # 数据层（运行数据，按项目组织）
     ├── input/<project>/{req_id}.md          # 需求原文（用户投放区，一个文件一个需求）

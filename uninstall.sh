@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# req-review 流水线卸载
+# zteam 流水线卸载
 # 默认: 移除 4 个 cron job + ~/.hermes/scripts 薄壳 + zbot 职责配置，【保留全部数据】(status.json/产物/日志/需求)
 # --full: 清空数据层 workspace/（input/ analysis/ review/ artifacts/ logs/ status.json），【保留项目资产】
 #         （scripts/ roles/ docs/ 脚本/文档/git 历史）——交互确认输入 yes；或 REQREVIEW_FULL_YES=1 免交互

@@ -1,4 +1,4 @@
-# req-review 流水线约定（下半部 worker 自动加载）
+# zteam 流水线约定（下半部 worker 自动加载）
 
 你是本流水线的**下半部 worker**：执行已被上半部认领的需求分析或评审任务。
 
@@ -11,7 +11,7 @@
 ## 目录结构（资产层 / 数据层）
 
 ```
-req-review/                     # 资产层（git 跟踪）
+zteam/                     # 资产层（git 跟踪）
 ├── roles/  docs/  scripts/     # 角色定义 / 文档 / 代码
 └── workspace/                  # 数据层（运行数据，按项目组织）
     ├── status.json             # 状态机（唯一事实来源；key = <project>/<req_id>）

@@ -1,4 +1,4 @@
-# 问题定位指南（req-review 流水线）
+# 问题定位指南（zteam 流水线）
 
 > 配套 DFx（可诊断性设计）：`python3 scripts/statectl.py diagnose` 一键健康检查。
 > 本指南是排查的唯一权威文档；症状 → 原因 → 检查 → 修复，按优先级排序。
@@ -23,7 +23,7 @@
 ## 1. 一键诊断（DFx）
 
 ```bash
-cd ~/cyx/req-review && python3 scripts/statectl.py diagnose
+cd ~/cyx/zteam && python3 scripts/statectl.py diagnose
 ```
 
 - 15 项检查（D1–D14）：状态文件合法性、目录完整性、条目 schema、非法状态、中间态滞留、claim 残留、引用文件缺失、归档一致性、未登记输入、状态锁、**gateway 运行**、**cron job 存在性**、worker 进程数、日志可写；
