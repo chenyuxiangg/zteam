@@ -8,7 +8,9 @@
 set -euo pipefail
 
 WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERMES_SCRIPTS="$HOME/.hermes/scripts"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+HERMES_SCRIPTS="$HERMES_HOME/scripts"
+HERMES_SKILLS="$HERMES_HOME/skills"
 
 JOBS=(req-analyst-top req-reviewer-top req-worker-top req-weekly-audit req-result-notify)
 WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-worker.sh watchdog-weekly.sh watchdog-notify.sh)
@@ -55,8 +57,11 @@ fi
 
 # ---- 3. 移除薄壳 ----
 for w in "${WRAPPERS[@]}"; do
-  rm -f "$HERMES_SCRIPTS/$w" && say "已移除薄壳: ~/.hermes/scripts/$w"
+  rm -f "$HERMES_SCRIPTS/$w" && say "已移除薄壳: $HERMES_SCRIPTS/$w"
 done
+
+# ---- 3.5 移除 skill（req-review-pipeline 运维手册） ----
+rm -rf "$HERMES_SKILLS/req-review-pipeline" && say "已移除 skill: $HERMES_SKILLS/req-review-pipeline"
 
 # ---- 4. 数据（--full：清空运行期数据，保留项目资产） ----
 if [ "$FULL" -eq 1 ]; then

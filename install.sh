@@ -7,7 +7,9 @@ set -euo pipefail
 
 WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$WORKSPACE/scripts"
-HERMES_SCRIPTS="$HOME/.hermes/scripts"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+HERMES_SCRIPTS="$HERMES_HOME/scripts"
+HERMES_SKILLS="$HERMES_HOME/skills"
 
 JOBS=(req-analyst-top req-reviewer-top req-worker-top req-weekly-audit req-result-notify)
 SCHEDULES=("*/5 * * * *" "*/5 * * * *" "*/5 * * * *" "0 9 * * 1" "*/15 * * * *")
@@ -56,6 +58,15 @@ EOF
   chmod +x "$HERMES_SCRIPTS/${WRAPPERS[$i]}"
 done
 say "cron 薄壳已就绪: $HERMES_SCRIPTS/{watchdog-*.sh}"
+
+# ---- 2.5 skill 安装（req-review-pipeline 运维手册 → Hermes skills 目录；工作区为权威源，幂等覆盖） ----
+if [ -d "$WORKSPACE/skills/req-review-pipeline" ]; then
+  mkdir -p "$HERMES_SKILLS"
+  cp -r "$WORKSPACE/skills/req-review-pipeline" "$HERMES_SKILLS/"
+  say "skill 已安装: $HERMES_SKILLS/req-review-pipeline（工作区为权威源，重装即同步）"
+else
+  warn "工作区无 skills/req-review-pipeline，跳过 skill 安装"
+fi
 
 # ---- 3. cron jobs（幂等：按名查重；已存在但 deliver 不符则校正，保证重装/迁移后推送配置不丢） ----
 LIST="$(hermes cron list 2>/dev/null || true)"
