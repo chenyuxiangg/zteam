@@ -1,0 +1,2 @@
+# 运行时零第三方依赖。
+# Linux CPython 的 curses 模块来自系统 Python 标准库。

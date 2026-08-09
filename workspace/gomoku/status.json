@@ -1,36 +1,170 @@
 {
   "gomoku/gomoku": {
-    "status": "analyzing",
-    "round": 0,
+    "status": "code_designing",
+    "round": 2,
     "max_rounds": 3,
     "forced": false,
-    "analysis": null,
-    "reviews": [],
+    "analysis": "gomoku/analysis/gomoku-r2.md",
+    "reviews": [
+      "gomoku/review/gomoku-r1.md",
+      "gomoku/review/gomoku-r2.md"
+    ],
     "failures": 0,
     "stages": {
       "plan": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": []
+        "round": 1,
+        "product": "gomoku/plans/gomoku-r1.md",
+        "reviews": [
+          "gomoku/plans/gomoku-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-09T13:33:07Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T09:25:36Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T09:25:57Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T09:29:13Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T09:30:50Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T09:32:37Z",
+            "to": "done"
+          },
+          {
+            "t": "2026-08-09T13:25:41Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T13:25:51Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T13:29:08Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T13:31:56Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T13:33:07Z",
+            "to": "done"
+          }
+        ]
       },
       "testplan": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": []
+        "round": 1,
+        "product": "gomoku/testplans/gomoku-r1.md",
+        "reviews": [
+          "gomoku/testplans/gomoku-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-09T13:48:08Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T09:35:43Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T09:35:53Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T09:38:01Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T09:40:59Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T09:43:22Z",
+            "to": "done"
+          },
+          {
+            "t": "2026-08-09T13:35:49Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T13:37:34Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T13:41:08Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T13:46:09Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T13:48:08Z",
+            "to": "done"
+          }
+        ]
       },
       "code": {
         "round": 0,
         "product": null,
         "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": []
+        "state": "working",
+        "state_since": "2026-08-09T13:55:54Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T09:45:47Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T09:46:29Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T09:53:22Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T09:56:09Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T09:59:42Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T10:11:44Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T10:16:16Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T10:20:36Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T10:37:02Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T13:51:00Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T13:55:54Z",
+            "to": "working"
+          }
+        ]
       },
       "test": {
         "round": 0,
@@ -68,8 +202,8 @@
         "round": 0,
         "product": null,
         "reviews": [],
-        "state": "working",
-        "state_since": "2026-08-09T09:10:57Z",
+        "state": "reviewing",
+        "state_since": "2026-08-09T13:21:05Z",
         "timeline": [
           {
             "t": "2026-08-09T09:10:24Z",
@@ -78,14 +212,30 @@
           {
             "t": "2026-08-09T09:10:57Z",
             "to": "working"
+          },
+          {
+            "t": "2026-08-09T09:21:02Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T13:15:33Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T13:15:49Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T13:21:05Z",
+            "to": "reviewing"
           }
         ]
       }
     },
     "created_at": "2026-08-09T09:10:24Z",
-    "updated_at": "2026-08-09T09:10:57Z",
-    "claimed_by": "req-analyst",
-    "claimed_at": "2026-08-09T09:10:24Z",
-    "worker_pid": 660127
+    "updated_at": "2026-08-09T13:55:54Z",
+    "claimed_by": "code-developer",
+    "claimed_at": "2026-08-09T13:51:00Z",
+    "worker_pid": 1208703
   }
 }
