@@ -426,6 +426,23 @@ def _stage_state(st, rid, stage):
     return ensure_stages(e)[stage]["state"]
 
 
+def norm_product(p: str) -> str:
+    """规范化产物路径：统一为相对 WORKSPACE_DIR 的路径（去 workspace/ 前缀、去绝对路径）。
+    防 worker 传参不规范（如带 workspace/ 前缀）导致归档/展示路径风格不一致。"""
+    if not p:
+        return p
+    p = p.strip()
+    if os.path.isabs(p):
+        try:
+            p = os.path.relpath(p, WORKSPACE_DIR)
+        except ValueError:
+            pass
+    for prefix in ("workspace/", "./"):
+        if p.startswith(prefix):
+            p = p[len(prefix):]
+    return p
+
+
 def set_stage_state(st: dict, rid: str, stage: str, state: str, product: str = None) -> tuple:
     """设置阶段状态（统一入口，严格迁移校验）。返回 (ok, err_msg)。
     state ∈ working / reviewing / done；claimed 由 claim() 内部设置，不对外开放。
@@ -451,7 +468,7 @@ def set_stage_state(st: dict, rid: str, stage: str, state: str, product: str = N
         if cur not in ("working", "reviewing"):
             return False, f"{stage} 阶段当前状态 {cur!r} 不允许进入 reviewing（仅 working 可；reviewing 幂等）"
         if product:
-            s["product"] = product
+            s["product"] = norm_product(product)
     elif state == "done":
         if cur != "reviewing":
             return False, f"{stage} 阶段当前状态 {cur!r} 不允许进入 done（仅 reviewing 可）"
@@ -1296,7 +1313,7 @@ def release_release(rid: str, product: str) -> int:
             write_status(st)
             print(f"release_release: 产物 {product} 不存在，已回滚", file=sys.stderr)
             return 1
-        e["stages"]["release"]["product"] = product
+        e["stages"]["release"]["product"] = norm_product(product)
         clear_claim(e)
         write_artifact(rid, e)  # 完整交付物归档
         write_status(st)

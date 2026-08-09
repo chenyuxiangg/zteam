@@ -18,24 +18,21 @@
         "product": "plans/snake-linux/snake-linux-r1.md",
         "reviews": [
           "plans/snake-linux/snake-linux-r1-review.md"
-        ],
-        "status": "done"
+        ]
       },
       "testplan": {
         "round": 1,
         "product": "testplans/snake-linux/snake-linux-r1.md",
         "reviews": [
           "testplans/snake-linux/snake-linux-r1-review.md"
-        ],
-        "status": "done"
+        ]
       },
       "code": {
         "round": 1,
         "product": "code/snake-linux/snake-linux-r1/",
         "reviews": [
           "code/snake-linux/snake-linux-r1-review.md"
-        ],
-        "status": "done"
+        ]
       },
       "test": {
         "round": 2,
@@ -43,8 +40,7 @@
         "reviews": [
           "tests/snake-linux/snake-linux-r1-review.md",
           "tests/snake-linux/snake-linux-r2-review.md"
-        ],
-        "status": "done"
+        ]
       },
       "quality": {
         "round": 2,
@@ -52,22 +48,19 @@
         "reviews": [
           "quality/snake-linux/snake-linux-r1.md",
           "quality/snake-linux/snake-linux-r1.md"
-        ],
-        "status": "done"
+        ]
       },
       "security": {
         "round": 1,
         "product": "security/snake-linux/snake-linux-r1.md",
         "reviews": [
           "security/snake-linux/snake-linux-r1.md"
-        ],
-        "status": "done"
+        ]
       },
       "release": {
         "round": 1,
         "product": "release/snake-linux/snake-linux-r1.md",
-        "reviews": [],
-        "status": "done"
+        "reviews": []
       }
     }
   },
@@ -85,7 +78,7 @@
     "stages": {
       "plan": {
         "round": 2,
-        "product": "workspace/plans/tetris/tetris-r2.md",
+        "product": "plans/tetris/tetris-r2.md",
         "reviews": [
           "plans/tetris/tetris-r1-review.md",
           "plans/tetris/tetris-r2-review.md"
@@ -133,12 +126,11 @@
             "t": "2026-08-09T03:37:08Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "testplan": {
         "round": 2,
-        "product": "workspace/testplans/tetris/tetris-r2.md",
+        "product": "testplans/tetris/tetris-r2.md",
         "reviews": [
           "testplans/tetris/tetris-r1-review.md",
           "testplans/tetris/tetris-r2-review.md"
@@ -186,12 +178,11 @@
             "t": "2026-08-09T03:47:51Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "code": {
         "round": 2,
-        "product": "workspace/code/tetris/tetris-r2/",
+        "product": "code/tetris/tetris-r2/",
         "reviews": [
           "code/tetris/tetris-r1-review.md",
           "code/tetris/tetris-r2-review.md"
@@ -239,12 +230,11 @@
             "t": "2026-08-09T04:03:30Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "test": {
         "round": 1,
-        "product": "workspace/tests/tetris/tetris-r1/",
+        "product": "tests/tetris/tetris-r1/",
         "reviews": [
           "tests/tetris/tetris-r1-review.md"
         ],
@@ -283,8 +273,7 @@
             "t": "2026-08-09T04:20:35Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "quality": {
         "round": 0,
@@ -311,8 +300,7 @@
             "t": "2026-08-09T04:25:17Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "security": {
         "round": 0,
@@ -339,8 +327,7 @@
             "t": "2026-08-09T04:31:02Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "release": {
         "round": 0,
@@ -365,14 +352,12 @@
             "t": "2026-08-09T04:32:40Z",
             "to": "done"
           }
-        ],
-        "status": "pending"
+        ]
       },
       "req": {
         "round": 0,
         "product": "analysis/tetris/tetris-r1.md",
         "reviews": [],
-        "status": "pending",
         "state": "reviewing",
         "state_since": "2026-08-09T03:20:23Z",
         "timeline": [
