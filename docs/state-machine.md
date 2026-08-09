@@ -213,7 +213,6 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 
 | 阶段 | 产出者角色 | 评审者角色 | 产物目录 | 模型 |
 |------|-----------|-----------|---------|------|
-| `req` | req-analyst | req-reviewer | `analysis/` + `review/` | kimi-k3（kimi-coding-cn）/ pro |
 | `plan` | dev-plan-designer | dev-plan-reviewer | `plans/` | flash / pro |
 | `testplan` | test-plan-designer | test-plan-reviewer | `testplans/` | flash / pro |
 | `code` | code-developer | code-reviewer | `code/` | MiniMax-M3（minimax-cn） |

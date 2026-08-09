@@ -185,9 +185,8 @@ DEFAULT_MAX_ROUNDS = int(os.environ.get("DEFAULT_MAX_ROUNDS", "3"))
 
 # 下半部 worker 模型绑定（不同角色不同模型；可用环境变量覆盖）
 # 当前 API（api.deepseek.com）可用模型：deepseek-v4-flash（快/便宜）、deepseek-v4-pro（强推理）
-ANALYST_MODEL = os.environ.get("ANALYST_MODEL", "kimi-k3")
+ANALYST_MODEL = os.environ.get("ANALYST_MODEL", "deepseek-v4-flash")
 ANALYST_PROVIDER = os.environ.get("ANALYST_PROVIDER", "deepseek")
-REQ_ANALYST_PROVIDER = os.environ.get("REQ_ANALYST_PROVIDER", "kimi-coding-cn")  # Kimi/Moonshot 中国站（仅需求分析师；KEY=KIMI_CN_API_KEY）
 REVIEWER_MODEL = os.environ.get("REVIEWER_MODEL", "deepseek-v4-pro")
 REVIEWER_PROVIDER = os.environ.get("REVIEWER_PROVIDER", "deepseek")
 # 阶段角色模型（设计/产出类 = flash 快；评审/门禁类 = pro 把关）
@@ -223,7 +222,7 @@ RELEASE = {"name": "release", "role": "releaser", "dir": "release", "kind": "dir
 
 # 角色 → (模型, provider) 映射（含需求阶段两个角色）
 ROLE_MODELS = {
-    "req-analyst": (ANALYST_MODEL, REQ_ANALYST_PROVIDER),
+    "req-analyst": (ANALYST_MODEL, ANALYST_PROVIDER),
     "req-reviewer": (REVIEWER_MODEL, REVIEWER_PROVIDER),
     "dev-plan-designer": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
     "dev-plan-reviewer": (PLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
