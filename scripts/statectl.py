@@ -197,8 +197,9 @@ TESTPLAN_REVIEWER_MODEL = os.environ.get("TESTPLAN_REVIEWER_MODEL", "deepseek-v4
 CODE_DEVELOPER_MODEL = os.environ.get("CODE_DEVELOPER_MODEL", "MiniMax-M3")
 CODE_REVIEWER_MODEL = os.environ.get("CODE_REVIEWER_MODEL", "MiniMax-M3")
 CODE_PROVIDER = os.environ.get("CODE_PROVIDER", "minimax-cn")  # MiniMax（中国站，Anthropic 兼容 endpoint）
-TEST_DEVELOPER_MODEL = os.environ.get("TEST_DEVELOPER_MODEL", "deepseek-v4-flash")
-TEST_REVIEWER_MODEL = os.environ.get("TEST_REVIEWER_MODEL", "deepseek-v4-pro")
+TEST_DEVELOPER_MODEL = os.environ.get("TEST_DEVELOPER_MODEL", "MiniMax-M3")
+TEST_REVIEWER_MODEL = os.environ.get("TEST_REVIEWER_MODEL", "MiniMax-M3")
+TEST_PROVIDER = os.environ.get("TEST_PROVIDER", "minimax-cn")  # MiniMax（中国站，Anthropic 兼容 endpoint）
 QUALITY_REVIEWER_MODEL = os.environ.get("QUALITY_REVIEWER_MODEL", "deepseek-v4-pro")
 SECURITY_REVIEWER_MODEL = os.environ.get("SECURITY_REVIEWER_MODEL", "deepseek-v4-pro")
 RELEASER_MODEL = os.environ.get("RELEASER_MODEL", "deepseek-v4-flash")
@@ -229,8 +230,8 @@ ROLE_MODELS = {
     "test-plan-reviewer": (TESTPLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
     "code-developer": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),
     "code-reviewer": (CODE_REVIEWER_MODEL, CODE_PROVIDER),
-    "test-developer": (TEST_DEVELOPER_MODEL, ANALYST_PROVIDER),
-    "test-reviewer": (TEST_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "test-developer": (TEST_DEVELOPER_MODEL, TEST_PROVIDER),
+    "test-reviewer": (TEST_REVIEWER_MODEL, TEST_PROVIDER),
     "quality-reviewer": (QUALITY_REVIEWER_MODEL, ANALYST_PROVIDER),
     "security-reviewer": (SECURITY_REVIEWER_MODEL, ANALYST_PROVIDER),
     "releaser": (RELEASER_MODEL, ANALYST_PROVIDER),

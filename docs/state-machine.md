@@ -216,7 +216,7 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 | `plan` | dev-plan-designer | dev-plan-reviewer | `plans/` | flash / pro |
 | `testplan` | test-plan-designer | test-plan-reviewer | `testplans/` | flash / pro |
 | `code` | code-developer | code-reviewer | `code/` | MiniMax-M3（minimax-cn） |
-| `test` | test-developer | test-reviewer | `tests/` | flash / pro |
+| `test` | test-developer | test-reviewer | `tests/` | MiniMax-M3（minimax-cn） |
 | `quality`（门禁） | — | quality-reviewer | `quality/` | pro |
 | `security`（门禁） | — | security-reviewer | `security/` | pro |
 | `release`（终态） | — | releaser（打包交付） | `release/`（交付包目录） | flash |

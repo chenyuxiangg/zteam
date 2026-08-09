@@ -45,7 +45,7 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 - 角色定义：`roles/req-analyst.md`（**产品视角·麦肯锡方法论**：SCQA 理解、MECE 分解、金字塔表达、5W1H 澄清；主动查资料；产出需求分解文档 FR/NFR/竞品分析；**红线=只答 What/Why 绝不答 How**，禁止技术方案/选型/架构）、`roles/req-reviewer.md`（**12 项检查清单**，含 MECE 完整性、竞争力分析两项）。
 - 模型绑定在 `scripts/statectl.py` **第 43–48 行**常量（改模型直接改这里，立即生效；同名环境变量覆盖**仅对手动运行生效**——gateway 是 systemd 服务，不继承交互 shell 的 export，需 `systemctl --user edit hermes-gateway` 加 `Environment=` 再 restart）：
   - 分析师/产出类（analyst、dev-plan-designer、test-plan-designer、test-developer、releaser）= `deepseek-v4-flash`（快/便宜，产出量大）
-  - **code 阶段（例外，2026-08-09 起）= `MiniMax-M3`（provider `minimax-cn`，MiniMax 中国站）**——code-developer 与 code-reviewer 均用 M3；覆盖环境变量 CODE_DEVELOPER_MODEL/CODE_REVIEWER_MODEL/CODE_PROVIDER
+  - **code/test 阶段（2026-08-09 起）= `MiniMax-M3`（provider `minimax-cn`，MiniMax 中国站）**——code-developer/code-reviewer 与 test-developer/test-reviewer 均用 M3；覆盖环境变量 *_DEVELOPER_MODEL/*_REVIEWER_MODEL/*_PROVIDER（前缀 CODE_/TEST_）
   - 评审/门禁类（req-reviewer、dev-plan-reviewer、test-plan-reviewer、code-reviewer、test-reviewer、quality-reviewer、security-reviewer）= `deepseek-v4-pro`（强推理，把关）
 - **用户 DeepSeek API 只有这两个模型**——不要写 deepseek-chat / deepseek-reasoner（不存在，会必现报错）。
 - **11 角色阶段链**：需求(分析师/评审师) → plan(dev-plan-designer/reviewer) → testplan(test-plan-designer/reviewer) → code(code-developer/reviewer) → test(test-developer/reviewer) → quality(门禁) → security(门禁) → release(releaser，**打包交付**：发布说明+用户指南+`{req_id}-v{版本}.tar.gz`+SHA256SUMS+可用性自检，产物为目录) → released 终态。角色定义见 `roles/*.md`。
