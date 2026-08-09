@@ -72,7 +72,7 @@
     }
   },
   "tetris/tetris": {
-    "status": "plan_reviewing",
+    "status": "released",
     "round": 2,
     "max_rounds": 3,
     "forced": false,
@@ -81,16 +81,17 @@
       "review/tetris/tetris-r1.md",
       "review/tetris/tetris-r2.md"
     ],
-    "failures": 0,
+    "failures": 2,
     "stages": {
       "plan": {
-        "round": 1,
+        "round": 2,
         "product": "workspace/plans/tetris/tetris-r2.md",
         "reviews": [
-          "plans/tetris/tetris-r1-review.md"
+          "plans/tetris/tetris-r1-review.md",
+          "plans/tetris/tetris-r2-review.md"
         ],
-        "state": "reviewing",
-        "state_since": "2026-08-09T03:33:26Z",
+        "state": "done",
+        "state_since": "2026-08-09T03:37:08Z",
         "timeline": [
           {
             "t": "2026-08-08T15:40:19Z",
@@ -123,18 +124,27 @@
           {
             "t": "2026-08-09T03:33:26Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T03:35:32Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T03:37:08Z",
+            "to": "done"
           }
         ],
         "status": "pending"
       },
       "testplan": {
-        "round": 1,
-        "product": "workspace/testplans/tetris/tetris-r1.md",
+        "round": 2,
+        "product": "workspace/testplans/tetris/tetris-r2.md",
         "reviews": [
-          "testplans/tetris/tetris-r1-review.md"
+          "testplans/tetris/tetris-r1-review.md",
+          "testplans/tetris/tetris-r2-review.md"
         ],
         "state": "done",
-        "state_since": "2026-08-08T15:57:57Z",
+        "state_since": "2026-08-09T03:47:51Z",
         "timeline": [
           {
             "t": "2026-08-08T15:50:24Z",
@@ -155,18 +165,39 @@
           {
             "t": "2026-08-08T15:57:57Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-09T03:40:21Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T03:40:41Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T03:43:54Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T03:45:42Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T03:47:51Z",
+            "to": "done"
           }
         ],
         "status": "pending"
       },
       "code": {
-        "round": 1,
-        "product": "workspace/code/tetris/tetris-r1/",
+        "round": 2,
+        "product": "workspace/code/tetris/tetris-r2/",
         "reviews": [
-          "code/tetris/tetris-r1-review.md"
+          "code/tetris/tetris-r1-review.md",
+          "code/tetris/tetris-r2-review.md"
         ],
         "state": "done",
-        "state_since": "2026-08-08T16:15:15Z",
+        "state_since": "2026-08-09T04:03:30Z",
         "timeline": [
           {
             "t": "2026-08-08T16:00:28Z",
@@ -187,16 +218,38 @@
           {
             "t": "2026-08-08T16:15:15Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-09T03:50:28Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T03:51:16Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T03:56:14Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:01:00Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:03:30Z",
+            "to": "done"
           }
         ],
         "status": "pending"
       },
       "test": {
-        "round": 0,
+        "round": 1,
         "product": "workspace/tests/tetris/tetris-r1/",
-        "reviews": [],
-        "state": "reviewing",
-        "state_since": "2026-08-08T16:45:18Z",
+        "reviews": [
+          "tests/tetris/tetris-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-09T04:20:35Z",
         "timeline": [
           {
             "t": "2026-08-08T16:15:36Z",
@@ -213,35 +266,106 @@
           {
             "t": "2026-08-08T16:45:18Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:06:06Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T04:13:20Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:16:17Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:20:35Z",
+            "to": "done"
           }
         ],
         "status": "pending"
       },
       "quality": {
         "round": 0,
-        "product": null,
-        "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": [],
+        "product": "quality/tetris/tetris-r1.md",
+        "reviews": [
+          "quality/tetris/tetris-r1.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-09T04:25:17Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T04:20:53Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T04:21:09Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T04:25:12Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:25:17Z",
+            "to": "done"
+          }
+        ],
         "status": "pending"
       },
       "security": {
         "round": 0,
-        "product": null,
-        "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": [],
+        "product": "security/tetris/tetris-r1.md",
+        "reviews": [
+          "security/tetris/tetris-r1.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-09T04:31:02Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T04:25:57Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T04:26:09Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T04:30:56Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:31:02Z",
+            "to": "done"
+          }
+        ],
         "status": "pending"
       },
       "release": {
         "round": 0,
-        "product": null,
+        "product": "release/tetris/tetris-r1.md",
         "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": [],
+        "state": "done",
+        "state_since": "2026-08-09T04:32:40Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T04:31:04Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T04:31:14Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T04:32:40Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T04:32:40Z",
+            "to": "done"
+          }
+        ],
         "status": "pending"
       },
       "req": {
@@ -272,6 +396,6 @@
       }
     },
     "created_at": "2026-08-08T15:18:43Z",
-    "updated_at": "2026-08-09T03:33:26Z"
+    "updated_at": "2026-08-09T04:32:40Z"
   }
 }

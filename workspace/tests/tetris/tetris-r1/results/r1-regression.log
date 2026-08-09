@@ -1,0 +1,48 @@
+########## 单元测试 ##########
+workspace/tests/tetris/tetris-r1/test_tetrominoes.py::test_tc_u02_i_rotates_horizontal_to_vertical PASSED [ 97%]
+workspace/tests/tetris/tetris-r1/test_tetrominoes.py::test_tc_u02_o_rotation_invariant PASSED [ 98%]
+workspace/tests/tetris/tetris-r1/test_tetrominoes.py::test_tc_u02_t_rotation_is_90deg_cw PASSED [100%]
+
+============================== 71 passed in 0.09s ==============================
+
+########## 集成测试 ##########
+被测代码: /home/zyzs/cyx/zteam/workspace/code/tetris/tetris-r1/tetris.py
+
+[PASS] TC-I-01 界面 3 秒内出现 + HUD 齐备
+[PASS] TC-I-02 exit=1 hint=True pipe_ok=True
+[PASS] TC-I-03 hint=True exit=3 text='Terminal too small: need at le\nast 42x26, got 30x10. Please e\nnlarge the window '
+[PASS] TC-I-04 tick1000_changes=2 tick50_changes=15
+[PASS] TC-I-05 game_over=True score_line=True exit0=True
+[PASS] TC-I-06 left=True rot=True pause=True unpause=True
+[PASS] TC-I-07 exit=0 elapsed=0.07s
+[PASS] TC-I-08 open: before=(False, False) after=(True, True) 0.02s exit=130; midgame: before=(False, False) after=(True, True) 0.01s exit=130; gameover: before=(True, True) after=(True, True) 0.01s exit=0
+[PASS] TC-I-09 before=(False, False) after=(True, True) 0.02s exit=130
+[PASS] TC-I-10 hud=True fixed_pos=True
+[PASS] TC-I-11 over=True score=True hint=True
+[PASS] TC-I-12 frozen=True paused=True resumed=True changed=True
+[PASS] TC-I-13 alive_after_shrink=True alive_after_restore=True
+[PASS] TC-I-14 label=True piece='[][]  [][]  '
+[PASS] TC-I-15 non_default_colors=0 shape_visible=True
+[PASS] TC-I-16 running=(False, False) after_quit=(True, True)
+
+=== 汇总: PASS=16 FAIL=0 耗时=58.9s ===
+
+########## 系统验收 ##########
+
+[PASS] TC-S-01 readme_cmd=True help_exit=0
+[PASS] TC-S-02 {'运行方式': True, '依赖': True, '键位表': True, '配置项': True, '已知限制': True}
+[PASS] TC-S-04 non-tty:exit=1 tb=False; bad-tick:exit=2 tb=False; bad-arg:exit=2 tb=False
+[PASS] TC-S-05 config=True model=True input=True render=True main=True wrapper=True shapes=True
+[PASS] TC-S-06 compile=True walrus_absent=True dataclass_absent=True removeprefix_absent=True
+
+=== 汇总: PASS=5 FAIL=0 ===
+注意：人工清单项（TC-S-01 完整一局 / TC-S-03 终端矩阵 /
+      TC-S-05 可读性走查 / TC-S-06 多版本实机）见 system_checklist.md
+=== tetris r1 性能测试（TC-P-01/02，TC-P-03 人工目测）===
+被测代码: /home/zyzs/cyx/zteam/workspace/code/tetris/tetris-r1/tetris.py
+
+[PASS] TC-P-01 输入延迟（≤1 tick=500ms）n=20 avg=337.5ms p95=417.7ms
+[PASS] TC-P-02 资源占用（CPU≤5% RSS≤50MB）n=11 avg_cpu=1.81% peak_rss=17.7MB
+
+TC-P-03（连续消 10 行无闪烁/无错位/无残影）为真实终端人工目测，
+见 system_checklist.md TC-P-03 项。
