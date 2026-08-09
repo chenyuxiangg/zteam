@@ -1,0 +1,91 @@
+{
+  "pacman/pacman": {
+    "status": "analyzing",
+    "round": 0,
+    "max_rounds": 3,
+    "forced": false,
+    "analysis": null,
+    "reviews": [],
+    "failures": 0,
+    "stages": {
+      "plan": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "testplan": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "code": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "test": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "quality": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "security": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "release": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "req": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": "working",
+        "state_since": "2026-08-09T09:11:09Z",
+        "timeline": [
+          {
+            "t": "2026-08-09T09:10:24Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T09:11:09Z",
+            "to": "working"
+          }
+        ]
+      }
+    },
+    "created_at": "2026-08-09T09:10:24Z",
+    "updated_at": "2026-08-09T09:11:09Z",
+    "claimed_by": "req-analyst",
+    "claimed_at": "2026-08-09T09:10:24Z",
+    "worker_pid": 660128
+  }
+}
