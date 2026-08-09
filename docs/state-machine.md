@@ -11,9 +11,9 @@
 zteam/                       # 资产层（git 跟踪）
 ├── roles/ scripts/ docs/          # 角色定义 / 代码 / 文档
 └── workspace/                     # 数据层（运行数据，按项目组织）
-    ├── input/<project>/{req_id}.md          # 需求原文（用户投放区，一个文件一个需求）
-    ├── analysis/<project>/{req_id}-r{N}.md  # 需求分析报告（N = 轮次，每轮新文件，不覆盖）
-    ├── review/<project>/{req_id}-r{N}.md    # 需求评审意见
+    ├── <项目>/input/{req_id}.md             # 需求原文（用户投放区，一个文件一个需求；项目目录首次投放自动创建）
+    ├── <项目>/analysis/{req_id}-r{N}.md     # 需求分析报告（N = 轮次，每轮新文件，不覆盖）
+    ├── <项目>/review/{req_id}-r{N}.md       # 需求评审意见
     ├── plans/<project>/{req_id}-r{N}.md     # 开发方案（阶段链产物，同名 -review.md 为评审意见）
     ├── testplans/<project>/{req_id}-r{N}.md # 测试方案
     ├── code/<project>/{req_id}-r{N}.md      # 代码交付（含源码/说明；评审意见同目录 -review.md）
@@ -21,7 +21,7 @@ zteam/                       # 资产层（git 跟踪）
     ├── quality/<project>/{req_id}-r{N}.md   # 质量门禁结论
     ├── security/<project>/{req_id}-r{N}.md  # 安全红线门禁结论
     ├── release/<project>/{req_id}-r{N}.md   # 发布说明（released 终态）
-    ├── artifacts/<project>/{req_id}.md      # 终版产出（评审通过 / 完整交付后归档）
+    ├── <项目>/artifacts/{req_id}.md         # 终版产出（评审通过 / 完整交付后归档）
     ├── logs/                      # pipeline.log（审计）+ worker-*.log（下半部明细）
     └── status.json                # 状态机（唯一事实来源；key = <project>/<req_id>）
 ```
@@ -51,7 +51,7 @@ zteam/                       # 资产层（git 跟踪）
 
 ```
 t0  [上半部·分析师 tick] watchdog-analyst.sh（秒级）
-    1) 注册 workspace/input/<project>/ 下未登记的新文件 → pending
+    1) 注册各项目 workspace/<项目>/input/ 下未登记的新文件 → pending
     2) stale 恢复（见 §7.2：回收卡死的 worker 认领）
     3) 原子认领最老的 pending/needs_fix → analyzing（写 claim 字段）
     4) setsid 拉起下半部：
@@ -60,7 +60,7 @@ t0  [上半部·分析师 tick] watchdog-analyst.sh（秒级）
     5) 无活 → 空 stdout 静默退出；异常 → 非 0 退出/输出告警（经 cron 投递）
 
 t1  [下半部·分析师 worker] 独立 Hermes 进程（分钟级，无 3 分钟限制）
-    1) 读 claim + workspace/input/<project>/{req_id}.md（修改轮还读 review/{project}/{req_id}-r{N-1}.md）
+    1) 读 claim + workspace/<项目>/input/{req_id}.md（修改轮还读 review/ 下上一轮意见）
     2) 按 roles/req-analyst.md 产出 analysis/{project}/{req_id}-r{N}.md
     3) 原子更新状态 analyzing → analyzed（清空 claim 字段）
     4) 写审计日志，退出
@@ -186,7 +186,7 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 ### 7.1 轮次与终止
 
 - `round` 达到 `max_rounds`（默认 3）时，评审若仍为 FAIL：**强制归档**（`approved` + `forced: true`），上半部输出告警"带未解决意见通过，需人工复核"；
-- `forced: true` 的归档文件在 `workspace/artifacts/<project>/` 中保留全部轮次历史与所有评审意见，供人工复查。
+- `forced: true` 的归档文件在 `workspace/<项目>/artifacts/` 中保留全部轮次历史与所有评审意见，供人工复查。
 
 ### 7.2 失败处理（无人值守必须内置）
 
@@ -198,7 +198,7 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 
 **② 巡检 guard_recovery（漏设状态自动补正，每 tick，详见 §7.5.2）**：worker **活着但漏设状态**（干完活没调 `set_status`，或卡死在循环里）时，按"超时 + 产物存在性 + 评审结论"自动补正——产物存在 → 补 `reviewing`/`done`（PASS）/`working`（FAIL 重做）；无产物且进程已死 → 回滚。全部动作写 `GUARD` 审计行。**这是四态机制的核心可靠性保障**（worker 无需自觉，漏了也能兜底）。
 
-**③ 每周一致性巡检**（`req-weekly-audit`，no_agent 脚本）：检查 `workspace/status.json` JSON 合法性、`approved`/`released` 与 `workspace/artifacts/<project>/` 一致性、是否存在滞留超过 24h 的非终态。**只告警，不改状态**。
+**③ 每周一致性巡检**（`req-weekly-audit`，no_agent 脚本）：检查各项目 `workspace/<项目>/status.json` JSON 合法性、`approved`/`released` 与归档一致性、是否存在滞留超过 24h 的非终态。**只告警，不改状态**。
 
 ### 7.3 人工介入方式
 
@@ -280,7 +280,7 @@ python3 scripts/statectl.py release_release {key} {发布说明}                
 ## 8. 上半部脚本与下半部 worker 职责划分
 | 组件 | 部分 | 职责 | 禁止 |
 |------|------|------|------|
-| `watchdog-analyst.py` | 上半部 | 调 `statectl.py analyst_tick`：注册 workspace/input/<project>/ 新文件；stale 恢复；原子认领 `pending`/`needs_fix` → `analyzing`；按 `ANALYST_MODEL` spawn 分析师 worker；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
+| `watchdog-analyst.py` | 上半部 | 调 `statectl.py analyst_tick`：注册 workspace/<项目>/input/ 新文件；stale 恢复；原子认领 `pending`/`needs_fix` → `analyzing`；按 `ANALYST_MODEL` spawn 分析师 worker；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
 | `watchdog-worker.py` | 上半部 | 调 `statectl.py worker_tick`：注册 + stale 恢复 + 按 `next_action` 认领**阶段链**任意角色（方案/测试方案/代码/测试/门禁/发布）并 spawn；无活静默 | 写产物、评审、改需求原文、直接调 LLM |
 | analyst worker | 下半部 | 读原文/意见 → 按 `roles/req-analyst.md` 干活 → 落盘 → 调 `statectl.py release_analyze`（`analyzing→analyzed`，清 claim） | 评审、改需求原文 |
 | `watchdog-reviewer.py` | 上半部 | 调 `statectl.py reviewer_tick`：stale 恢复；原子认领 `analyzed` → `reviewing`；按 `REVIEWER_MODEL` spawn 评审 worker；无活静默 | 写产物、改分析文档、直接调 LLM |
@@ -290,10 +290,10 @@ python3 scripts/statectl.py release_release {key} {发布说明}                
 
 ## 9. 新需求录入（唯一入口）
 
-投放方式：把需求原文放入 `workspace/input/<project>/{req_id}.md`（一个文件一个需求，可一次放多个），其余全自动。
+投放方式：把需求原文放入 `workspace/<项目名>/input/{req_id}.md`（一个文件一个需求，可一次放多个；项目目录不存在会自动创建），其余全自动。
 
 检测机制（`register_new_inputs()`，在 `analyst_tick` 内执行）：
-1. 扫描 `workspace/input/<project>/` 下所有 `*.md`；
+1. 扫描各项目 `workspace/<项目>/input/` 下所有 `*.md`；
 2. `req_id` = 文件名去 `.md` 扩展名；
 3. 若 `req_id` 尚未出现在 `workspace/status.json` 的 key 中 → 注册为 `pending`（`round: 0, max_rounds: 3, failures: 0`）；
 4. 同一 tick 内，新注册的需求立即参与"最老优先"认领并 spawn 分析师 worker（审计日志中 `REGISTER` 与 `CLAIM` 同秒）。
@@ -304,10 +304,10 @@ python3 scripts/statectl.py release_release {key} {发布说明}                
 |------|------|------------------|
 | 修改已注册需求的内容（**不改文件名**） | **不会**重新检测/重新分析；状态机按 `req_id` 追踪需求 | `python3 scripts/statectl.py requeue <req_id>` 重置回 `pending` 重跑 |
 | 修改文件名 | 文件名即 ID，改名 = 全新需求（旧条目保留，不自动清理） | 如需"替换"而非"新增"，先处理旧条目 |
-| 删除 `workspace/input/<project>/` 中的文件 | `workspace/status.json` 条目**保留**（历史可审计，不自动清理） | 保留作记录，或手工编辑 status.json 删除条目 |
+| 删除 `workspace/<项目>/input/` 中的文件 | 状态条目**保留**（历史可审计，不自动清理） | 保留作记录，或手工编辑 status.json 删除条目 |
 | 非 `.md` 文件（`README.md`、`.gitkeep` 等） | 完全忽略 | — |
 | 中文 / 空格 / 特殊字符文件名 | 违反命名规则（仅 `[A-Za-z0-9_-]`），实现未强校验，可能引发路径问题 | 按规则命名 |
-| 文件放在 `workspace/input/<project>/` 之外 | 不生效（`workspace/input/<project>/` 是唯一入口） | 移入 `workspace/input/<project>/` |
+| 文件放在 `workspace/<项目>/input/` 之外 | 不生效（`workspace/<项目>/input/` 是唯一入口） | 移入 `workspace/<项目>/input/` |
 | 一个文件里写多个需求 | 被当作**一个**需求分析（粒度 = 文件） | 拆成多个文件 |
 
 > 设计取舍：注册、认领、stale 恢复都放在上半部脚本（确定性逻辑，零 token，不依赖模型判断）；模型只做"活"本身（分析/评审/修改）。

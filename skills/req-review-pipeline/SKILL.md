@@ -18,8 +18,8 @@ description: 运维需求评审自动流水线（工作区见内文，原 ~/cyx/
 ## 日常操作（在 <工作区> 下）
 
 ```bash
-# 投放新需求：任意 .md 放进 workspace/input/<项目名>/（一个文件一个需求），下一个 tick 自动注册并启动
-# 边界行为：改内容不改文件名 → 不触发重新分析（重跑用 requeue）；删 workspace/input/ 文件 → 状态条目保留；
+# 投放新需求：任意 .md 放进 workspace/<项目名>/input/（一个文件一个需求，项目目录不存在会自动创建），下一个 tick 自动注册并启动
+# 边界行为：改内容不改文件名 → 不触发重新分析（重跑用 requeue）；删 workspace/<项目>/input/ 文件 → 状态条目保留；
 #           文件名即 ID（仅 [A-Za-z0-9_-]）；完整边界表见 docs/state-machine.md §9.1
 # 安装/卸载（幂等/安全，见 README「安装与卸载」）
 bash install.sh        # 一键安装/修复（薄壳+5 job+zbot 注入+自检）；工作区迁移后重跑

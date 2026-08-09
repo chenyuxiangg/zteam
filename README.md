@@ -14,7 +14,7 @@
 | 原始诉求 | 实现 |
 |----------|------|
 | 分析与评审是不同角色 | `roles/req-analyst.md` vs `roles/req-reviewer.md`，两个上半部 job + 两个下半部 worker 完全分离 |
-| 一次输入多个需求 | `workspace/input/<project>/` 可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
+| 一次输入多个需求 | `workspace/<项目>/input/` 可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
 | 评审结论被分析者自动感知 | 分析师上半部轮询 `needs_fix` 状态并唤醒修改 worker |
 | 分析完成被评审者自动感知 | 评审上半部轮询 `analyzed` 状态并唤醒评审 worker |
 | 多轮自动完成 | 状态机循环直至 `approved` 或 `max_rounds` 上限，失败自动重试 + stale 恢复 + 巡检兜底（漏设状态自动补正） |
@@ -55,21 +55,23 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 ├── scripts/                   # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口
 ├── docs/                      # state-machine.md（状态机定义）+ troubleshooting.md（问题定位）
 ├── AGENTS.md                  # 流水线约定（下半部 worker 自动加载）
-└── workspace/                 # 数据层（运行数据，按项目组织；uninstall --full 清空对象）
-    ├── status.json            # 状态机（唯一事实来源；key = <project>/<req_id>）
-    ├── input/<project>/<req_id>.md          # 需求原文投放区
-    ├── analysis/<project>/<req_id>-r{N}.md  # 需求分析（只保留最新轮，历史轮次进 archive/）
-    ├── review/<project>/<req_id>-r{N}.md    # 需求评审意见（只保留最新轮，历史轮次进 archive/）
-    ├── plans/ testplans/ code/ tests/       # 阶段链产物（方案/测试方案/代码/测试，按项目子目录）
-    ├── quality/ security/ release/          # 门禁结论 / 发布说明（按项目子目录）
-    ├── archive/<project>/                   # 历史轮次归档（legacy-r{N}-20260807.md 格式，人工整理用）
-    ├── artifacts/<project>/<req_id>.md      # 终版产出：结论摘要 + 需求原文 + 最终分析 + 各阶段终版 + 评审历史（接手开发看这里）
-    └── logs/                  # pipeline.log（审计）+ worker-*.log（下半部明细）+ alarms.txt
+└── workspace/                 # 数据层（按项目分层；uninstall --full 清空对象）
+    ├── <项目名>/              # 每个项目一个文件夹（首次投放需求时自动创建）
+    │   ├── status.json        # 该项目状态机（唯一事实来源；key = <项目>/<req_id>）
+    │   ├── status.lock        # 该项目 flock 锁（项目间并发、同项目串行）
+    │   ├── input/             # 该项目需求投放区（一个文件一个需求）
+    │   ├── analysis/ review/  # 需求分析与评审（只留最新轮，历史进 archive/）
+    │   ├── plans/ testplans/ code/ tests/   # 阶段链产物（代码/测试为文件集目录）
+    │   ├── quality/ security/ release/      # 门禁结论 / 发布说明
+    │   ├── artifacts/         # 归档（结论摘要 + 各阶段终版 + 评审历史）
+    │   ├── archive/           # 历史轮次归档
+    │   └── logs/              # 该项目 worker 日志
+    └── logs/                  # 全局日志（pipeline.log 审计流 + alarms.txt）
 ```
 
 ## 快速开始（3 步）
 
-1. **投放需求**：把需求原文放入 `workspace/input/<project>/req-001.md`（可一次放多个；上半部脚本会自动登记）；
+1. **投放需求**：把需求原文放入 `workspace/<项目名>/input/req-001.md`（项目目录不存在会自动创建；可一次放多个；上半部脚本会自动登记）；
 2. **创建 cron job**（全部 `no_agent` 纯脚本，不需要模型；**推荐直接用 `bash install.sh` 一键创建，见下节**）：
 
 ```bash
@@ -98,7 +100,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 bash install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
 bash install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
 bash uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash uninstall.sh --full               # 清空数据层 workspace/（input/analysis/review/artifacts/logs/status.json），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash uninstall.sh --full               # 清空数据层 workspace/（全部项目数据），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -122,7 +124,7 @@ bash uninstall.sh --full               # 清空数据层 workspace/（input/anal
    hermes cron status                    # 应见 "Gateway is running" + 3 active jobs
    python3 scripts/statectl.py diagnose  # 应见 0 严重问题 / 0 警告
    # 可选端到端验证（消耗少量 token）：投放一个测试需求并立即触发
-   cp 测试需求.md workspace/input/<project>/test-install.md && hermes cron run req-analyst-top
+   cp 测试需求.md workspace/<项目名>/input/test-install.md && hermes cron run req-worker-top
    python3 scripts/statectl.py list      # 应见 analyzing → analyzed
    ```
 5. **场景差异说明**：
@@ -154,7 +156,7 @@ bash uninstall.sh --full               # 清空数据层 workspace/（input/anal
 ## 关键限制与对策
 
 - **cron 3 分钟硬中断** → 上半部只做秒级唤醒，耗时活全部在下半部独立进程完成（`setsid` 脱离 cron 会话，进程级持久）；
-- **双 job 竞态** → 中间态（analyzing/reviewing）原子认领（compare-and-swap）+ `flock` 锁；
+- **双 job 竞态/并发** → 全局锁注册 + 项目级 flock 锁（workspace/<项目>/status.lock）——不同项目并行、同项目串行；中间态原子认领（compare-and-swap）+ claim 防重复；
 - **worker 崩溃** → 上半部 stale 恢复（`kill -0` 存活检查 + 超时回滚 + failures 计数），2 次后 `blocked` + 告警推送；
 - **worker 漏设状态/卡死循环** → 巡检兜底（guard_recovery）：超时后按产物存在性/评审结论自动补正（PASS→done / FAIL→重做 / 无产物→回滚），GUARD 审计留痕，无需人工；
 - **模型质量上限** → 检查清单逐条可勾选，主观判断最小化。
@@ -188,7 +190,7 @@ bash uninstall.sh --full               # 清空数据层 workspace/（input/anal
 
 ### 通道③④ 查询 / 干预 / 投放（聊天即操作）
 连接后直接和 bot 对话（中文即可），Hermes 会加载 `req-review-pipeline` skill 处理：
-- **投放**："我有个新需求：<内容>" → 自动写入 `workspace/input/<project>/`（起合法 req_id）；
+- **投放**："我有个新需求：<内容>" → 自动写入 `workspace/<项目名>/input/`（起合法 req_id）；
 - **查询**："需求进度" / "req-003 状态" → 状态摘要回复；
 - **干预**："requeue req-003" / "rollback req-003" / "跑下诊断"；
 - 结果随时可问，或等通道②推送。
@@ -232,14 +234,14 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
   ```
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；
-- **忽略项**：`workspace/logs/`、`__pycache__/`、`status.lock`（运行噪音，不入库）；`workspace/status.json`、`workspace/input/<project>/`、`workspace/analysis/<project>/`、`workspace/review/<project>/`、`workspace/artifacts/<project>/` 等业务数据全部入库；
+- **忽略项**：`workspace/logs/`、`workspace/**/logs/`、`__pycache__/`、`*.lock`（运行噪音，不入库）；`workspace/<项目>/status.json`、`workspace/<项目>/input/` 等业务数据全部入库；
 - **教训**：2026-08-07 工作区曾被旧版 `uninstall.sh --full`（删除整个工作区）误删，靠会话 DB 重建——现 `--full` 已改为只清空数据层 workspace/、保留项目资产；纳入 git 后即使误删也可 `git restore` 秒级恢复。
 
 
-- 投放唯一入口是 `workspace/input/<project>/`；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
+- 投放唯一入口是 `workspace/<项目>/input/`；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
 - **归档快速阅读**：`workspace/artifacts/<project>/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
 - **改内容不改文件名不会触发重新分析**——重跑用 `python3 scripts/statectl.py requeue <req_id>`；
-- 删除 `workspace/input/<project>/` 文件不会清理 `workspace/status.json` 条目（历史保留）；
+- 删除 `workspace/<项目>/input/` 文件不会清理状态条目（历史保留）；
 - 非 `.md` 文件忽略；一个文件放多个需求会被当作一个需求处理；
 - 完整边界行为表见 `docs/state-machine.md` §9.1。
 

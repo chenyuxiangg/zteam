@@ -14,13 +14,15 @@
 zteam/                     # 资产层（git 跟踪）
 ├── roles/  docs/  scripts/     # 角色定义 / 文档 / 代码
 └── workspace/                  # 数据层（运行数据，按项目组织）
-    ├── status.json             # 状态机（唯一事实来源；key = <project>/<req_id>）
-    ├── input/<project>/<req_id>.md        # 需求投放区
-    ├── analysis/ review/                 # 需求分析与评审
-    ├── plans/ testplans/ code/ tests/    # 阶段链产物（方案/测试方案/代码/测试）
-    ├── quality/ security/ release/       # 门禁结论 / 发布说明
-    ├── artifacts/<project>/<req_id>.md   # 归档（结论摘要 + 最终分析 + 阶段产物 + 评审历史）
-    └── logs/                   # pipeline.log（审计）+ worker-*.log（下半部明细）
+    ├── <项目名>/                       # 每个项目一个文件夹（首次投放需求时自动创建）
+    │   ├── status.json / status.lock    # 该项目状态机与项目锁（并发：项目间并行、同项目串行）
+    │   ├── input/                       # 该项目需求投放区
+    │   ├── analysis/ review/            # 需求分析与评审
+    │   ├── plans/ testplans/ code/ tests/  # 阶段链产物
+    │   ├── quality/ security/ release/  # 门禁结论 / 发布说明
+    │   ├── artifacts/ archive/          # 归档与历史轮次
+    │   └── logs/                        # 该项目 worker 日志
+    └── logs/                            # 全局日志（pipeline.log 审计 + alarms.txt）
 ```
 
 ## 完成标志（三件套，缺一不可）
