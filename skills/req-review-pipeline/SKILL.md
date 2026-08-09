@@ -44,7 +44,8 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 
 - 角色定义：`roles/req-analyst.md`（**产品视角·麦肯锡方法论**：SCQA 理解、MECE 分解、金字塔表达、5W1H 澄清；主动查资料；产出需求分解文档 FR/NFR/竞品分析；**红线=只答 What/Why 绝不答 How**，禁止技术方案/选型/架构）、`roles/req-reviewer.md`（**12 项检查清单**，含 MECE 完整性、竞争力分析两项）。
 - 模型绑定在 `scripts/statectl.py` **第 43–48 行**常量（改模型直接改这里，立即生效；同名环境变量覆盖**仅对手动运行生效**——gateway 是 systemd 服务，不继承交互 shell 的 export，需 `systemctl --user edit hermes-gateway` 加 `Environment=` 再 restart）：
-  - 分析师/产出类（analyst、dev-plan-designer、test-plan-designer、code-developer、test-developer、releaser）= `deepseek-v4-flash`（快/便宜，产出量大）
+  - 分析师/产出类（analyst、dev-plan-designer、test-plan-designer、test-developer、releaser）= `deepseek-v4-flash`（快/便宜，产出量大）
+  - **code 阶段（例外，2026-08-09 起）= `MiniMax-M3`（provider `minimax-cn`，MiniMax 中国站）**——code-developer 与 code-reviewer 均用 M3；覆盖环境变量 CODE_DEVELOPER_MODEL/CODE_REVIEWER_MODEL/CODE_PROVIDER
   - 评审/门禁类（req-reviewer、dev-plan-reviewer、test-plan-reviewer、code-reviewer、test-reviewer、quality-reviewer、security-reviewer）= `deepseek-v4-pro`（强推理，把关）
 - **用户 DeepSeek API 只有这两个模型**——不要写 deepseek-chat / deepseek-reasoner（不存在，会必现报错）。
 - **11 角色阶段链**：需求(分析师/评审师) → plan(dev-plan-designer/reviewer) → testplan(test-plan-designer/reviewer) → code(code-developer/reviewer) → test(test-developer/reviewer) → quality(门禁) → security(门禁) → release(releaser，**打包交付**：发布说明+用户指南+`{req_id}-v{版本}.tar.gz`+SHA256SUMS+可用性自检，产物为目录) → released 终态。角色定义见 `roles/*.md`。
@@ -54,7 +55,7 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 ## 告警处理
 
 - `[BLOCKED]`：连续失败 ≥2 次，流水线停止流转等人工。**处置必须走下方标准流程，先查根因再 requeue**。
-- `[FORCED]`：达 max_rounds=3 仍 FAIL，强制归档 `workspace/artifacts/<project>/<req_id>.md`（含全部轮次历史），需人工复核未解决意见。
+- `[FORCED]`：达 max_rounds=3 仍 FAIL，强制归档 `workspace/<项目>/artifacts/<req_id>.md`（含全部轮次历史），需人工复核未解决意见。
 - 告警经上半部 tick 从 `workspace/logs/alarms.txt` 消费并输出；cron 未配 deliver 时只本地保存。
 
 ## BLOCKED 根因分析标准流程（zbot 收到 BLOCKED 后必须主动完成，带结论请示；不得只问"要不要 requeue"）
@@ -64,7 +65,7 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 1. **定位卡死点**：`statectl list` + `tail workspace/logs/pipeline.log`——找 BLOCKED 前最后一条 RECOVER/FAIL 属于哪个阶段，failures 如何累计（**stale 回滚** vs **评审 FAIL** 性质不同：前者是进程问题，后者是内容问题）；
 2. **查 worker 生死**：pipeline.log 的 SPAWN/SKIP 行有 pid；`ps -p <pid>`——存活且多 tick 无进展=可能"干完活没退出"（模式 A）；已死=崩溃（模式 B）；
 3. **看 worker 日志**：`tail workspace/logs/worker-<key>-r<N>.log` 最后输出 + 对比日志 mtime 与停止时间差，grep `error|traceback|timeout`；
-4. **产物完整性**：`ls workspace/{stage}/{project}/{req_id}-r{N}/`——决定 requeue 后是否丢工作。
+4. **产物完整性**：`ls workspace/{项目}/{stage}/{req_id}-r{N}/`——决定 requeue 后是否丢工作。
 
 **已知模式**：
 - **模式 A「干完活没退出」**（2026-08-08 tetris 实测）：worker 日志有完整成功收尾（验证全绿/产物落盘/set_status 已在 pipeline.log 留下审计）+ 进程存活但连续多 tick 无进展 + dmesg 无 OOM/kill → 判定为 **hermes chat 进程完成响应后挂住不退出**（网络/会话收尾卡住，与 Telegram 适配器挂起 #63309 同族，环境网络不稳是背景）。**产物无损 → 直接 requeue 重跑即可，无需改任何代码**；
