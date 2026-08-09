@@ -60,7 +60,7 @@ cd <工作区> && python3 scripts/statectl.py diagnose
 ### S4 收到 `[FORCED]` 告警（达 max_rounds 强制归档）
 | 步骤 | 动作 |
 |---|---|
-| 1 | 复核 `workspace/artifacts/{req_id}.md` 里的"未解决意见"（含全部轮次评审历史） |
+| 1 | 复核 `workspace/{项目}/artifacts/{req_id}.md` 里的"未解决意见"（含全部轮次评审历史） |
 | 2 | 意见合理 → 手工补充需求/接受现状；意见是评审误判 → `requeue` 重跑并考虑放宽检查清单 |
 | 3 | 若该需求反复 forced → 考虑提高 `max_rounds`（录入时在 status.json 条目里改）或审视需求原文质量 |
 

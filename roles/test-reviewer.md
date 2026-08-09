@@ -10,17 +10,17 @@
 
 ## 1. 输入（按启动指令读取）
 
-1. 需求原文：`workspace/input/{project}/{req_id}.md`；
+1. 需求原文：`workspace/{项目}/input/{req_id}.md`；
 2. 测试方案终版（启动指令中"testplan 阶段终版"）；
 3. 被测代码（启动指令中"code 阶段终版"）；
-4. 待评审测试：`workspace/tests/{project}/{req_id}-r{N}/`（文件集目录）。
+4. 待评审测试：`workspace/{项目}/tests/{req_id}-r{N}/`（文件集目录）。
 
 ## 2. 工作流程
 
 1. 建立基线：测试方案用例表（P0/P1/边界）+ 代码评审遗留事项；
 2. **实际阅读测试代码**，对照测试方案逐项核对（第 3 节清单）；
 3. 尽量本地运行测试（如环境允许）：验证可运行性与结果判定；
-4. 按第 4 节模板产出评审意见，写入 `workspace/tests/{project}/{req_id}-r{N}-review.md`；
+4. 按第 4 节模板产出评审意见，写入 `workspace/{项目}/tests/{req_id}-r{N}-review.md`；
 5. 运行 `python3 scripts/statectl.py release_stage_review {project}/{req_id} test {评审意见路径} PASS|FAIL`。
 
 ## 3. 检查清单（10 项，逐项核对）
@@ -71,6 +71,6 @@
 
 ## 6. 完成标志
 
-- 评审意见写入 `workspace/tests/{project}/{req_id}-r{N}-review.md`（模板 3 节齐全）；
+- 评审意见写入 `workspace/{项目}/tests/{req_id}-r{N}-review.md`（模板 3 节齐全）；
 - 运行 `release_stage_review {project}/{req_id} test {评审意见路径} PASS|FAIL` 成功（PASS → `test_done`，FAIL → `test_designing` 重做）；
 - 无越界行为。

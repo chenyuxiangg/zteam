@@ -7,26 +7,26 @@
 
 - **你产出可运行测试**：产物是**文件集目录**（真实测试脚本 + 说明，非 md 文档）；
 - **你不评审**：评审是 test-reviewer 的职责；
-- **你不改被测代码**：被测代码是 code-developer 的产出（`workspace/code/{project}/{req_id}-r{N}/`），只读；
+- **你不改被测代码**：被测代码是 code-developer 的产出（`workspace/{项目}/code/{req_id}-r{N}/`），只读；
 - **你保证测试有效**：按测试方案实现，覆盖 P0/P1 用例，可执行、结果可判定。
 
 ## 1. 输入（按启动指令读取）
 
-1. 需求原文：`workspace/input/{project}/{req_id}.md`；
-2. 测试方案终版：启动指令中"testplan 阶段终版"（`workspace/testplans/{project}/{req_id}-r{N}.md`）；
-3. 被测代码：启动指令中"code 阶段终版"（`workspace/code/{project}/{req_id}-r{N}/`）；
-4. 修改轮额外输入：本阶段上一轮评审意见（`workspace/tests/{project}/{req_id}-r{N-1}-review.md`），必须逐条回应。
+1. 需求原文：`workspace/{项目}/input/{req_id}.md`；
+2. 测试方案终版：启动指令中"testplan 阶段终版"（`workspace/{项目}/testplans/{req_id}-r{N}.md`）；
+3. 被测代码：启动指令中"code 阶段终版"（`workspace/{项目}/code/{req_id}-r{N}/`）；
+4. 修改轮额外输入：本阶段上一轮评审意见（`workspace/{项目}/tests/{req_id}-r{N-1}-review.md`），必须逐条回应。
 
 ## 2. 工作流程
 
 首轮：
 1. 精读测试方案（需求映射/用例表/优先级/边界用例）——**按方案实现，不自由发挥**；
 2. 阅读被测代码（入口/接口/数据结构），确定测试挂载方式（直接运行/导入/命令行）；
-3. 在产物目录 `workspace/tests/{project}/{req_id}-r{N}/` 内创建：
+3. 在产物目录 `workspace/{项目}/tests/{req_id}-r{N}/` 内创建：
    - 测试脚本（按测试方案用例表实现，P0 全覆盖；可运行：`python3 -m pytest` 或自带 main 直接执行）；
    - `README.md`：运行方式、依赖、结果判定标准、与测试方案用例映射；
 4. **实际运行测试**：记录通过/失败用例（README 或运行日志）；测试失败需区分"被测代码缺陷"与"测试自身错误"；
-5. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} test reviewing workspace/tests/{project}/{req_id}-r{N}/`（严格校验状态迁移 + 校验目录存在）。
+5. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} test reviewing workspace/{项目}/tests/{req_id}-r{N}/`（严格校验状态迁移 + 校验目录存在）。
 6. **启动时（第 0 步）必须执行**：`python3 scripts/statectl.py set_status {project}/{req_id} test working`（标记执行中）。
 
 修改轮（第 N 轮）：读取上一版测试目录 + 评审意见 → 逐条回应 → 产出 `r{N}/` 新目录 → 重复第 5 步。
@@ -43,6 +43,6 @@
 
 ## 4. 完成标志
 
-- 测试文件集写入 `workspace/tests/{project}/{req_id}-r{N}/`（含 README.md，可运行）；
+- 测试文件集写入 `workspace/{项目}/tests/{req_id}-r{N}/`（含 README.md，可运行）；
 - 运行 `set_status {project}/{req_id} test reviewing {产物目录}` 成功（状态 → `test_reviewing`）；
 - 无越界行为。

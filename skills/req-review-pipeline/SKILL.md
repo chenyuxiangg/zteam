@@ -12,7 +12,7 @@ description: 运维需求评审自动流水线（工作区见内文，原 ~/cyx/
 - **上半部**：cron no_agent 纯脚本（零 token），只做注册/认领/spawn，秒级。5 个 job：`req-analyst-top`（`*/5 * * * *`）、`req-reviewer-top`（`*/5 * * * *`）、`req-worker-top`（`*/5 * * * *`，阶段链 worker）、`req-weekly-audit`（每周一 9 点）、`req-result-notify`（`*/15 * * * *`，结果推送）。
 - **下半部**：`setsid hermes chat -q` 独立进程，干分析/评审重活，不受 cron 3 分钟限制。
 - **状态机唯一实现**：`scripts/statectl.py`（flock 串行化；claim/release/stale 恢复/告警/归档全在这里）。
-- **路径模型（2026-08-08 起）**：数据层全部收进 `workspace/`（`workspace/input|analysis|review|artifacts|logs/` + `workspace/status.json`）；资产层（roles/docs/scripts）留在根目录。产物相对路径（如 `analysis/x/y-r1.md`）从 **WORKSPACE_DIR** 解析——曾出现迁移回归：release_analyze/release_review 校验、write_artifact 归档读取、diagnose D7 引用检查共 5 处误用 `os.path.join(WORKDIR, ...)` 导致所有 release 报"产物不存在"并自动回滚（failures+1），2026-08-08 已全部改为 WORKSPACE_DIR；再遇到"产物不存在"先 grep 这两处拼接。
+- **路径模型（2026-08-09 项目分层）**：数据层按项目分层 `workspace/<项目>/{input,analysis,...,logs,status.json,status.lock}`（每项目 13 子目录 + 项目级状态与锁，首次投放自动创建）；资产层（roles/docs/scripts/skills）留在根目录。产物相对路径（如 `<项目>/analysis/{req_id}-r1.md`）从 **WORKSPACE_DIR** 解析。**并发**：全局锁（register）+ 项目锁（调度）——项目间并行、同项目串行；曾修复阶段 1 全量写覆盖竞态（改为只注册不写盘，增量随项目锁合并）。再遇到"产物不存在"先 grep 路径拼接。
 - 状态流转：`pending → analyzing → analyzed → reviewing → needs_fix ↺ / approved / blocked`。
 
 ## 日常操作（在 <工作区> 下）
@@ -47,7 +47,7 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
   - 分析师/产出类（analyst、dev-plan-designer、test-plan-designer、code-developer、test-developer、releaser）= `deepseek-v4-flash`（快/便宜，产出量大）
   - 评审/门禁类（req-reviewer、dev-plan-reviewer、test-plan-reviewer、code-reviewer、test-reviewer、quality-reviewer、security-reviewer）= `deepseek-v4-pro`（强推理，把关）
 - **用户 DeepSeek API 只有这两个模型**——不要写 deepseek-chat / deepseek-reasoner（不存在，会必现报错）。
-- **11 角色阶段链**：需求(分析师/评审师) → plan(dev-plan-designer/reviewer) → testplan(test-plan-designer/reviewer) → code(code-developer/reviewer) → test(test-developer/reviewer) → quality(门禁) → security(门禁) → release(releaser) → released 终态。角色定义见 `roles/*.md`。
+- **11 角色阶段链**：需求(分析师/评审师) → plan(dev-plan-designer/reviewer) → testplan(test-plan-designer/reviewer) → code(code-developer/reviewer) → test(test-developer/reviewer) → quality(门禁) → security(门禁) → release(releaser，**打包交付**：发布说明+用户指南+`{req_id}-v{版本}.tar.gz`+SHA256SUMS+可用性自检，产物为目录) → released 终态。角色定义见 `roles/*.md`。
 - **四态状态机**：每阶段 `claimed（tick 认领）→ working（worker 启动时 set_status）→ reviewing（产出后 set_status + 产物）→ done（评审 PASS）`；FAIL 打回 working 重做，连续 FAIL 达 max_rounds → blocked。真值存 `stages[stage].state`（status.json），顶层 status 为派生显示。
 - **巡检兜底（guard_recovery）**：worker 漏设状态/卡死循环时，超时（20 分钟）后按"产物存在性 + 评审结论"自动补正（PASS→done / FAIL→重做 / 无产物→回滚），写 `GUARD` 审计——**worker 无需自觉，漏了自动兜底，不要人工补状态**。
 
@@ -87,7 +87,7 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 
 用户在消息平台（Telegram 等）提出需求流水线相关请求时，按以下约定处理（无需用户给命令行）：
 
-- **投放**：用户发需求文本/文件 → 起合法 `req_id`（英文短名或拼音，仅 `[A-Za-z0-9_-]`，**避免中文文件名**）→ 写入 `workspace/input/{project}/{req_id}.md`（项目名未指定用 `default`）→ 回复"已投放 {project}/{req_id}，5 分钟内自动开始分析"；
+- **投放（必须确认项目，P2）**：用户发需求文本/文件 → 起合法 `req_id`（英文短名或拼音，仅 `[A-Za-z0-9_-]`，**避免中文文件名**）→ **先确认项目名**（未指定→询问；无法指定→列出 `workspace/` 项目目录帮回忆；仍无→拒绝投放，不写文件）→ 写入 `workspace/{项目}/input/{req_id}.md` → 回复"已投放 {项目}/{req_id}，5 分钟内自动开始分析"；
 - **查询**：回复 `statectl list` 的摘要（状态/轮次/失败数），详情用 `get <req_id>`；
 - **干预**：执行 `requeue`/`rollback`/`diagnose` 并回复结果；
 - **推送**：告警与结果推送由 cron（`deliver=telegram`）自动完成，agent 不需要主动发；
@@ -119,4 +119,4 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 ## 验证
 
 - 状态机自测（零 token）：`register` → `claim <id> analyst` → 写产物 → `release_analyze` → `claim <id> reviewer` → `release_review <id> <file> FAIL` → 检查 `needs_fix`/`approved`/强制归档分支与 `workspace/artifacts/` 生成。
-- 端到端冒烟：放真实需求进 `workspace/input/<项目名>/`，手动跑 `python3 scripts/watchdog-analyst.py` → 轮询 `get` 到 `analyzed` → `python3 scripts/watchdog-reviewer.py` → 轮询到 `approved`，核对 workspace/logs/pipeline.log 与 workspace/artifacts/。
+- 端到端冒烟：放真实需求进 `workspace/<项目名>/input/`，手动跑 `python3 scripts/statectl.py worker_tick` → 轮询 `get` 到 `approved`，核对 `workspace/logs/pipeline.log` 与 `workspace/<项目>/artifacts/`。

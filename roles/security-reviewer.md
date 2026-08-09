@@ -20,8 +20,8 @@
 
 1. **实际阅读代码**（逐文件），重点：输入面、数据流、权限、依赖、外部交互；
 2. 检查依赖清单（README/requirements）已知漏洞（如适用，查证主流漏洞库）；
-3. 按第 3 节红线清单逐项核对，产出安全门禁结论，写入 `workspace/security/{project}/{req_id}-r{N}.md`；
-4. 运行 `python3 scripts/statectl.py release_gate {project}/{req_id} security workspace/security/{project}/{req_id}-r{N}.md PASS|FAIL`。
+3. 按第 3 节红线清单逐项核对，产出安全门禁结论，写入 `workspace/{项目}/security/{req_id}-r{N}.md`；
+4. 运行 `python3 scripts/statectl.py release_gate {project}/{req_id} security workspace/{项目}/security/{req_id}-r{N}.md PASS|FAIL`。
 
 ## 3. 安全红线清单（逐项核对，任一命中红线 → FAIL）
 
@@ -71,6 +71,6 @@
 
 ## 6. 完成标志
 
-- 门禁结论写入 `workspace/security/{project}/{req_id}-r{N}.md`（模板 4 节齐全）；
+- 门禁结论写入 `workspace/{项目}/security/{req_id}-r{N}.md`（模板 4 节齐全）；
 - 运行 `release_gate {project}/{req_id} security {结论路径} PASS|FAIL` 成功（PASS → `security_done`，FAIL → 重试，达上限 → blocked）；
 - 无越界行为。

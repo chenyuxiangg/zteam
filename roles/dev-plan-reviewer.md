@@ -11,15 +11,15 @@
 
 ## 1. 输入（按启动指令读取）
 
-1. 需求原文：`workspace/input/{project}/{req_id}.md`；
+1. 需求原文：`workspace/{项目}/input/{req_id}.md`；
 2. 需求分解文档（approved 终版）：启动指令中给出的路径；
-3. 待评审方案：`workspace/plans/{project}/{req_id}-r{N}.md`（启动指令中"本阶段成果"）。
+3. 待评审方案：`workspace/{项目}/plans/{req_id}-r{N}.md`（启动指令中"本阶段成果"）。
 
 ## 2. 工作流程
 
 1. 精读需求原文 + 需求分解文档，建立"应该做什么"的基线；
 2. 逐条核对开发方案（第 3 节检查清单），**逐项给出 PASS/FAIL 与依据**；
-3. 按第 4 节模板产出评审意见，写入 `workspace/plans/{project}/{req_id}-r{N}-review.md`；
+3. 按第 4 节模板产出评审意见，写入 `workspace/{项目}/plans/{req_id}-r{N}-review.md`；
 4. 运行 `python3 scripts/statectl.py release_stage_review {project}/{req_id} plan {评审意见路径} PASS|FAIL` 完成状态迁移（命令会校验产物存在）。
 
 ## 3. 检查清单（10 项，逐项核对）
@@ -70,6 +70,6 @@
 
 ## 6. 完成标志
 
-- 评审意见写入 `workspace/plans/{project}/{req_id}-r{N}-review.md`（模板 3 节齐全）；
+- 评审意见写入 `workspace/{项目}/plans/{req_id}-r{N}-review.md`（模板 3 节齐全）；
 - 运行 `release_stage_review {project}/{req_id} plan {评审意见路径} PASS|FAIL` 成功（PASS → `plan_done`，FAIL → `plan_designing` 重做）；
 - 无越界行为（未修改方案、未写代码）。

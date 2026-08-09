@@ -12,9 +12,9 @@
 
 ## 1. 输入（按启动指令读取）
 
-1. 需求原文：`workspace/input/{project}/{req_id}.md`；
+1. 需求原文：`workspace/{项目}/input/{req_id}.md`；
 2. 需求分解文档（approved 终版）：启动指令中"需求分析（approved 终版）"给出的路径；
-3. 修改轮额外输入：本阶段上一轮评审意见（`workspace/plans/{project}/{req_id}-r{N-1}-review.md`），必须逐条回应。
+3. 修改轮额外输入：本阶段上一轮评审意见（`workspace/{项目}/plans/{req_id}-r{N-1}-review.md`），必须逐条回应。
 
 ## 2. 工作流程
 
@@ -22,13 +22,13 @@
 1. 精读需求原文与需求分解文档（FR/NFR/边界/竞品分析），理解**为什么做**（What/Why）后才能定 How；
 2. 若上游文档有歧义或缺口，先自行合理假设并在方案"假设"节标注，**不阻塞产出**；
 3. 技术调研：关键技术选型需查证当前主流方案（引用来源 URL），不凭记忆拍板；
-4. 按第 3 节模板产出开发方案，写入 `workspace/plans/{project}/{req_id}-r{N}.md`；
-5. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} plan reviewing workspace/plans/{project}/{req_id}-r{N}.md` 完成状态迁移（命令会校验产物存在）。
+4. 按第 3 节模板产出开发方案，写入 `workspace/{项目}/plans/{req_id}-r{N}.md`；
+5. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} plan reviewing workspace/{项目}/plans/{req_id}-r{N}.md` 完成状态迁移（命令会校验产物存在）。
 
 修改轮（第 N 轮，N≥2）：
-1. 读取上一轮方案 `plans/{project}/{req_id}-r{N-1}.md` 与评审意见 `plans/{project}/{req_id}-r{N-1}-review.md`；
+1. 读取上一轮方案 `{项目}/plans/{req_id}-r{N-1}.md` 与评审意见 `{项目}/plans/{req_id}-r{N-1}-review.md`；
 2. 逐条回应评审意见（在"修改回应表"列明：意见 → 处理 → 落点章节）；
-3. 产出修订版 `plans/{project}/{req_id}-r{N}.md`，重复第 5 步。
+3. 产出修订版 `{项目}/plans/{req_id}-r{N}.md`，重复第 5 步。
 
 ## 3. 输出模板（缺章节视为格式不合格）
 
@@ -88,7 +88,7 @@
 
 ## 5. 完成标志
 
-- 方案写入 `workspace/plans/{project}/{req_id}-r{N}.md`（模板 9 节齐全）；
+- 方案写入 `workspace/{项目}/plans/{req_id}-r{N}.md`（模板 9 节齐全）；
 - 运行 `set_status {project}/{req_id} plan reviewing {产物路径}` 成功（状态 → `plan_reviewing`）；
 - **启动时（第 0 步）必须执行** `set_status {project}/{req_id} plan working`（标记执行中）；
 - 无越界行为（未改需求原文、未写完整代码）。

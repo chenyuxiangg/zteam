@@ -10,17 +10,17 @@
 
 ## 1. 输入（按启动指令读取）
 
-1. 需求原文：`workspace/input/{project}/{req_id}.md`；
+1. 需求原文：`workspace/{项目}/input/{req_id}.md`；
 2. 需求分解文档（approved 终版）；
 3. 开发方案终版（启动指令中"plan 阶段终版"）；
-4. 待评审代码：`workspace/code/{project}/{req_id}-r{N}/`（文件集目录，启动指令中"本阶段成果"）。
+4. 待评审代码：`workspace/{项目}/code/{req_id}-r{N}/`（文件集目录，启动指令中"本阶段成果"）。
 
 ## 2. 工作流程
 
 1. 建立基线：方案约定（模块/接口/边界/安全）+ 需求验收点；
 2. **实际阅读代码**（逐文件），对照方案逐项核对（第 3 节清单）；
 3. 尽量本地验证：`python3 -m py_compile` 语法、README 的启动方式可运行性（如环境允许）；
-4. 按第 4 节模板产出评审意见，写入 `workspace/code/{project}/{req_id}-r{N}-review.md`；
+4. 按第 4 节模板产出评审意见，写入 `workspace/{项目}/code/{req_id}-r{N}-review.md`；
 5. 运行 `python3 scripts/statectl.py release_stage_review {project}/{req_id} code {评审意见路径} PASS|FAIL`。
 
 ## 3. 检查清单（10 项，逐项核对）
@@ -71,6 +71,6 @@
 
 ## 6. 完成标志
 
-- 评审意见写入 `workspace/code/{project}/{req_id}-r{N}-review.md`（模板 3 节齐全）；
+- 评审意见写入 `workspace/{项目}/code/{req_id}-r{N}-review.md`（模板 3 节齐全）；
 - 运行 `release_stage_review {project}/{req_id} code {评审意见路径} PASS|FAIL` 成功（PASS → `code_done`，FAIL → `code_designing` 重做）；
 - 无越界行为。

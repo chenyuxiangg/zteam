@@ -62,7 +62,7 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
     │   ├── input/             # 该项目需求投放区（一个文件一个需求）
     │   ├── analysis/ review/  # 需求分析与评审（只留最新轮，历史进 archive/）
     │   ├── plans/ testplans/ code/ tests/   # 阶段链产物（代码/测试为文件集目录）
-    │   ├── quality/ security/ release/      # 门禁结论 / 发布说明
+    │   ├── quality/ security/ release/      # 门禁结论 / 交付包（发布说明+指南+tar.gz+校验和）
     │   ├── artifacts/         # 归档（结论摘要 + 各阶段终版 + 评审历史）
     │   ├── archive/           # 历史轮次归档
     │   └── logs/              # 该项目 worker 日志

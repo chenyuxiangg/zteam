@@ -20,7 +20,7 @@ zteam/                       # 资产层（git 跟踪）
     ├── tests/<project>/{req_id}-r{N}.md     # 测试代码与执行报告
     ├── quality/<project>/{req_id}-r{N}.md   # 质量门禁结论
     ├── security/<project>/{req_id}-r{N}.md  # 安全红线门禁结论
-    ├── release/<project>/{req_id}-r{N}.md   # 发布说明（released 终态）
+    ├── <项目>/release/{req_id}-r{N}/        # 交付包目录（发布说明+用户指南+tar.gz+SHA256SUMS+自检，released 终态）
     ├── <项目>/artifacts/{req_id}.md         # 终版产出（评审通过 / 完整交付后归档）
     ├── logs/                      # pipeline.log（审计）+ worker-*.log（下半部明细）
     └── status.json                # 状态机（唯一事实来源；key = <project>/<req_id>）
@@ -127,8 +127,8 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 | `{stage}_reviewing`（=四态 reviewing） | 评审完成 | worker 写 `{dir}/{project}/{req_id}-r{N}-review.md` → `release_stage_review` PASS/FAIL | `{stage}_done` 或 `{stage}_designing`（重做） |
 | `{stage}_done` | 上半部·通用 tick 认领 | 推进下一阶段（design/gate/release） | 下一阶段 `claimed` |
 | `{stage}_gating`（=四态 working） | 门禁完成 | worker 写门禁结论 → `release_gate` PASS/FAIL | `{stage}_done` 或 重试 |
-| `releasing`（=四态 working） | 发布完成 | worker 写发布说明 `release/{project}/{req_id}-r{N}.md` → `release_release` | `released` |
-| `released` | 发布完成 | **完整交付物归档**（结论摘要+各阶段终版+门禁结论+发布说明）+ 通知 | `released`（终态） |
+| `releasing`（=四态 working） | 发布完成 | worker 产出交付包目录 `{项目}/release/{req_id}-r{N}/`（发布说明/用户指南/tar.gz/校验和/自检）→ `release_release` | `released` |
+| `released` | 发布完成 | **完整交付物归档**（结论摘要+各阶段终版+门禁结论+交付包引用）+ 通知 | `released`（终态） |
 | 任意非终态 | 失败 ≥ 2 次 | 置 `blocked`，告警 | `blocked` |
 | `blocked` | 人工处理后重投 | 重置失败计数，状态回 `pending` | `pending` |
 
@@ -219,7 +219,7 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 | `test` | test-developer | test-reviewer | `tests/` | flash / pro |
 | `quality`（门禁） | — | quality-reviewer | `quality/` | pro |
 | `security`（门禁） | — | security-reviewer | `security/` | pro |
-| `release`（终态） | — | releaser | `release/` | flash |
+| `release`（终态） | — | releaser（打包交付） | `release/`（交付包目录） | flash |
 
 ### 7.5.1 阶段四态状态机（每个阶段独立）
 
@@ -233,7 +233,7 @@ python3 scripts/statectl.py set_status {key} {stage} working              # 执�
 python3 scripts/statectl.py set_status {key} {stage} reviewing {产物}     # 产出完成 → 待评审（需产物路径）
 python3 scripts/statectl.py release_stage_review {key} {stage} {评审意见} PASS|FAIL  # 评审完成
 python3 scripts/statectl.py release_gate {key} {stage} {门禁结论} PASS|FAIL          # 门禁
-python3 scripts/statectl.py release_release {key} {发布说明}                        # 发布（released）
+python3 scripts/statectl.py release_release {key} {项目}/release/{req_id}-r{N}/       # 发布（交付包目录 → released）
 ```
 
 **迁移校验表**（`set_status` 严格强制）：

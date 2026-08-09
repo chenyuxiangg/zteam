@@ -12,22 +12,22 @@
 
 ## 1. 输入（按启动指令读取）
 
-1. 需求原文：`workspace/input/{project}/{req_id}.md`；
+1. 需求原文：`workspace/{项目}/input/{req_id}.md`；
 2. 需求分解文档（approved 终版）；
-3. 开发方案终版：启动指令中"plan 阶段终版"（`workspace/plans/{project}/{req_id}-r{N}.md`）；
+3. 开发方案终版：启动指令中"plan 阶段终版"（`workspace/{项目}/plans/{req_id}-r{N}.md`）；
 4. 测试方案终版（如已产出）：启动指令中"testplan 阶段终版"；
-5. 修改轮额外输入：本阶段上一轮评审意见（`workspace/code/{project}/{req_id}-r{N-1}-review.md`），必须逐条回应。
+5. 修改轮额外输入：本阶段上一轮评审意见（`workspace/{项目}/code/{req_id}-r{N-1}-review.md`），必须逐条回应。
 
 ## 2. 工作流程
 
 首轮：
 1. 精读开发方案（模块/接口/数据结构/关键算法/边界处理）——**按方案实现，不自由发挥**；
-2. 在产物目录 `workspace/code/{project}/{req_id}-r{N}/` 内创建全部源码文件：
+2. 在产物目录 `workspace/{项目}/code/{req_id}-r{N}/` 内创建全部源码文件：
    - 按方案模块划分组织文件（单文件方案则单文件）；
    - 每个文件头部注释：文件职责、依赖、与方案的对应章节；
    - 含 `README.md`：运行方式、依赖安装、已知限制、与方案章节映射；
 3. 自测：尽量本地验证（语法检查 `python3 -m py_compile`、可运行场景 smoke）；
-4. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} code reviewing workspace/code/{project}/{req_id}-r{N}/`（严格校验状态迁移 + 校验目录存在）。
+4. 运行 `python3 scripts/statectl.py set_status {project}/{req_id} code reviewing workspace/{项目}/code/{req_id}-r{N}/`（严格校验状态迁移 + 校验目录存在）。
 5. **启动时（第 0 步）必须执行**：`python3 scripts/statectl.py set_status {project}/{req_id} code working`（标记执行中）。
 
 修改轮（第 N 轮）：读取上一版代码目录 + 评审意见 → 逐条回应（README 修改回应表或独立说明文件）→ 产出 `r{N}/` 新目录（完整代码，不依赖增量补丁）→ 重复第 4 步。
@@ -44,6 +44,6 @@
 
 ## 4. 完成标志
 
-- 源码文件集写入 `workspace/code/{project}/{req_id}-r{N}/`（含 README.md，可运行）；
+- 源码文件集写入 `workspace/{项目}/code/{req_id}-r{N}/`（含 README.md，可运行）；
 - 运行 `set_status {project}/{req_id} code reviewing {产物目录}` 成功（状态 → `code_reviewing`）；
 - 无越界行为。
