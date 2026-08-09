@@ -27,7 +27,7 @@ zteam/                     # 资产层（git 跟踪）
 
 ## 完成标志（三件套，缺一不可）
 
-1. **产物落盘**：按指令写 `workspace/{阶段目录}/{project}/{req_id}-r{N}.md`（每轮新文件，不覆盖旧版本）；
+1. **产物落盘**：按指令写 `workspace/{项目}/<阶段目录>/{req_id}-r{N}.md`（每轮新文件，不覆盖旧版本）；
 2. **状态更新**（状态迁移由 `scripts/statectl.py` 完成，**严格迁移校验**，禁止手改 status.json）：
    - **启动时（第 0 步）必须执行** `set_status {key} {stage} working`（标记执行中；评审者标记 reviewing）；
    - 需求分析完成：`release_analyze {key} {产物}`（置为等待评审）；
@@ -43,7 +43,7 @@ zteam/                     # 资产层（git 跟踪）
 
 - 若在写产物前决定放弃本轮：运行 `python3 scripts/statectl.py rollback {project}/{req_id}`（自动 `failures + 1` 并回到该阶段可认领状态）；
 - 若进程直接崩溃、没来得及处理：保持中间态原样即可——上半部 **stale 恢复**（进程死亡兜底）与**巡检**（漏设状态自动补正，见 `docs/state-machine.md` §7.2/§7.5.2）会自动兜底，无需人工；
-- 无论何种失败，把你的 stdout 留在 `workspace/logs/worker-{project}-{req_id}-r{N}.log` 中供人工排查。
+- 无论何种失败，把你的 stdout 留在 `workspace/{项目}/logs/worker-{req_id}-r{N}.log` 中供人工排查。
 
 ## 禁止
 

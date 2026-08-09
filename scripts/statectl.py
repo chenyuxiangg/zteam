@@ -997,22 +997,28 @@ def write_artifact(key: str, e: dict) -> None:
 # ---------------- 上半部 tick ----------------
 
 def _tick_common() -> int:
-    """通用 tick（P4 并发核心）：全局锁注册 → 每项目锁调度。
+    """通用 tick（P4 并发核心）：全局锁注册（只注册不写盘）→ 每项目锁调度。
     项目间并发（不同项目由不同 tick/进程并行处理），同项目串行（项目锁 + claim 防重复）。
-    每项目：stale 恢复 → 巡检兜底 → 认领 spawn → 写该项目状态。"""
+    注册的新条目随各项目锁合并写入（避免阶段 1 全量写覆盖其他 tick 的项目更新——并发安全）。"""
     alarms = []
-    # 阶段 1：全局锁注册（扫描全部项目 input/）
+    # 阶段 1：全局锁注册（扫描全部项目 input/，仅内存注册；新条目随项目锁落盘）
     with acquire_lock() as _:
         st_all = read_status()
         register_new_inputs(st_all)
-        write_status(st_all)
-    # 阶段 2：每项目锁调度（项目间并行）
+    # 阶段 2：每项目锁调度（项目间并行；注册增量合并写入）
     projects = [p for p in sorted(os.listdir(WORKSPACE_DIR))
                 if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
                 and p not in ("logs",) and not p.startswith(".")]
     for proj in projects:
         with acquire_lock(project=proj) as _:
+            ensure_project(proj)  # 新建项目：先建骨架（spawn_worker 需要项目 logs/ 存在）
             pst = read_status(proj)
+            if not pst:
+                pst = {}
+            # 合并本项目的新注册条目（阶段 1 的内存注册，不覆盖已存在）
+            for key, e in st_all.items():
+                if key.startswith(proj + "/") and key not in pst:
+                    pst[key] = e
             if not pst:
                 continue
             alarms += stale_recovery(pst)
