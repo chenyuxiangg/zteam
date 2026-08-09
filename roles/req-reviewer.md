@@ -17,10 +17,11 @@
 
 ## 2. 工作流程
 
+0. **启动时（第 0 步，强制）**：运行 `python3 scripts/statectl.py set_status {project}/{req_id} req reviewing`（标记评审中，幂等）；
 1. 读取需求原文 `workspace/input/{project}/{req_id}.md` 与当前版分析报告 `workspace/analysis/{project}/{req_id}-r{N}.md`；
 2. 按第 4 节检查清单**逐条核对**，逐项给结论；
 3. 按第 3 节模板产出评审意见，写入 `workspace/review/{project}/{req_id}-r{N}.md`；
-4. 更新 `status.json`：结论为 PASS 则置 `approved`，否则置 `needs_fix`；`round` 保持为 `N`。
+4. 运行 `python3 scripts/statectl.py release_review {project}/{req_id} review/{project}/{req_id}-r{N}.md PASS|FAIL` 完成状态迁移（**禁止手改 status.json**：PASS → `approved`，FAIL → 打回重做；命令会校验产物存在、自动归档 artifacts/、按 max_rounds 处理强制归档，并写审计日志）。
 
 ## 3. 输出模板（严格遵循）
 

@@ -22,22 +22,24 @@
 
 ## 3. 工作流程
 
-### 3.1 首轮分析（status = `pending` → `analyzing` → `analyzed`）
+### 3.1 首轮分析（status = `pending` → `analyzing`，四态 `claimed` → `working` → `reviewing` → `analyzed`）
 
+0. **启动时（第 0 步，强制）**：运行 `python3 scripts/statectl.py set_status {project}/{req_id} req working`（标记执行中）；
 1. 读取需求原文 `workspace/input/{project}/{req_id}.md`；
 2. **SCQA 重构**需求背景（对应模板第 1 节）——先证明你理解了这个需求，再分解；
 3. **查阅资料**：使用 web 工具检索行业背景、竞品信息、最佳实践（模板第 5 节竞争力分析需要）；检索结果**必须注明来源**（URL / 报告 / 官网）；
 4. 按第 4 节模板产出需求分解文档；
 5. 写入 `workspace/analysis/{project}/{req_id}-r1.md`；
-6. 运行 `python3 scripts/statectl.py release_analyze {project}/{req_id} analysis/{project}/{req_id}-r1.md` 完成状态迁移。
+6. 运行 `python3 scripts/statectl.py release_analyze {project}/{req_id} analysis/{project}/{req_id}-r1.md` 完成状态迁移（置为等待评审）。
 
-### 3.2 修改轮（status = `needs_fix` → `analyzing` → `analyzed`）
+### 3.2 修改轮（status = `needs_fix`/`analyzing`（打回）→ `analyzing`，四态 `reviewing` → `working` → `reviewing` → `analyzed`）
 
+0. **启动时（第 0 步，强制）**：运行 `python3 scripts/statectl.py set_status {project}/{req_id} req working`（标记执行中）；
 1. 读取上一版分析报告 `workspace/analysis/{project}/{req_id}-r{N-1}.md`；
 2. 读取评审意见 `workspace/review/{project}/{req_id}-r{N-1}.md`；
 3. **逐条处理**全部评审意见（规则见 3.3）；
 4. 产出新版本，写入 `workspace/analysis/{project}/{req_id}-r{N}.md`；
-5. 运行 `release_analyze {project}/{req_id} analysis/{project}/{req_id}-r{N}.md` 完成状态迁移。
+5. 运行 `release_analyze {project}/{req_id} analysis/{project}/{req_id}-r{N}.md` 完成状态迁移（置为等待评审）。
 
 ### 3.3 修改回应规则（修改轮强制）
 

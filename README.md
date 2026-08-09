@@ -17,7 +17,7 @@
 | 一次输入多个需求 | `workspace/input/<project>/` 可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
 | 评审结论被分析者自动感知 | 分析师上半部轮询 `needs_fix` 状态并唤醒修改 worker |
 | 分析完成被评审者自动感知 | 评审上半部轮询 `analyzed` 状态并唤醒评审 worker |
-| 多轮自动完成 | 状态机循环直至 `approved` 或 `max_rounds` 上限，失败自动重试 + stale 恢复 |
+| 多轮自动完成 | 状态机循环直至 `approved` 或 `max_rounds` 上限，失败自动重试 + stale 恢复 + 巡检兜底（漏设状态自动补正） |
 
 ## 架构总览
 
@@ -25,17 +25,20 @@
 ┌─ 上半部（cron no_agent 纯脚本，秒级，零 token，3 分钟内绰绰有余）────┐
 │  watchdog-analyst.py   注册新需求 / stale 恢复 / 原子认领 / spawn 分析师 worker │
 │  watchdog-reviewer.py  stale 恢复 / 原子认领 / spawn 评审 worker            │
-│  watchdog-worker.py    阶段链调度：方案/测试方案/代码/测试/门禁/发布 认领+spawn │
+│  watchdog-worker.py    主调度：stale 恢复 + 巡检兜底 + 阶段链认领+spawn      │
 │  watchdog-weekly.py    每周一致性巡检（只告警）                             │
 │  watchdog-notify.py    每 15 分钟：有新归档才输出报告（cron deliver 推送）    │
 └──────────────────────────────────────────────────────────────┬────────────┘
                           setsid hermes chat -q -m <model> &
 ┌──────────────────────────────────────────────────────────────▼────────────┐
 │ ── 下半部（独立 Hermes 进程，分钟级，无 3 分钟限制，进程级持久）──          │
-│   需求阶段：analyst → req-analyst.md 产出需求分解文档 → release_analyze      │
+│   需求阶段：analyst → req-analyst.md 产出需求分解文档 → set_status reviewing │
 │             reviewer → req-reviewer.md 评审 → release_review（PASS→阶段链） │
 │   阶段链：  方案设计→方案评审→测试方案→测试方案评审→代码→代码评审→          │
 │             测试开发→测试评审→质量门禁→安全门禁→发布（released 完整交付）    │
+│   每阶段四态：claimed（认领）→ working（启动）→ reviewing（产出）→ done（PASS）│
+│             状态变更全部经 set_status/release_*（严格迁移校验）；           │
+│             漏设状态由上半部巡检（guard_recovery）自动补正（GUARD 审计）     │
 └─────────────────────────────────────────────────────────────────────────────┘
        状态机：pending → analyzing → analyzed → reviewing → approved
        → plan → testplan → code → test → quality → security → released（终态）
@@ -153,7 +156,9 @@ bash uninstall.sh --full               # 清空数据层 workspace/（input/anal
 - **cron 3 分钟硬中断** → 上半部只做秒级唤醒，耗时活全部在下半部独立进程完成（`setsid` 脱离 cron 会话，进程级持久）；
 - **双 job 竞态** → 中间态（analyzing/reviewing）原子认领（compare-and-swap）+ `flock` 锁；
 - **worker 崩溃** → 上半部 stale 恢复（`kill -0` 存活检查 + 超时回滚 + failures 计数），2 次后 `blocked` + 告警推送；
+- **worker 漏设状态/卡死循环** → 巡检兜底（guard_recovery）：超时后按产物存在性/评审结论自动补正（PASS→done / FAIL→重做 / 无产物→回滚），GUARD 审计留痕，无需人工；
 - **模型质量上限** → 检查清单逐条可勾选，主观判断最小化。
+- **job 冗余（已知）**：`req-analyst-top`/`req-reviewer-top` 与 `req-worker-top` 调度重叠（后者已覆盖全阶段认领），保留为兼容/冗余调度，暂不合并。
 
 ## Gateway 与开机自启
 

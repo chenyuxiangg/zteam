@@ -40,13 +40,14 @@ cd <工作区> && python3 scripts/statectl.py diagnose
 | 3 | job 被暂停/删除 | `hermes cron list` 看 3 个 job 是否 `[active]` | `hermes cron resume <job_id>` / 重建（README 快速开始） |
 | 4 | 文件没被识别 | 文件名是否含中文/空格/非 `.md`；是否在 `input/` 内 | 按命名规则改名/移入 `input/` |
 
-### S2 卡在 `analyzing` / `reviewing` 不动
+### S2 卡在 `analyzing` / `reviewing` / `{stage}_designing` / `{stage}_reviewing` 不动
 | 优先级 | 可能原因 | 检查 | 修复 |
 |---|---|---|---|
 | 1 | **worker 还在跑**（慢，正常） | `ps aux | grep "hermes chat"`；`diagnose` D13 | 等。`workspace/logs/pipeline.log` 会有 `SKIP ... 仍存活` |
-| 2 | **worker 已死**（崩溃/被杀） | worker 日志 `tail workspace/logs/worker-{id}-r{N}.log`；`diagnose` D5（claimed_at 超 20 分钟） | 不用管——**下个 tick 的 stale 恢复自动回滚重试**（≤5 分钟）；想立刻重试：`python3 scripts/statectl.py rollback <req_id>` |
-| 3 | worker 反复秒退 | worker 日志尾部；`hermes chat -q` 是否可用（PATH/API key/模型名） | 见 S7 |
-| 4 | 滞留 >24h | `diagnose` D5 会标 WARN | 人工查 worker 日志与模型/API，`rollback` 后观察 |
+| 2 | **worker 干完活但漏设状态**（四态 working/reviewing 超时） | `grep GUARD workspace/logs/pipeline.log` | **不用管**——巡检（guard_recovery）已按"超时 + 产物存在性 + 评审结论"自动补正（PASS→done / FAIL→重做），≤20 分钟 + 一个 tick 完成；GUARD 审计留痕 |
+| 3 | **worker 已死**（崩溃/被杀） | worker 日志 `tail workspace/logs/worker-{id}-r{N}.log`；`diagnose` D5（claimed_at 超 20 分钟） | 不用管——**下个 tick 的 stale 恢复自动回滚重试**（≤5 分钟）；想立刻重试：`python3 scripts/statectl.py rollback <req_id>` |
+| 4 | worker 反复秒退 | worker 日志尾部；`hermes chat -q` 是否可用（PATH/API key/模型名） | 见 S7 |
+| 5 | 滞留 >24h | `diagnose` D5 会标 WARN | 人工查 worker 日志与模型/API，`rollback` 后观察 |
 
 ### S3 收到 `[BLOCKED]` 告警（连续失败 ≥2 次）
 | 步骤 | 动作 |
@@ -102,6 +103,17 @@ cd <工作区> && python3 scripts/statectl.py diagnose
 |---|---|
 | job 的 `deliver=local`（纯本地模式） | 告警/结果只保存不推送。install.sh 默认 `telegram`（可用 `REQREVIEW_DELIVER=local` 覆盖）；若收不到推送，先 `hermes cron list` 看 Deliver 是否为 telegram，不符则重跑 `bash install.sh` 自动校正，或手动 `hermes cron edit <job_id> --deliver telegram` |
 | 上半部无活时静默是**设计** | 空 stdout = 不投递；只有 BLOCKED/FORCED/异常才输出 |
+
+### S11 worker 进程活着但卡住不退出（2026-08-08 tetris 实测）
+
+**症状**：需求滞留 `{stage}_designing`（四态 working）超 20 分钟，worker 进程存活（`ps` 可见），`pipeline.log` 无 `STATE` 推进，worker 日志尾部是**完整成功收尾**（产物已落盘 / 自测全绿 / set_status 审计已有）。
+
+| 判定 | 检查 | 处理 |
+|---|---|---|
+| **模式 A：干完活但 hermes chat 收尾挂住**（网络/会话卡住，与 Telegram 适配器 #63309 同族） | 产物已落盘 + 日志成功收尾 + 无 OOM/kill 痕迹 | **无需人工**——巡检（guard_recovery）会在超时后按"产物存在 → 补 reviewing"自动推进（≤20 分钟 + 一个 tick）；产物无损 |
+| **模式 B：真卡死在循环里**（写→跑→修无界迭代） | 产物未落盘 / 日志在反复迭代 | 等巡检兜底（超时无产物 + 进程活 → 继续等待）或 `kill <pid>` 后 `rollback <req_id>` 重试（测试开发类角色在 flash 模型下易出现，属已知行为） |
+
+**教训**：不要一看到"卡住"就杀进程/改状态——先查产物是否已落盘；落盘了就是模式 A，巡检会自动接管。
 
 ## 3. 数据视图速查（哪里看什么）
 

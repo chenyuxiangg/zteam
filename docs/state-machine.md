@@ -111,23 +111,28 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 
 阶段评审 FAIL：回 `{stage}_designing`（下一轮重做）；连续 FAIL 达 `max_rounds` → `blocked`（质量门禁不放行）。
 
+> **四态机制**：上表 `{stage}_designing/_reviewing/_gating/releasing` 是**派生显示**；每阶段内部真实状态机为 `claimed → working → reviewing → done`（存 `stages[stage].state`，见 §7.5.1），状态变更全部经 `set_status`/`release_*`（严格迁移校验），巡检（§7.5.2）自动补正漏设状态。
+
 ## 4. 状态迁移表（唯一合法路径）
 
 | 当前状态 | 事件 | 动作（产物） | 下一状态 |
 |----------|------|--------------|----------|
-| `pending` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{project}/{req_id}-r{N}.md` | `analyzed` |
-| `analyzed` | 上半部·评审师认领 | 原子置 `reviewing`（写 claim）；worker 写 `review/{project}/{req_id}-r{N}.md` | `approved` 或 `needs_fix` |
+| `pending` | 上半部·分析师认领 | 原子置 `analyzing` + 四态 `claimed`（写 claim）；worker 启动置 `working`；产出写 `analysis/{project}/{req_id}-r{N}.md` 后 `set_status reviewing`（记 product） | `analyzed` |
+| `analyzed` | 上半部·评审师认领 | 原子置 `reviewing`；评审者产出 `review/{project}/{req_id}-r{N}.md` | `approved` 或 `needs_fix` |
 | `needs_fix` | 上半部·分析师认领 | 原子置 `analyzing`（写 claim）；worker 写 `analysis/{project}/{req_id}-r{N+1}.md` | `analyzed` |
 | `analyzed`（N = max_rounds） | 轮次已达上限 | 强制归档，置 `approved` + `forced: true` | `approved` |
-| `approved` | 上半部·通用 tick 认领 | 原子置 `plan_designing`；worker 写 `plans/{project}/{req_id}-r{N}.md` | `plan_reviewing` |
-| `{stage}_designing` | 上半部·通用 tick 认领 | 原子置 `{stage}_reviewing`（记 `stages[stage].product`） | `{stage}_reviewing` |
-| `{stage}_reviewing` | 上半部·通用 tick 认领 | worker 写 `{dir}/{project}/{req_id}-r{N}-review.md` | `{stage}_done` 或 `{stage}_designing` |
-| `{stage}_done` | 上半部·通用 tick 认领 | 推进下一阶段（design/gate/release） | 下一阶段中间态 |
-| `{stage}_gating` | 上半部·通用 tick 认领 | worker 写门禁结论 | `{stage}_done` 或 重试 |
-| `releasing` | 上半部·通用 tick 认领 | worker 写发布说明 `release/{project}/{req_id}-r{N}.md` | `released` |
+| `approved` | 上半部·通用 tick 认领 | 原子置 `plan_claimed`（四态 `claimed`）；产出者启动置 `working`；写 `plans/{project}/{req_id}-r{N}.md` 后 `set_status reviewing` | `plan_reviewing` |
+| `{stage}_claimed` | 产出者启动 | `set_status working`（标记执行中，第 0 步强制） | `{stage}_designing` |
+| `{stage}_designing`（=四态 working） | 产出完成 | `set_status reviewing {产物}`（记 `stages[stage].product`，严格校验） | `{stage}_reviewing` |
+| `{stage}_reviewing`（=四态 reviewing） | 评审完成 | worker 写 `{dir}/{project}/{req_id}-r{N}-review.md` → `release_stage_review` PASS/FAIL | `{stage}_done` 或 `{stage}_designing`（重做） |
+| `{stage}_done` | 上半部·通用 tick 认领 | 推进下一阶段（design/gate/release） | 下一阶段 `claimed` |
+| `{stage}_gating`（=四态 working） | 门禁完成 | worker 写门禁结论 → `release_gate` PASS/FAIL | `{stage}_done` 或 重试 |
+| `releasing`（=四态 working） | 发布完成 | worker 写发布说明 `release/{project}/{req_id}-r{N}.md` → `release_release` | `released` |
 | `released` | 发布完成 | **完整交付物归档**（结论摘要+各阶段终版+门禁结论+发布说明）+ 通知 | `released`（终态） |
 | 任意非终态 | 失败 ≥ 2 次 | 置 `blocked`，告警 | `blocked` |
 | `blocked` | 人工处理后重投 | 重置失败计数，状态回 `pending` | `pending` |
+
+> **四态说明**（详见 §7.5.1）：每阶段内部真实状态机为 `claimed → working → reviewing → done`（存 `stages[stage].state`），顶层 `{stage}_designing/_reviewing/_gating/releasing` 是派生显示（claimed/working 共用 designing 顶层）。所有状态变更必须经 `set_status`/`release_*`（严格迁移校验），**巡检兜底**（§7.5.2）在超时后按产物存在性/结论自动补正漏设状态。
 
 非法迁移（实现必须拒绝）：`pending → reviewed`、`needs_fix → approved`、跳过中间态、`approved/blocked` 被再次认领。
 
@@ -185,11 +190,15 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 
 ### 7.2 失败处理（无人值守必须内置）
 
-- **worker 失败**（进程崩溃 / 退出非 0 / 产物缺失 / 状态未更新）→ 需求状态滞留 `analyzing`/`reviewing`，由**上半部 stale 恢复**兜底：
-  1. 发现 `analyzing`/`reviewing` 且 `claimed_at` 超过 `STALE_AFTER`（默认 20 分钟）；
-  2. `kill -0 $worker_pid` 检查：进程**存活** → 跳过（worker 还在跑，只是慢）；进程**已死** → 回滚（`analyzing→pending` / `reviewing→analyzed`，`failures + 1`，清空 claim 字段），下个 tick 重新唤醒；
-- **上限**：`failures ≥ 2` → 置 `blocked`，上半部脚本输出告警文本（经 cron 的 deliver 推送到 Telegram 等），提示人工介入；
-- **巡检 job**（每周一次，no_agent 脚本）：检查 `workspace/status.json` JSON 合法性、`approved` 与 `workspace/artifacts/<project>/` 一致性、是否存在滞留超过 24h 的非终态。**只告警，不改状态**。
+失败兜底有**两层机制**，全部自动、无需人工：
+
+**① stale 恢复（进程死亡兜底，每 tick）**：需求状态滞留中间态（`analyzing`/`reviewing`/`{stage}_designing/_reviewing/_gating`/`releasing`，四态为 `claimed`/`working`/`reviewing`）且 `claimed_at`/`state_since` 超过 `STALE_AFTER`（默认 20 分钟）时：
+- `kill -0 $worker_pid` 检查：进程**存活** → 跳过（worker 还在跑，只是慢）；进程**已死** → 回滚（四态 `claimed`/`working` → 上一完成态，`failures + 1`，清空 claim 字段），下个 tick 重新唤醒；
+- **上限**：`failures ≥ 2` → 置 `blocked`，上半部脚本输出告警文本（经 cron 的 deliver 推送到 Telegram 等），提示人工介入。
+
+**② 巡检 guard_recovery（漏设状态自动补正，每 tick，详见 §7.5.2）**：worker **活着但漏设状态**（干完活没调 `set_status`，或卡死在循环里）时，按"超时 + 产物存在性 + 评审结论"自动补正——产物存在 → 补 `reviewing`/`done`（PASS）/`working`（FAIL 重做）；无产物且进程已死 → 回滚。全部动作写 `GUARD` 审计行。**这是四态机制的核心可靠性保障**（worker 无需自觉，漏了也能兜底）。
+
+**③ 每周一致性巡检**（`req-weekly-audit`，no_agent 脚本）：检查 `workspace/status.json` JSON 合法性、`approved`/`released` 与 `workspace/artifacts/<project>/` 一致性、是否存在滞留超过 24h 的非终态。**只告警，不改状态**。
 
 ### 7.3 人工介入方式
 
