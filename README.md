@@ -138,20 +138,26 @@ bash uninstall.sh --full               # 清空数据层 workspace/（全部项�
 
 ## 模型配置
 
-**绑定位置**：不在 cron 配置里，而在 `scripts/statectl.py` **第 43–48 行**的四个常量（worker spawn 时经 `hermes chat -q -m <model> --provider <provider>` 传入）。两角色天然不同模型，改模型只需改常量，无需重建 cron job。
+**绑定位置**：不在 cron 配置里，而在 `scripts/statectl.py` 的 **ROLE_MODELS 映射**（worker spawn 时经 `hermes chat -q -m <model> --provider <provider>` 传入）。每角色独立模型，改模型只需改常量/映射，无需重建 cron job。
 
-| 常量（第 43–48 行） | 当前值 | 角色 |
-|----------------------|--------|------|
-| `ANALYST_MODEL` / `ANALYST_PROVIDER` | `deepseek-v4-flash` / `deepseek` | 分析师（快/便宜，产出量大） |
-| `REVIEWER_MODEL` / `REVIEWER_PROVIDER` | `deepseek-v4-pro` / `deepseek` | 评审师（强推理，把关） |
+| 角色 | 常量（环境变量可覆盖） | 当前值 | 说明 |
+|------|------------------------|--------|------|
+| 需求分析师 | `ANALYST_MODEL` / `ANALYST_PROVIDER` | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
+| 需求评审师 | `REVIEWER_MODEL` / `REVIEWER_PROVIDER` | `deepseek-v4-pro` / `deepseek` | 评审类（强推理，把关） |
+| 方案设计/评审 | `PLAN_DESIGNER_MODEL` / `PLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
+| 测试方案设计/评审 | `TESTPLAN_DESIGNER_MODEL` / `TESTPLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
+| **code 阶段** | `CODE_DEVELOPER_MODEL` / `CODE_REVIEWER_MODEL` / `CODE_PROVIDER` | `MiniMax-M3` / `MiniMax-M3` / `minimax-cn` | 产出+评审均 M3 |
+| **test 阶段** | `TEST_DEVELOPER_MODEL` / `TEST_REVIEWER_MODEL` / `TEST_PROVIDER` | `MiniMax-M3` / `MiniMax-M3` / `minimax-cn` | 产出+评审均 M3 |
+| 质量/安全门禁 | `QUALITY_REVIEWER_MODEL` / `SECURITY_REVIEWER_MODEL` | `deepseek-v4-pro` | 把关/红线 |
+| 发布者 | `RELEASER_MODEL` | `deepseek-v4-flash` | 打包交付 |
 
 **改模型两种方式**：
-1. **直接改常量（推荐）**：编辑 `scripts/statectl.py` 第 43–48 行即可，立即生效；
-2. **环境变量覆盖**：`ANALYST_MODEL` / `REVIEWER_MODEL` 等同名环境变量优先。⚠️ **坑**：cron job 由 gateway（systemd 服务）执行，交互 shell 里 `export` 的变量**到不了 gateway 进程**——环境变量覆盖只对手动运行（`python3 scripts/statectl.py ...`）生效；要让 gateway 场景也走环境变量，需 `systemctl --user edit hermes-gateway` 在 `[Service]` 下加 `Environment=ANALYST_MODEL=...` 再 `hermes gateway restart`。
+1. **直接改常量/映射（推荐）**：编辑 `scripts/statectl.py` 模型常量区（约 185–235 行）即可，立即生效；
+2. **环境变量覆盖**：上表常量同名环境变量优先。⚠️ **坑**：cron job 由 gateway（systemd 服务）执行，交互 shell 里 `export` 的变量**到不了 gateway 进程**——环境变量覆盖只对手动运行（`python3 scripts/statectl.py ...`）生效；要让 gateway 场景也走环境变量，需 `systemctl --user edit hermes-gateway` 在 `[Service]` 下加 `Environment=CODE_DEVELOPER_MODEL=...` 再 `hermes gateway restart`。
 
-**验证生效**：`tail workspace/logs/pipeline.log` 中 `SPAWN` 行带实际模型（`... model=deepseek-v4-flash ...`）。
+**验证生效**：`tail workspace/logs/pipeline.log` 中 `SPAWN` 行带实际模型（`... model=MiniMax-M3 ...` / `... model=deepseek-v4-flash ...`）。
 
-> 可用模型以上游 API 实际返回为准（`curl https://api.deepseek.com/models`）；当前 API 仅有 `deepseek-v4-flash` 与 `deepseek-v4-pro`。
+> 可用模型以上游 API 实际返回为准；当前配置组合：DeepSeek（`deepseek-v4-flash`/`deepseek-v4-pro`，api.deepseek.com）+ MiniMax（`MiniMax-M3`，minimax-cn 中国站，KEY=MINIMAX_CN_API_KEY）+ Kimi（kimi-coding-cn，KEY=KIMI_CN_API_KEY，备用未启用）。
 
 ## 关键限制与对策
 
