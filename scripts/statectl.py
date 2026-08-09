@@ -216,7 +216,7 @@ GATES = [
     {"name": "security", "role": "security-reviewer", "dir": "security"},
 ]
 # 终态阶段（产出发布说明；released = 完整交付物归档 + 通知）
-RELEASE = {"name": "release", "role": "releaser", "dir": "release"}
+RELEASE = {"name": "release", "role": "releaser", "dir": "release", "kind": "dir"}
 
 # 角色 → (模型, provider) 映射（含需求阶段两个角色）
 ROLE_MODELS = {
@@ -845,7 +845,7 @@ def build_worker_query(role: str, key: str, e: dict):
             "4. 完成后无需汇报。",
         ]
         return n, "\n".join(q)
-    # release
+    # release（终态：打包交付）
     out = rel_stage_product(RELEASE, project, rid, n)
     q = [
         f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 为需求 {key}（项目 {project}）执行发布（第 {n} 轮）。",
@@ -853,10 +853,9 @@ def build_worker_query(role: str, key: str, e: dict):
         "输入文件：",
         *[f"- {desc}：{p}" for desc, p in prev_products],
         "任务：",
-        "1. 按角色文件的输出模板产出发布说明；",
-        f"2. 写入 {out}；",
-        f"3. 运行 python3 scripts/statectl.py release_release {key} {out} 完成状态更新（该命令会校验产物存在并生成最终交付物归档）；",
-        "4. 完成后无需汇报。",
+        f"1. 在 {out} 目录内创建完整发布包（目录自动创建）：发布说明.md（版本/变更/质量安全结论/已知限制/回滚方案）+ 用户指南.md（安装/运行/使用）+ 打包产物 {rid}-v{{版本}}.tar.gz（代码文件集压缩，含 README 与依赖说明）+ SHA256SUMS（校验和）+ 可用性自检记录（如环境允许实际运行测试/启动冒烟）；",
+        f"2. 运行 python3 scripts/statectl.py release_release {key} {out} 完成状态更新（该命令校验产物目录存在并生成最终交付物归档）；",
+        "3. 完成后无需汇报。",
     ]
     return n, "\n".join(q)
 
