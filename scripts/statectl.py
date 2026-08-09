@@ -601,10 +601,14 @@ def claim(st: dict, rid: str, role: str) -> bool:
     _, stage, phase = act
     # req 阶段同样写 stages['req'] 四态（claimed），保证 set_status 迁移校验/巡检统一可用
     cur_state = ensure_stages(e)[stage].get("state")
-    if cur_state is None:  # 仅阶段首次认领时设 claimed；working/reviewing（等待/重做）不覆盖
-        ensure_stages(e)[stage]["state"] = "claimed"
-        ensure_stages(e)[stage]["state_since"] = now_iso()
-        ensure_stages(e)[stage].setdefault("timeline", []).append({"t": now_iso(), "to": "claimed"})
+    # 首次认领（None）设 claimed；重跑场景（requeue 后旧 done 终态残留，顶层已回到 {stage}_designing）
+    # 同样重置为 claimed——否则残留 done 会被 set_status 严格迁移校验拒绝（done→working ❌，tetris requeue 实测）。
+    # working/reviewing（等待/重做/评审 FAIL 打回）不覆盖。
+    if cur_state is None or (phase == "design" and cur_state == "done"):
+        s = ensure_stages(e)[stage]
+        s["state"] = "claimed"
+        s["state_since"] = now_iso()
+        s.setdefault("timeline", []).append({"t": now_iso(), "to": "claimed"})
     if phase == "design":
         new_state = "analyzing" if stage == "req" else f"{stage}_designing"
     elif phase == "review":
@@ -1377,9 +1381,18 @@ def cmd_requeue(rid: str) -> int:
         e["status"] = "pending"
         e["failures"] = 0
         clear_claim(e)
+        # 重跑 = 全链重来：重置各阶段四态与轮次引用（产物文件保留，仅清状态），
+        # 否则残留 done/reviewing 会卡死 set_status 迁移（tetris/tetris requeue 后 plan 阶段实测）。
+        # 注意：顶层 round 保留（req 重跑产出 r{round+1} 的连续性依赖它）。
+        for name, s in (e.get("stages") or {}).items():
+            s["state"] = None
+            s["state_since"] = None
+            s["round"] = 0
+            s["product"] = None
+            s["reviews"] = []
         e["updated_at"] = now_iso()
         write_status(st)
-        log(f"REQUEUE {rid} -> pending (manual)")
+        log(f"REQUEUE {rid} -> pending (manual, stages reset)")
     return 0
 
 

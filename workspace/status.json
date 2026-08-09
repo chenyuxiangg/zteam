@@ -72,24 +72,25 @@
     }
   },
   "tetris/tetris": {
-    "status": "code_designing",
-    "round": 1,
+    "status": "plan_reviewing",
+    "round": 2,
     "max_rounds": 3,
     "forced": false,
-    "analysis": "analysis/tetris/tetris-r1.md",
+    "analysis": "analysis/tetris/tetris-r2.md",
     "reviews": [
-      "review/tetris/tetris-r1.md"
+      "review/tetris/tetris-r1.md",
+      "review/tetris/tetris-r2.md"
     ],
     "failures": 0,
     "stages": {
       "plan": {
         "round": 1,
-        "product": "workspace/plans/tetris/tetris-r1.md",
+        "product": "workspace/plans/tetris/tetris-r2.md",
         "reviews": [
           "plans/tetris/tetris-r1-review.md"
         ],
-        "state": "done",
-        "state_since": "2026-08-08T15:48:50Z",
+        "state": "reviewing",
+        "state_since": "2026-08-09T03:33:26Z",
         "timeline": [
           {
             "t": "2026-08-08T15:40:19Z",
@@ -110,6 +111,18 @@
           {
             "t": "2026-08-08T15:48:50Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-09T03:30:09Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T03:30:09Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T03:33:26Z",
+            "to": "reviewing"
           }
         ],
         "status": "pending"
@@ -147,11 +160,13 @@
         "status": "pending"
       },
       "code": {
-        "round": 0,
-        "product": null,
-        "reviews": [],
-        "state": "working",
-        "state_since": "2026-08-08T16:00:43Z",
+        "round": 1,
+        "product": "workspace/code/tetris/tetris-r1/",
+        "reviews": [
+          "code/tetris/tetris-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-08T16:15:15Z",
         "timeline": [
           {
             "t": "2026-08-08T16:00:28Z",
@@ -160,17 +175,46 @@
           {
             "t": "2026-08-08T16:00:43Z",
             "to": "working"
+          },
+          {
+            "t": "2026-08-08T16:08:40Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T16:10:55Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T16:15:15Z",
+            "to": "done"
           }
         ],
         "status": "pending"
       },
       "test": {
         "round": 0,
-        "product": null,
+        "product": "workspace/tests/tetris/tetris-r1/",
         "reviews": [],
-        "state": null,
-        "state_since": null,
-        "timeline": [],
+        "state": "reviewing",
+        "state_since": "2026-08-08T16:45:18Z",
+        "timeline": [
+          {
+            "t": "2026-08-08T16:15:36Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-08T16:15:48Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-08T16:40:48Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-08T16:45:18Z",
+            "to": "reviewing"
+          }
+        ],
         "status": "pending"
       },
       "quality": {
@@ -202,23 +246,32 @@
       },
       "req": {
         "round": 0,
-        "product": null,
+        "product": "analysis/tetris/tetris-r1.md",
         "reviews": [],
         "status": "pending",
-        "state": "working",
-        "state_since": "2026-08-08T15:24:13Z",
+        "state": "reviewing",
+        "state_since": "2026-08-09T03:20:23Z",
         "timeline": [
           {
             "t": "2026-08-08T15:24:13Z",
             "to": "working"
+          },
+          {
+            "t": "2026-08-09T03:15:03Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T03:15:19Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T03:20:23Z",
+            "to": "reviewing"
           }
         ]
       }
     },
     "created_at": "2026-08-08T15:18:43Z",
-    "updated_at": "2026-08-08T16:00:43Z",
-    "claimed_by": "code-developer",
-    "claimed_at": "2026-08-08T16:00:28Z",
-    "worker_pid": 2869252
+    "updated_at": "2026-08-09T03:33:26Z"
   }
 }
