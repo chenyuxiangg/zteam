@@ -26,18 +26,41 @@ from datetime import datetime, timezone
 
 WORKDIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # zteam/（realpath：兼容 ~/.hermes/scripts/ 下的符号链接调用）
 WORKSPACE_DIR = os.path.join(WORKDIR, "workspace")  # 运行数据层（固定资产在根目录，数据全部收进 workspace/）
-INPUT_DIR = os.path.join(WORKSPACE_DIR, "input")
-ANALYSIS_DIR = os.path.join(WORKSPACE_DIR, "analysis")
-REVIEW_DIR = os.path.join(WORKSPACE_DIR, "review")
-ARTIFACT_DIR = os.path.join(WORKSPACE_DIR, "artifacts")
-LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")
+LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")       # 全局日志（跨项目审计流）
 SCRIPTS_DIR = os.path.join(WORKDIR, "scripts")
-STATUS_FILE = os.path.join(WORKSPACE_DIR, "status.json")
-LOCK_FILE = os.path.join(WORKSPACE_DIR, "status.lock")
+STATUS_FILE = os.path.join(WORKSPACE_DIR, "status.json")  # 兼容引用（实际按项目分文件，见 read_status）
+LOCK_FILE = os.path.join(WORKSPACE_DIR, "status.lock")    # 全局锁（register/聚合扫描用）
 LOG_FILE = os.path.join(LOG_DIR, "pipeline.log")
 ALARM_FILE = os.path.join(LOG_DIR, "alarms.txt")
 
 DEFAULT_PROJECT = "default"  # 未指定项目时的兜底项目
+
+# ---- 项目分层：workspace/<project>/{input,analysis,...,logs,status.json,status.lock} ----
+def project_dir(project: str) -> str:
+    return os.path.join(WORKSPACE_DIR, project)
+
+
+def project_status_file(project: str) -> str:
+    return os.path.join(project_dir(project), "status.json")
+
+
+def project_lock_file(project: str) -> str:
+    return os.path.join(project_dir(project), "status.lock")
+
+
+def project_log_dir(project: str) -> str:
+    return os.path.join(project_dir(project), "logs")
+
+
+def ensure_project(project: str) -> None:
+    """确保项目目录骨架存在（幂等；由 register/写路径自动调用）。"""
+    os.makedirs(project_dir(project), exist_ok=True)
+    for sub in ("input", "analysis", "review", "plans", "testplans", "code", "tests",
+                "quality", "security", "release", "artifacts", "archive", "logs"):
+        os.makedirs(os.path.join(project_dir(project), sub), exist_ok=True)
+    if not os.path.exists(project_status_file(project)):
+        with open(project_status_file(project), "w", encoding="utf-8") as f:
+            json.dump({}, f, ensure_ascii=False, indent=2)
 
 
 def split_key(key: str):
@@ -49,30 +72,30 @@ def split_key(key: str):
 
 
 def rel_input(project: str, rid: str) -> str:
-    return f"input/{project}/{rid}.md"
+    return f"{project}/input/{rid}.md"
 
 
 def rel_analysis(project: str, rid: str, n: int) -> str:
-    return f"analysis/{project}/{rid}-r{n}.md"
+    return f"{project}/analysis/{rid}-r{n}.md"
 
 
 def rel_review(project: str, rid: str, n: int) -> str:
-    return f"review/{project}/{rid}-r{n}.md"
+    return f"{project}/review/{rid}-r{n}.md"
 
 
 def rel_artifact(project: str, rid: str) -> str:
-    return f"artifacts/{project}/{rid}.md"
+    return f"{project}/artifacts/{rid}.md"
 
 
 def rel_stage_product(cfg: dict, project: str, rid: str, n: int) -> str:
-    """阶段产出物路径（相对 workspace/）：file → {dir}/{project}/{rid}-r{n}.md；dir → {dir}/{project}/{rid}-r{n}/（文件集）"""
-    base = f"{cfg['dir']}/{project}/{rid}-r{n}"
+    """阶段产出物路径（相对 workspace/）：file → {project}/{dir}/{rid}-r{n}.md；dir → {project}/{dir}/{rid}-r{n}/（文件集）"""
+    base = f"{project}/{cfg['dir']}/{rid}-r{n}"
     return base + (".md" if cfg.get("kind", "file") == "file" else "/")
 
 
 def rel_stage_review(cfg: dict, project: str, rid: str, n: int) -> str:
-    """阶段评审意见路径：{dir}/{project}/{rid}-r{n}-review.md"""
-    return f"{cfg['dir']}/{project}/{rid}-r{n}-review.md"
+    """阶段评审意见路径：{project}/{dir}/{rid}-r{n}-review.md"""
+    return f"{project}/{cfg['dir']}/{rid}-r{n}-review.md"
 
 
 def stage_cfg(name: str):
@@ -146,15 +169,15 @@ def next_action(e: dict):
 
 
 def abs_input(project: str, rid: str) -> str:
-    return os.path.join(INPUT_DIR, project, rid + ".md")
+    return os.path.join(project_dir(project), "input", rid + ".md")
 
 
 def abs_artifact(project: str, rid: str) -> str:
-    return os.path.join(ARTIFACT_DIR, project, rid + ".md")
+    return os.path.join(project_dir(project), "artifacts", rid + ".md")
 
 
 def worker_log_name(project: str, rid: str, n: int) -> str:
-    return f"worker-{project}-{rid}-r{n}.log"
+    return f"worker-{rid}-r{n}.log"
 
 STALE_AFTER_MIN = int(os.environ.get("STALE_AFTER_MIN", "20"))   # 中间态超时（分钟）
 MAX_FAILURES = int(os.environ.get("MAX_FAILURES", "2"))          # 连续失败上限
@@ -268,24 +291,66 @@ def log(line: str) -> None:
         f.write(f"{now_iso()} {line}\n")
 
 
-def read_status() -> dict:
-    try:
-        with open(STATUS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+def read_status(project: str = None) -> dict:
+    """读状态。project 指定 → 只读该项目 status.json；None → 聚合全部项目（key 仍 '<project>/<req_id>'）。
+    兼容旧单文件：workspace/status.json 存在（迁移前）时优先读它。"""
+    if project is not None:
+        try:
+            with open(project_status_file(project), encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    # 聚合全部项目
+    merged = {}
+    if os.path.isfile(STATUS_FILE):  # 迁移前的单文件（读后由 write_status 分发到项目文件）
+        try:
+            with open(STATUS_FILE, encoding="utf-8") as f:
+                merged.update(json.load(f))
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+    if os.path.isdir(WORKSPACE_DIR):
+        for proj in sorted(os.listdir(WORKSPACE_DIR)):
+            sf = project_status_file(proj)
+            if os.path.isfile(sf):
+                try:
+                    with open(sf, encoding="utf-8") as f:
+                        data = json.load(f)
+                    for k, v in data.items():
+                        merged.setdefault(k, v)  # 单文件优先（避免覆盖未迁移数据）
+                except (FileNotFoundError, json.JSONDecodeError):
+                    continue
+    return merged
 
 
-def write_status(st: dict) -> None:
-    tmp = STATUS_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, STATUS_FILE)
+def write_status(st: dict, project: str = None) -> None:
+    """写状态。project 指定 → 写该项目文件；None → 按 key 分发到各项目文件。
+    迁移兼容：workspace/status.json 仍存在时同步写它（保证旧读路径可见），迁移完成后由 migrate 删除。"""
+    if project is not None:
+        ensure_project(project)
+        tmp = project_status_file(project) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, project_status_file(project))
+        return
+    by_proj = {}
+    for key, e in st.items():
+        p, _ = split_key(key)
+        by_proj.setdefault(p, {})[key] = e
+    for p, sub in by_proj.items():
+        ensure_project(p)
+        tmp = project_status_file(p) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(sub, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, project_status_file(p))
+    if os.path.isfile(STATUS_FILE):  # 迁移兼容
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
 
 
-def acquire_lock(timeout: float = 10.0):
-    """flock 写锁（跨进程串行化 status.json 读改写）。"""
-    lockf = open(LOCK_FILE, "w")
+def acquire_lock(timeout: float = 10.0, project: str = None):
+    """flock 写锁。project 指定 → 项目锁（workspace/<proj>/status.lock，项目间并发的基础）；
+    None → 全局锁（workspace/status.lock，register/聚合扫描用）。"""
+    lockf = open(project_lock_file(project) if project else LOCK_FILE, "w")
     deadline = time.time() + timeout
     while True:
         try:
@@ -294,7 +359,7 @@ def acquire_lock(timeout: float = 10.0):
         except BlockingIOError:
             if time.time() > deadline:
                 lockf.close()
-                raise RuntimeError("status.lock 获取超时（另一进程持有锁）")
+                raise RuntimeError("状态锁获取超时（另一进程持有锁）")
             time.sleep(0.2)
 
 
@@ -323,60 +388,87 @@ def pid_alive(pid) -> bool:
 # ---------------- 状态机操作 ----------------
 
 def register_new_inputs(st: dict) -> list:
-    """workspace/input/ 下未登记文件自动注册为 pending（按项目子目录）。
-    结构：input/<project>/<req_id>.md（推荐）；兼容 input/<req_id>.md 平铺 → default 项目。
+    """扫描各项目 input/ 下未登记文件自动注册为 pending（项目目录自动创建）。
+    结构：workspace/<project>/input/<req_id>.md（每个项目独立 input/）。
+    兼容旧结构：workspace/input/<project>/<req_id>.md 与平铺 workspace/input/<req_id>.md（迁移前数据仍可注册）。
     返回新注册的 key（'<project>/<req_id>'）列表。"""
     registered = []
-    if not os.path.isdir(INPUT_DIR):
-        return registered
-    # 项目子目录 input/<project>/*.md
-    for proj in sorted(os.listdir(INPUT_DIR)):
-        pdir = os.path.join(INPUT_DIR, proj)
-        if not os.path.isdir(pdir):
-            continue
-        for name in sorted(os.listdir(pdir)):
-            if not name.endswith(".md"):
+    # 新结构：workspace/<project>/input/*.md
+    if os.path.isdir(WORKSPACE_DIR):
+        for proj in sorted(os.listdir(WORKSPACE_DIR)):
+            if proj in ("logs",) or proj.startswith("."):
                 continue
-            rid = name[:-3]
-            key = f"{proj}/{rid}"
-            if key in st:
+            pdir = os.path.join(WORKSPACE_DIR, proj)
+            idir = os.path.join(pdir, "input")
+            if not os.path.isdir(idir):
                 continue
-            st[key] = {
-                "status": "pending",
-                "round": 0,
-                "max_rounds": DEFAULT_MAX_ROUNDS,
-                "forced": False,
-                "analysis": None,
-                "reviews": [],
-                "failures": 0,
-                "stages": new_stages(),
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            }
-            registered.append(key)
-            log(f"REGISTER {key} status=pending round=0 project={proj}")
-    # 兼容：input/<req_id>.md 平铺文件 → default 项目
-    for name in sorted(os.listdir(INPUT_DIR)):
-        full = os.path.join(INPUT_DIR, name)
-        if os.path.isfile(full) and name.endswith(".md"):
-            rid = name[:-3]
-            key = f"{DEFAULT_PROJECT}/{rid}"
-            if key in st:
-                continue
-            st[key] = {
-                "status": "pending",
-                "round": 0,
-                "max_rounds": DEFAULT_MAX_ROUNDS,
-                "forced": False,
-                "analysis": None,
-                "reviews": [],
-                "failures": 0,
-                "stages": new_stages(),
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            }
-            registered.append(key)
-            log(f"REGISTER {key} status=pending round=0 project={DEFAULT_PROJECT}")
+            for name in sorted(os.listdir(idir)):
+                if not name.endswith(".md"):
+                    continue
+                rid = name[:-3]
+                key = f"{proj}/{rid}"
+                if key in st:
+                    continue
+                st[key] = {
+                    "status": "pending",
+                    "round": 0,
+                    "max_rounds": DEFAULT_MAX_ROUNDS,
+                    "forced": False,
+                    "analysis": None,
+                    "reviews": [],
+                    "failures": 0,
+                    "stages": new_stages(),
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                }
+                registered.append(key)
+                log(f"REGISTER {key} status=pending round=0 project={proj}")
+    # 兼容旧结构：workspace/input/<project>/*.md 与平铺 input/<req_id>.md（迁移前）
+    legacy_input = os.path.join(WORKSPACE_DIR, "input")
+    if os.path.isdir(legacy_input):
+        for proj in sorted(os.listdir(legacy_input)):
+            pdir = os.path.join(legacy_input, proj)
+            if os.path.isdir(pdir):
+                for name in sorted(os.listdir(pdir)):
+                    if not name.endswith(".md"):
+                        continue
+                    rid = name[:-3]
+                    key = f"{proj}/{rid}"
+                    if key in st:
+                        continue
+                    st[key] = {
+                        "status": "pending",
+                        "round": 0,
+                        "max_rounds": DEFAULT_MAX_ROUNDS,
+                        "forced": False,
+                        "analysis": None,
+                        "reviews": [],
+                        "failures": 0,
+                        "stages": new_stages(),
+                        "created_at": now_iso(),
+                        "updated_at": now_iso(),
+                    }
+                    registered.append(key)
+                    log(f"REGISTER {key} status=pending round=0 project={proj} (legacy input/)")
+            elif pdir.endswith(".md"):
+                rid = proj[:-3]
+                key = f"{DEFAULT_PROJECT}/{rid}"
+                if key in st:
+                    continue
+                st[key] = {
+                    "status": "pending",
+                    "round": 0,
+                    "max_rounds": DEFAULT_MAX_ROUNDS,
+                    "forced": False,
+                    "analysis": None,
+                    "reviews": [],
+                    "failures": 0,
+                    "stages": new_stages(),
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                }
+                registered.append(key)
+                log(f"REGISTER {key} status=pending round=0 project={DEFAULT_PROJECT} (legacy flat)")
     return registered
 
 
@@ -801,7 +893,7 @@ def spawn_worker(role: str, key: str, round_n: int, query: str) -> int:
     role = _ROLE_ALIAS.get(role, role)
     model, provider = ROLE_MODELS.get(role, (ANALYST_MODEL, ANALYST_PROVIDER))
     os.makedirs(LOG_DIR, exist_ok=True)
-    logf = open(os.path.join(LOG_DIR, worker_log_name(project, rid, round_n)), "ab")
+    logf = open(os.path.join(project_log_dir(project), worker_log_name(project, rid, round_n)), "ab")
     cmd = ["hermes", "chat", "-q", query, "-m", model, "-Q"]
     if provider:
         cmd += ["--provider", provider]
@@ -832,7 +924,7 @@ def write_artifact(key: str, e: dict) -> None:
     """归档：approved（需求评审）或 released（完整交付物）。
     key 格式 '<project>/<req_id>' → artifacts/<project>/<req_id>.md。"""
     project, rid = split_key(key)
-    os.makedirs(os.path.join(ARTIFACT_DIR, project), exist_ok=True)
+    os.makedirs(os.path.join(project_dir(project), "artifacts"), exist_ok=True)
     reviews = e.get("reviews") or []
     forced = e.get("forced", False)
     status = e.get("status", "approved")
@@ -905,42 +997,50 @@ def write_artifact(key: str, e: dict) -> None:
 
 # ---------------- 上半部 tick ----------------
 
-def analyst_tick() -> int:
+def _tick_common() -> int:
+    """通用 tick（P4 并发核心）：全局锁注册 → 每项目锁调度。
+    项目间并发（不同项目由不同 tick/进程并行处理），同项目串行（项目锁 + claim 防重复）。
+    每项目：stale 恢复 → 巡检兜底 → 认领 spawn → 写该项目状态。"""
+    alarms = []
+    # 阶段 1：全局锁注册（扫描全部项目 input/）
     with acquire_lock() as _:
-        st = read_status()
-        alarms = []
-        register_new_inputs(st)
-        alarms += stale_recovery(st)
-        found = find_claimable(st, "analyst")
-        if found:
-            rid, e, act = found
-            if claim(st, rid, "analyst"):
-                n, query = build_worker_query(act[0], rid, e)
-                pid = spawn_worker(act[0], rid, n, query)
-                st[rid]["worker_pid"] = pid
-        write_status(st)
-        out = drain_alarms(alarms)
+        st_all = read_status()
+        register_new_inputs(st_all)
+        write_status(st_all)
+    # 阶段 2：每项目锁调度（项目间并行）
+    projects = [p for p in sorted(os.listdir(WORKSPACE_DIR))
+                if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
+                and p not in ("logs",) and not p.startswith(".")]
+    for proj in projects:
+        with acquire_lock(project=proj) as _:
+            pst = read_status(proj)
+            if not pst:
+                continue
+            alarms += stale_recovery(pst)
+            alarms += guard_recovery(pst)  # 巡检：worker 漏设状态/卡死的自动补正
+            found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
+            if found:
+                rid, e, act = found
+                role = act[0]
+                if claim(pst, rid, role):
+                    n, query = build_worker_query(role, rid, e)
+                    pid = spawn_worker(role, rid, n, query)
+                    pst[rid]["worker_pid"] = pid
+            write_status(pst, project=proj)
+    out = drain_alarms(alarms)
     if out:
         print(out)  # 非空才输出（no_agent：空 stdout = 静默）
     return 0
 
 
+def analyst_tick() -> int:
+    """分析师 tick（兼容保留）：与 worker_tick 同质调度，项目锁保证无竞态。"""
+    return _tick_common()
+
+
 def reviewer_tick() -> int:
-    with acquire_lock() as _:
-        st = read_status()
-        alarms = stale_recovery(st)
-        found = find_claimable(st, "reviewer")
-        if found:
-            rid, e, act = found
-            if claim(st, rid, "reviewer"):
-                n, query = build_worker_query(act[0], rid, e)
-                pid = spawn_worker(act[0], rid, n, query)
-                st[rid]["worker_pid"] = pid
-        write_status(st)
-        out = drain_alarms(alarms)
-    if out:
-        print(out)
-    return 0
+    """评审 tick（兼容保留）：与 worker_tick 同质调度，项目锁保证无竞态。"""
+    return _tick_common()
 
 
 def parse_conclusion(path: str) -> str:
@@ -1053,27 +1153,9 @@ def guard_recovery(st: dict) -> list:
 
 
 def worker_tick() -> int:
-    """通用阶段 tick：注册 → stale 恢复 → 巡检兜底（漏设状态自动补正）→ 认领 spawn。
-    一次只认领一个（最老优先，防唤醒风暴 + 规避 3 分钟限制）。"""
-    with acquire_lock() as _:
-        st = read_status()
-        alarms = []
-        register_new_inputs(st)
-        alarms += stale_recovery(st)
-        alarms += guard_recovery(st)  # 巡检：worker 漏设状态/卡死的自动补正
-        found = find_claimable(st)  # 任意角色
-        if found:
-            rid, e, act = found
-            role = act[0]
-            if claim(st, rid, role):
-                n, query = build_worker_query(role, rid, e)
-                pid = spawn_worker(role, rid, n, query)
-                st[rid]["worker_pid"] = pid
-        write_status(st)
-        out = drain_alarms(alarms)
-    if out:
-        print(out)
-    return 0
+    """通用阶段 tick（主调度）：全局锁注册 → 每项目锁 stale/巡检/认领/spawn。
+    项目间并发、同项目串行；一次认领一个（最老优先，防唤醒风暴）。"""
+    return _tick_common()
 
 
 def weekly_tick() -> int:
@@ -1092,17 +1174,25 @@ def weekly_tick() -> int:
                 issues.append(f"[AUDIT] 需求 {key} 处于 blocked，需人工介入（python3 scripts/statectl.py requeue {key}）")
             elif s in MID_STATES:
                 issues.append(f"[AUDIT] 需求 {key} 滞留 {s}（中间态不应跨周存在）")
-        if os.path.isdir(INPUT_DIR):
-            for proj in sorted(os.listdir(INPUT_DIR)):
-                pdir = os.path.join(INPUT_DIR, proj)
-                if not os.path.isdir(pdir):
-                    continue
-                for name in sorted(os.listdir(pdir)):
+        # 未登记 input 检查（新结构 workspace/<proj>/input/ + 兼容旧 input/）
+        for proj in sorted(os.listdir(WORKSPACE_DIR)):
+            if proj in ("logs",) or proj.startswith(".") or not os.path.isdir(os.path.join(WORKSPACE_DIR, proj)):
+                continue
+            idir = os.path.join(WORKSPACE_DIR, proj, "input")
+            if os.path.isdir(idir):
+                for name in sorted(os.listdir(idir)):
                     if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
-                        issues.append(f"[AUDIT] input/{proj}/{name} 未登记（下个分析师 tick 会自动注册）")
-            for name in sorted(os.listdir(INPUT_DIR)):
-                if os.path.isfile(os.path.join(INPUT_DIR, name)) and name.endswith(".md") and f"{DEFAULT_PROJECT}/{name[:-3]}" not in st:
-                    issues.append(f"[AUDIT] input/{name} 未登记（下个分析师 tick 会自动注册）")
+                        issues.append(f"[AUDIT] {proj}/input/{name} 未登记（下个 tick 会自动注册）")
+        legacy_input = os.path.join(WORKSPACE_DIR, "input")
+        if os.path.isdir(legacy_input):
+            for proj in sorted(os.listdir(legacy_input)):
+                pdir = os.path.join(legacy_input, proj)
+                if os.path.isdir(pdir):
+                    for name in sorted(os.listdir(pdir)):
+                        if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
+                            issues.append(f"[AUDIT] input/{proj}/{name} 未登记（下个 tick 会自动注册）")
+                elif pdir.endswith(".md") and f"{DEFAULT_PROJECT}/{proj[:-3]}" not in st:
+                    issues.append(f"[AUDIT] input/{proj} 未登记（下个 tick 会自动注册）")
     if issues:
         print("\n".join(issues))
     return 0
@@ -1585,10 +1675,19 @@ def diagnose() -> int:
         st = {}
         add("FAIL", "D1", "status.json 缺失")
 
-    # D2 目录完整性（资产层在根目录，数据层在 workspace/）
+    # D2 目录完整性（资产层在根目录，数据层按项目分层：workspace/<项目>/ 下含全部子目录）
     missing = [d for d in ("roles", "scripts", "docs") if not os.path.isdir(os.path.join(WORKDIR, d))]
-    missing += [d for d in ("input", "analysis", "review", "artifacts", "logs")
-                if not os.path.isdir(os.path.join(WORKSPACE_DIR, d))]
+    proj_dirs = [p for p in sorted(os.listdir(WORKSPACE_DIR))
+                 if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
+                 and p not in ("logs",) and not p.startswith(".")]
+    for proj in proj_dirs:
+        miss_p = [d for d in ("input", "analysis", "review", "artifacts", "plans", "testplans",
+                              "code", "tests", "quality", "security", "release", "archive", "logs")
+                  if not os.path.isdir(os.path.join(WORKSPACE_DIR, proj, d))]
+        if miss_p:
+            missing.append(f"{proj}/{{{','.join(miss_p)}}}")
+    if not os.path.isdir(os.path.join(WORKSPACE_DIR, "logs")):
+        missing.append("logs")
     add("PASS" if not missing else "FAIL", "D2", "目录完整" if not missing else f"缺失目录: {missing}")
 
     # D3–D8 逐条目检查
@@ -1627,20 +1726,27 @@ def diagnose() -> int:
                 add("WARN", "D8", f"{key} 为强制归档（forced），请人工复核未解决意见")
 
     # D9 input/ 未登记（项目子目录 + 平铺兼容）
-    if os.path.isdir(INPUT_DIR):
-        unreg = []
-        for proj in sorted(os.listdir(INPUT_DIR)):
-            pdir = os.path.join(INPUT_DIR, proj)
-            if not os.path.isdir(pdir):
-                continue
-            for name in sorted(os.listdir(pdir)):
+    unreg = []
+    for proj in sorted(os.listdir(WORKSPACE_DIR)):
+        if proj in ("logs",) or proj.startswith(".") or not os.path.isdir(os.path.join(WORKSPACE_DIR, proj)):
+            continue
+        idir = os.path.join(WORKSPACE_DIR, proj, "input")
+        if os.path.isdir(idir):
+            for name in sorted(os.listdir(idir)):
                 if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
                     unreg.append(f"{proj}/{name}")
-        for name in sorted(os.listdir(INPUT_DIR)):
-            if os.path.isfile(os.path.join(INPUT_DIR, name)) and name.endswith(".md") and f"{DEFAULT_PROJECT}/{name[:-3]}" not in st:
-                unreg.append(name)
-        if unreg:
-            add("INFO", "D9", f"input/ 未登记文件 {unreg}（下个分析师 tick 会自动注册）")
+    legacy_input = os.path.join(WORKSPACE_DIR, "input")
+    if os.path.isdir(legacy_input):
+        for proj in sorted(os.listdir(legacy_input)):
+            pdir = os.path.join(legacy_input, proj)
+            if os.path.isdir(pdir):
+                for name in sorted(os.listdir(pdir)):
+                    if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
+                        unreg.append(f"{proj}/{name}")
+            elif pdir.endswith(".md") and f"{DEFAULT_PROJECT}/{proj[:-3]}" not in st:
+                unreg.append(proj)
+    if unreg:
+        add("INFO", "D9", f"input/ 未登记文件 {unreg}（下个 tick 会自动注册）")
 
     # D10 状态锁
     try:

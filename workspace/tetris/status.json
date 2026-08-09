@@ -1,87 +1,22 @@
 {
-  "snake-linux/snake-linux": {
-    "status": "released",
-    "round": 2,
-    "max_rounds": 3,
-    "forced": false,
-    "analysis": "analysis/snake-linux/snake-linux-r2.md",
-    "reviews": [
-      "archive/snake-linux/legacy-review-r1-20260807.md",
-      "review/snake-linux/snake-linux-r2.md"
-    ],
-    "failures": 0,
-    "created_at": "2026-08-07T16:40:46Z",
-    "updated_at": "2026-08-08T06:20:01Z",
-    "stages": {
-      "plan": {
-        "round": 1,
-        "product": "plans/snake-linux/snake-linux-r1.md",
-        "reviews": [
-          "plans/snake-linux/snake-linux-r1-review.md"
-        ]
-      },
-      "testplan": {
-        "round": 1,
-        "product": "testplans/snake-linux/snake-linux-r1.md",
-        "reviews": [
-          "testplans/snake-linux/snake-linux-r1-review.md"
-        ]
-      },
-      "code": {
-        "round": 1,
-        "product": "code/snake-linux/snake-linux-r1/",
-        "reviews": [
-          "code/snake-linux/snake-linux-r1-review.md"
-        ]
-      },
-      "test": {
-        "round": 2,
-        "product": "tests/snake-linux/snake-linux-r2/",
-        "reviews": [
-          "tests/snake-linux/snake-linux-r1-review.md",
-          "tests/snake-linux/snake-linux-r2-review.md"
-        ]
-      },
-      "quality": {
-        "round": 2,
-        "product": "quality/snake-linux/snake-linux-r1.md",
-        "reviews": [
-          "quality/snake-linux/snake-linux-r1.md",
-          "quality/snake-linux/snake-linux-r1.md"
-        ]
-      },
-      "security": {
-        "round": 1,
-        "product": "security/snake-linux/snake-linux-r1.md",
-        "reviews": [
-          "security/snake-linux/snake-linux-r1.md"
-        ]
-      },
-      "release": {
-        "round": 1,
-        "product": "release/snake-linux/snake-linux-r1.md",
-        "reviews": []
-      }
-    }
-  },
   "tetris/tetris": {
     "status": "released",
     "round": 2,
     "max_rounds": 3,
     "forced": false,
-    "analysis": "analysis/tetris/tetris-r2.md",
+    "analysis": "tetris/analysis/tetris-r2.md",
     "reviews": [
-      "review/tetris/tetris-r1.md",
-      "review/tetris/tetris-r2.md"
+      "tetris/review/tetris-r1.md",
+      "tetris/review/tetris-r2.md"
     ],
     "failures": 2,
     "stages": {
       "plan": {
         "round": 2,
-        "product": "plans/tetris/tetris-r2.md",
+        "product": "tetris/plans/tetris-r2.md",
         "reviews": [
-          "plans/tetris/tetris-r1-review.md",
-          "plans/tetris/tetris-r2-review.md"
+          "tetris/plans/tetris-r1-review.md",
+          "tetris/plans/tetris-r2-review.md"
         ],
         "state": "done",
         "state_since": "2026-08-09T03:37:08Z",
@@ -130,10 +65,10 @@
       },
       "testplan": {
         "round": 2,
-        "product": "testplans/tetris/tetris-r2.md",
+        "product": "tetris/testplans/tetris-r2.md",
         "reviews": [
-          "testplans/tetris/tetris-r1-review.md",
-          "testplans/tetris/tetris-r2-review.md"
+          "tetris/testplans/tetris-r1-review.md",
+          "tetris/testplans/tetris-r2-review.md"
         ],
         "state": "done",
         "state_since": "2026-08-09T03:47:51Z",
@@ -182,10 +117,10 @@
       },
       "code": {
         "round": 2,
-        "product": "code/tetris/tetris-r2/",
+        "product": "tetris/code/tetris-r2/",
         "reviews": [
-          "code/tetris/tetris-r1-review.md",
-          "code/tetris/tetris-r2-review.md"
+          "tetris/code/tetris-r1-review.md",
+          "tetris/code/tetris-r2-review.md"
         ],
         "state": "done",
         "state_since": "2026-08-09T04:03:30Z",
@@ -234,9 +169,9 @@
       },
       "test": {
         "round": 1,
-        "product": "tests/tetris/tetris-r1/",
+        "product": "tetris/tests/tetris-r1/",
         "reviews": [
-          "tests/tetris/tetris-r1-review.md"
+          "tetris/tests/tetris-r1-review.md"
         ],
         "state": "done",
         "state_since": "2026-08-09T04:20:35Z",
@@ -277,9 +212,9 @@
       },
       "quality": {
         "round": 0,
-        "product": "quality/tetris/tetris-r1.md",
+        "product": "tetris/quality/tetris-r1.md",
         "reviews": [
-          "quality/tetris/tetris-r1.md"
+          "tetris/quality/tetris-r1.md"
         ],
         "state": "done",
         "state_since": "2026-08-09T04:25:17Z",
@@ -304,9 +239,9 @@
       },
       "security": {
         "round": 0,
-        "product": "security/tetris/tetris-r1.md",
+        "product": "tetris/security/tetris-r1.md",
         "reviews": [
-          "security/tetris/tetris-r1.md"
+          "tetris/security/tetris-r1.md"
         ],
         "state": "done",
         "state_since": "2026-08-09T04:31:02Z",
@@ -331,7 +266,7 @@
       },
       "release": {
         "round": 0,
-        "product": "release/tetris/tetris-r1.md",
+        "product": "tetris/release/tetris-r1.md",
         "reviews": [],
         "state": "done",
         "state_since": "2026-08-09T04:32:40Z",
@@ -356,7 +291,7 @@
       },
       "req": {
         "round": 0,
-        "product": "analysis/tetris/tetris-r1.md",
+        "product": "tetris/analysis/tetris-r1.md",
         "reviews": [],
         "state": "reviewing",
         "state_since": "2026-08-09T03:20:23Z",

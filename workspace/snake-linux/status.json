@@ -1,0 +1,67 @@
+{
+  "snake-linux/snake-linux": {
+    "status": "released",
+    "round": 2,
+    "max_rounds": 3,
+    "forced": false,
+    "analysis": "snake-linux/analysis/snake-linux-r2.md",
+    "reviews": [
+      "snake-linux/archive/legacy-review-r1-20260807.md",
+      "snake-linux/review/snake-linux-r2.md"
+    ],
+    "failures": 0,
+    "created_at": "2026-08-07T16:40:46Z",
+    "updated_at": "2026-08-08T06:20:01Z",
+    "stages": {
+      "plan": {
+        "round": 1,
+        "product": "snake-linux/plans/snake-linux-r1.md",
+        "reviews": [
+          "snake-linux/plans/snake-linux-r1-review.md"
+        ]
+      },
+      "testplan": {
+        "round": 1,
+        "product": "snake-linux/testplans/snake-linux-r1.md",
+        "reviews": [
+          "snake-linux/testplans/snake-linux-r1-review.md"
+        ]
+      },
+      "code": {
+        "round": 1,
+        "product": "snake-linux/code/snake-linux-r1/",
+        "reviews": [
+          "snake-linux/code/snake-linux-r1-review.md"
+        ]
+      },
+      "test": {
+        "round": 2,
+        "product": "snake-linux/tests/snake-linux-r2/",
+        "reviews": [
+          "snake-linux/tests/snake-linux-r1-review.md",
+          "snake-linux/tests/snake-linux-r2-review.md"
+        ]
+      },
+      "quality": {
+        "round": 2,
+        "product": "snake-linux/quality/snake-linux-r1.md",
+        "reviews": [
+          "snake-linux/quality/snake-linux-r1.md",
+          "snake-linux/quality/snake-linux-r1.md"
+        ]
+      },
+      "security": {
+        "round": 1,
+        "product": "snake-linux/security/snake-linux-r1.md",
+        "reviews": [
+          "snake-linux/security/snake-linux-r1.md"
+        ]
+      },
+      "release": {
+        "round": 1,
+        "product": "snake-linux/release/snake-linux-r1.md",
+        "reviews": []
+      }
+    }
+  }
+}

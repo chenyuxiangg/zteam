@@ -26,10 +26,11 @@ command -v hermes  >/dev/null || die "缺少 hermes CLI（请先安装 Hermes Ag
 [ -f "$SCRIPTS_DIR/statectl.py" ] || die "未找到 $SCRIPTS_DIR/statectl.py —— install.sh 必须放在流水线工作区根目录"
 
 # ---- 1. 目录骨架（缺啥补啥，不覆盖已有文件） ----
-# 资产层在根目录（roles/docs/scripts）；数据层在 workspace/（input/analysis/review/artifacts/logs + 阶段产物目录 + status.json）
-mkdir -p "$WORKSPACE"/{roles,docs,scripts} "$WORKSPACE/workspace"/{input,analysis,review,artifacts,logs,plans,testplans,code,tests,quality,security,release}
-[ -f "$WORKSPACE/workspace/status.json" ] || echo '{}' > "$WORKSPACE/workspace/status.json"
-touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt" "$WORKSPACE/workspace/status.lock"
+# 资产层在根目录（roles/docs/scripts）；数据层在 workspace/（按项目分层：workspace/<项目>/ 下含全部子目录，
+# 项目目录由 statectl register 在首次投放需求时自动创建；这里只建根与全局日志）
+mkdir -p "$WORKSPACE"/{roles,docs,scripts,skills} "$WORKSPACE/workspace"/logs
+[ -f "$WORKSPACE/workspace/status.lock" ] || touch "$WORKSPACE/workspace/status.lock"
+touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt"
 say "目录骨架就绪: $WORKSPACE（资产层 + workspace/ 数据层）"
 
 # ---- 1.5 zbot 职责注入（roles/bot.md → gateway.json，幂等） ----
@@ -112,7 +113,7 @@ python3 "$SCRIPTS_DIR/statectl.py" diagnose
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
-  say "安装完成，诊断全绿。投放需求: cp 需求.md $WORKSPACE/input/"
+  say "安装完成，诊断全绿。投放需求: 新建/拷贝 需求.md 到 workspace/<项目名>/input/（项目目录不存在会自动创建）"
 else
   warn "安装完成但诊断存在 FAIL（见上方报告，排查指南: docs/troubleshooting.md）"
 fi
