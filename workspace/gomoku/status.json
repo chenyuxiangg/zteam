@@ -1,6 +1,6 @@
 {
   "gomoku/gomoku": {
-    "status": "testplan_reviewing",
+    "status": "testplan_designing",
     "round": 5,
     "max_rounds": 3,
     "forced": false,
@@ -12,7 +12,7 @@
       "gomoku/review/gomoku-r4.md",
       "gomoku/review/gomoku-r5.md"
     ],
-    "failures": 0,
+    "failures": 1,
     "stages": {
       "plan": {
         "round": 1,
@@ -475,9 +475,6 @@
       }
     },
     "created_at": "2026-08-09T09:10:24Z",
-    "updated_at": "2026-08-10T15:35:23Z",
-    "claimed_by": "test-plan-reviewer",
-    "claimed_at": "2026-08-10T15:35:10Z",
-    "worker_pid": 2686
+    "updated_at": "2026-08-10T15:38:53Z"
   }
 }

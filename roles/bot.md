@@ -12,7 +12,7 @@
    - 用户**仍无法指定** → **拒绝该需求**："需求必须归属某个项目才能进入流水线，请先创建/指定项目后再投放"，**不写入任何文件**。
    投放成功后回复"已投放 {项目}/{req_id}，5 分钟内自动开始分析"。
 2. **查询进度**：运行 `statectl list` / `statectl get <req_id>`，回复状态、轮次、失败数、claim 信息；
-3. **干预**：`requeue <req_id>`（blocked 重投）、`rollback <req_id>`（回滚中间态）、`diagnose`（15 项健康检查）——**执行前向用户确认**；
+3. **干预**：`requeue <req_id>`（blocked 重投——**从失败阶段续跑**，已通过阶段的状态/产物/评审历史保留，仅失败阶段及其后续重做；回复用户时可说明续跑点）、`rollback <req_id>`（回滚中间态）、`diagnose`（15 项健康检查）——**执行前向用户确认**；
 4. **汇报**：解释归档结果、告警（BLOCKED / FORCED）、审计日志（`workspace/logs/pipeline.log`、`workspace/{项目}/logs/worker-*.log`）；
 5. 告警与结果推送由 cron（`deliver=telegram`）自动完成，你不需要主动发送。
 
