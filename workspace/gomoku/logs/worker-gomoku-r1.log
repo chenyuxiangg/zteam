@@ -10366,3 +10366,100 @@ Workspace is clean — no __pycache__ left. Code package is intact.
 | 11 | `python -m gomoku.forbidden_cases` 命令 | PASS（16 pass, 0 fail） |
 
 **重要补充**：仅当用户对实现满意后再进入测试/lint 阶段（角色文件 §3.1）。本次 code 阶段产物是源代码（已可读 + 可运行 + 关键算法已自检），下一步是 test-developer 阶段产物（由下游 worker 接管），不属本次任务范围。
+  ┊ review diff
+a/workspace/gomoku/plans/gomoku-r1.md → b/workspace/gomoku/plans/gomoku-r1.md
+@@ -1,8 +1,8 @@
+ # 开发方案：gomoku（r1）
+ 
+ ## 0. 元信息
+-- 需求：gomoku/gomoku｜依据：workspace/gomoku/analysis/gomoku-r4.md（approved 终版）｜轮次：r1（requeue 后首轮）
+-- 方案要点一句话：纯终端人机五子棋成品——rich 渲染、模式评估+Alpha-Beta 分级 AI（弱/中/强）、禁手可配置、坐标输入、干净退出。
++- 需求：gomoku/gomoku｜依据：workspace/gomoku/analysis/gomoku-r5.md（approved 终版）｜轮次：r1（requeue 后首轮）
++- 方案要点一句话：纯终端人机五子棋成品——rich 渲染、模式评估+Alpha-Beta 分级 AI（弱/中/强）、禁手可配置（逆向定义判定，固化跳形边界）、坐标输入、干净退出。
+ 
+ ## 1. 方案概述
+ 
+@@ -32,7 +32,7 @@
+ ### 关键假设
+ - H1~H6 沿用需求分解文档假设（Python ≥3.10；ANSI 彩色优先、无彩色降级字符；个人娱乐/学习用途；人类默认执黑；AI 定位娱乐级偏强；依赖可选、零依赖可玩）；
+ - H7（技术层）：终端输入采用标准库 `input()` 而非 prompt_toolkit——坐标输入格式简单（`A8`/`8,8`），rich 已覆盖渲染，避免第二个硬依赖，符合 H6；
+-- H8（技术层）：AI 强档搜索深度 4 层 + 候选点剪枝 + 时间预算 2s 即可满足 NFR-01（15×15 中盘 ≤2s）——依据：同规模 Python 实现（hanyao-dev/Python-Gomoku-AI、Mgla96/GomokuAI、pygomoku）在候选剪枝下深度 4 均能亚秒级落子，深度 2~4 已能覆盖"阻止双三/冲四"所需的战术视野（来源见 §2 选型表；时间预算与降级策略见 §5.3/§5.4）；
++- H8（技术层）：AI 强档搜索深度 4 层 + 候选点剪枝 + 时间预算 2s 即可满足 NFR-01（15×15 中盘 ≤2s）——依据：同规模 Python 实现（hanyao-dev/Python-Gomoku-AI、fxrxhmohamed/GomokuGameSolver、Mgla96/GomokuAI、pygomoku）在候选剪枝下深度 4 均能亚秒级落子，深度 2~4 已能覆盖"阻止双三/冲四"所需的战术视野（来源见 §2 选型表；时间预算与降级策略见 §5.3/§5.4）；
+ - H9（需求层 Q 默认取值，按分析文档 §7 建议，不阻塞开工）：Q1 娱乐+可演示兼顾；Q2 娱乐级偏强（FR-06 底线）；Q3 15×15+13×13、排除 19×19；Q4 默认无禁手、禁手作开关；Q5 默认人类执黑（先后手可选为后续增强）；Q6/Q7/Q8 首版不做悔棋/双人/统计；Q9 兼容 SSH 无彩色终端、Python ≥3.10。
+ 
+ ## 2. 技术选型
+@@ -43,13 +43,13 @@
+ | Python 3.10+ | 实现语言 | 需求指定 Python；rich 生态要求现代 Python；Linux 发行版默认版本满足 | — | 需求原文；NFR-03 |
+ | rich | 终端渲染（棋盘/状态栏/胜负横幅） | 终端富文本事实标准（57k★），纯输出渲染 API 简单可靠；无彩色终端自动降级，字符模式可区分黑白子；不接管终端 raw 模式（比 curses 安全） | curses（标准库）：需手动管理 raw/cbreak/回显恢复，跨终端差异大，FR-11 退出恢复风险高；prompt_toolkit：交互输入强但渲染层与输入耦合、依赖更重 | https://github.com/Textualize/rich（2026-08-10 复核在线）；https://dev.to/lazy_code/5-best-python-tui-libraries-for-building-text-based-user-interfaces-5fdi（rich 列现代 TUI 渲染首选） |
+ | 标准库 input() | 坐标输入 | 格式校验简单（长度/字符集/范围/占用），无需行编辑/历史等高级能力；零依赖 | prompt_toolkit：编辑体验好，但为简单输入引入第二个硬依赖，违背 H6 | 推断（H7） |
+-| 模式评估函数 + Alpha-Beta 剪枝 | AI 核心算法（中/强档） | Python 五子棋 AI 的主流成熟路线：搜索式引擎（Minimax+Alpha-Beta+启发式评估+候选生成）与威胁评估路线在多个开源项目验证，实现量适中、棋力可调（深度/评分表）、威胁识别直观（FR-06 可验收） | 威胁空间搜索（threat-space search，Allis 1993）：Gomocup 顶级引擎方法，可证明必胜，但工程复杂度数量级上升，超出娱乐级定位；MCTS：需大量模拟（≥千次/步）才具棋力，终端场景响应慢，且对威胁识别（FR-06 验收）不直观 | https://github.com/hanyao-dev/Python-Gomoku-AI（搜索式引擎，Minimax+Alpha-Beta+启发评估+候选生成，2026-08-10 复核在线）；https://github.com/Mgla96/GomokuAI；https://github.com/canberkakcali/gomoku-ai-minimax；https://github.com/husus/gomokuAI-py；https://pypi.org/project/pygomoku/；https://deepwiki.com/hibouwu/Gomoku-IA/4.3-alpha-beta-pruning-ai-(level-3)；https://www.baeldung.com/cs/gomoku-threat-space-search |
++| 模式评估函数 + Alpha-Beta 剪枝 | AI 核心算法（中/强档） | Python 五子棋 AI 的主流成熟路线：搜索式引擎（Minimax+Alpha-Beta+启发式评估+候选生成）在多个开源项目验证，实现量适中、棋力可调（深度/评分表）、威胁识别直观（FR-06 可验收） | 威胁空间搜索（threat-space search，Allis 1993）：Gomocup 顶级引擎方法，可证明必胜，但工程复杂度数量级上升，超出娱乐级定位；MCTS：需大量模拟（≥千次/步）才具棋力，终端场景响应慢，且对威胁识别（FR-06 验收）不直观 | https://github.com/hanyao-dev/Python-Gomoku-AI（搜索式引擎，Minimax+Alpha-Beta+启发评估+候选生成，2026-08-10 复核在线）；https://github.com/fxrxhmohamed/GomokuGameSolver（Minimax+Alpha-Beta+启发评估，2026-08-10 复核在线）；https://github.com/Mgla96/GomokuAI；https://github.com/canberkakcali/gomoku-ai-minimax；https://github.com/husus/gomokuAI-py；https://pypi.org/project/pygomoku/；https://deepwiki.com/hibouwu/Gomoku-IA/4.3-alpha-beta-pruning-ai-(level-3)；https://www.baeldung.com/cs/gomoku-threat-space-search |
+ | numpy | 棋盘表示/加速（可选） | 不采用：15×15 二维 list 足够，模式扫描为 O(方向×长度) 常数级，numpy 无收益且制造硬依赖 | — | 推断（H6） |
+ | pytest | 单元测试 | Python 测试事实标准；覆盖 FR-06/07/09 验收用例 | unittest（标准库）可作退化 | 推断 |
+ | pyproject.toml + setuptools | 打包/安装 | 标准打包方式，支持 `pip install .` 与 `pip install -e .`，满足 README 依赖安装要求 | — | 推断 |
+ 
+ ### 选型结论
+-采用 **rich（唯一第三方运行时依赖）+ 标准库输入 + 模式评估函数与 Alpha-Beta 剪枝** 的组合：渲染交给成熟库保证 FR-03/11，输入与棋盘逻辑零依赖保证 H6 退化可玩，AI 走 Python 社区验证过的主流路线（hanyao-dev/Python-Gomoku-AI 等搜索式引擎同构）保证 FR-06 可达成；放弃 curses（退出恢复风险）、prompt_toolkit（依赖冗余）、numpy（无收益）、威胁空间搜索与 MCTS（超出娱乐级定位）。依赖面收敛为 `rich` + `pytest`（开发依赖），与需求"允许第三方库"及 H6"零依赖可玩"双向兼容。
++采用 **rich（唯一第三方运行时依赖）+ 标准库输入 + 模式评估函数与 Alpha-Beta 剪枝** 的组合：渲染交给成熟库保证 FR-03/11，输入与棋盘逻辑零依赖保证 H6 退化可玩，AI 走 Python 社区验证过的主流路线（hanyao-dev/Python-Gomoku-AI、fxrxhmohamed/GomokuGameSolver 等搜索式引擎同构）保证 FR-06 可达成；放弃 curses（退出恢复风险）、prompt_toolkit（依赖冗余）、numpy（无收益）、威胁空间搜索与 MCTS（超出娱乐级定位）。依赖面收敛为 `rich` + `pytest`（开发依赖），与需求"允许第三方库"及 H6"零依赖可玩"双向兼容。
+ 
+ ## 3. 架构设计
+ 
+@@ -132,7 +132,7 @@
+ SCORE = { 'FIVE':1_000_000, 'LIVE_FOUR':100_000, 'RUSH_FOUR':10_000,
+           'LIVE_THREE':5_000, 'SLEEP_THREE':500, 'LIVE_TWO':200,
+           'SLEEP_TWO':20 }
+-# 模式识别: 以落子点为中心, 沿 4 方向(横/竖/双斜)取 9 窗口(前后各4)做连子计数,
++# 模式识别: 以落子点为中心, 沿 4 方向(横/竖/双斜)取 9 窗口(前后各4)做连子分析,
+ # 按 连续同色数 + 两端是否开放 归类为 FIVE/LIVE_FOUR/RUSH_FOUR/LIVE_THREE/...
+ ```
+ 
+@@ -169,12 +169,20 @@
+ 
+ ### 5.2 禁手判定（FR-07，仅黑方）
+ 三个独立判定，任一命中即禁手（`reason` 区分）：
+-1. **长连**：check_win 中 cnt ≥ 6；
+-2. **双四**：落子后该点在 4 方向上形成的"四"（活四或冲四）计数 ≥ 2；
+-3. **双三**：落子后该点形成的"活三"计数 ≥ 2。**活三定义（与 Wikipedia Renju 对齐）**：三连且两端均开放；**含跳活三形态（如 `XX_X`，两端均开放）**——跳活三按"若补中间空位可成两端开放的活四"判定，具体棋形→结论以 T3 交付的"禁手判定对照表"（输入棋形 → 预期结论，≥10 例，供单测与评审核对）为准。
++1. **长连**：落子后 4 方向任一方向同色连续 ≥6；
++2. **双四**：落子后该点形成的"四"（活四或冲四，定义见下）计数 ≥2；
++3. **双三**：落子后该点形成的"活三"计数 ≥2。
++
++**活三/四的判定方法论（统一逆向定义——吸收 requeue 前 code r2 FAIL 实测教训，§9 回应表）**：
++- 对拟落子点 p 与方向 d，**若存在一个空点 q（q≠p，可在 p 任一侧），补上本方棋子后该方向形成"活四"（四连且两端开放），则 p 在方向 d 构成 1 个"活三"**；同理，若补 q 后形成"四"（活四或冲四，即补 1 子可成五），则 p 在方向 d 构成 1 个"四"。此逆向定义天然覆盖全部跳形（`_X_XX_`、`_XX_X_` 等），且不依赖"连续 run + 单空延伸"的朴素假设；
++- 实现建议（二选一，均须通过 §7 T3 对照表全部用例）：
++  - **滑窗枚举（推荐）**：沿方向 d 取以 p 为中心、半径 4 的 9 格窗口，枚举窗口内所有包含 p 的 5 连子组合（组合数 ≤ C(8,4)=70，常数级），按"本方子数 + 空位分布 + 补位后两端开放性"判定——穷举天然覆盖跳形**包括落子点位于缺口外侧的对称情形**（`_X_XX_` 落子最左 X、`_XX_X_` 落子最右 X，r2 实测漏判的形态 A/B）；
++  - **扩展 run 扫描**：连续 run + 两侧延伸，**延伸必须跨缺口继续计数到连续空位为止**，禁止"延伸仅前进 1 子即检查开放端"的简化（r2 FAIL 根因），且左右两侧对称处理；
++- **同方向去重**：同一方向无论产生多少个 5 窗活三/四，只计 1 个（Renju 惯例）；跨方向各自计数后求和，≥2 即双三/双四；
++- 红线用例（单测必过，同时进对照表）：`_X_XX_`（落子点=最左 X 或缺口）、`_XX_X_`（落子点=最右 X 或缺口）在**任一落子位置**均判活三；`XX_X` 补缺口成冲四判"四"。
+ 
+ 优先级：**先查成五（cnt==5 且非长连）→ 判黑胜，跳过禁手**（禁手与成五同时发生判黑胜，FR-07）；其余情况命中任一禁手 → 黑负、白胜。
+-对齐来源：Wikipedia Renju 禁手定义（分析文档 §5.1）。
++对齐来源：Wikipedia Renju 禁手定义（https://en.wikipedia.org/wiki/Renju）；双三/双四/长连图解参考 gomokufive.com Renju Forbidden Moves（https://gomokufive.com/articles/renju-forbidden-moves/，2026-08-10 复核在线）。
+ 
+ ### 5.3 AI 评估函数与候选点生成（FR-06）
+ ```python
+@@ -191,13 +199,13 @@
+     # 叶子/中止 → evaluate(); 走法按候选分排序提升剪枝效率; 返回 (score, best_move)
+ ```
+ **三档难度策略**：
+-- **弱档（weak）**：合法落子 + **不主动填己方眼位**——具体化为：候选点中排除"落子后会使己方已有活三/冲四/活二进攻形被破坏或堵塞"的点（即以己方进攻形端点/关键位优先）；若剩余候选为空或开局无进攻形，则取邻域内任意合法点。可验证：对任意合法局面落子均合法、不主动破坏己方已有三/四（FR-06 验收③的"不主动填己方眼位"口径，吸收 requeue 前 PASS 评审建议细化）；
++- **弱档（weak）**：合法落子 + **不主动填己方眼位**——具体化为：候选点中排除"落子后会使己方已有活三/冲四/活二进攻形被破坏或堵塞"的点（即以己方进攻形端点/关键位优先）；若剩余候选为空或开局无进攻形，则取邻域内任意合法点。可验证：对任意合法局面落子均合法、不主动破坏己方已有三/四（FR-06 验收③）；
+ - **中档（medium）**：评估函数 1 层威胁检查——先查对手是否有"一步成五/冲四/活三"威胁并必堵（封堵优先于进攻）；否则按评估函数取最高分点。可验证：玩家"下一步可成冲四/已有活三"棋局 10 连测必封堵（FR-06 验收①②）；
+ - **强档（strong）**：Alpha-Beta 迭代加深（最大深度 4）+ 候选剪枝（20 点）+ 时间预算（deadline = now + 2s，NFR-01）；评分同色高优先级时自然形成进攻构造（活三→冲四→成五的威胁链）。可验证：中档验收用例全过 + 主动构造活四/冲四的进攻局例 ≥5 个（FR-06 ③的进攻侧补充）。
+ **禁手规避**：AI 执黑且禁手开启时，`choose_move` 对候选逐一预检 `check_forbidden`，禁手点直接剔除（搜索内部以 `-inf` 处理），保证 AI 永不主动走禁手（FR-07 对 AI 侧同样成立）。
+… omitted 62 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260810_152002_f4c591
+本轮 plan 产出完成，三件套齐备：
+
+1. 产物：workspace/gomoku/plans/gomoku-r1.md（272 行，模板 9 节齐全）
+2. 状态迁移：plan working → plan reviewing（product=gomoku/plans/gomoku-r1.md，校验通过）
+3. 审计：statectl 已写入 pipeline.log
+
+本版要点：
+- 依据 approved 终版 analysis/gomoku-r5.md（requeue 后 plan 首轮，编号与 r4 实质一致）
+- 技术选型经实时复核：rich（Textualize/rich，57k★）+ 标准库 input + 模式评估/Alpha-Beta（hanyao-dev、fxrxhmohamed 等搜索式引擎佐证），来源全部在线有效
+- 关键强化：吸收 requeue 前 code r2 FAIL 实测教训，§5.2 禁手判定改为统一逆向定义（补位即成活四/四），明确禁止"单空延伸"简化，`_X_XX_`/`_XX_X_` 缺口外侧落子固化红线用例；T3 对照表升级 ≥15 例并加回归用例，预估 4.25 人日
+- §9 回应表列明 requeue 前 plan PASS 的 3 建议 3 遗留 + code r2 FAIL 严重意见 1 的逐条吸收落点
+
+等待 dev-plan-reviewer 评审。

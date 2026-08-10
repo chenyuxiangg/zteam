@@ -8142,3 +8142,22 @@ API call failed after 3 retries: list index out of range
 
 session_id: 20260810_013515_a79688
 API call failed after 3 retries: HTTP 429: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)
+
+session_id: 20260810_152002_1dc974
+完成。状态已迁移为 plan_reviewing，产物路径已登记，审计日志留痕。
+
+本轮工作总结（留痕于 worker 日志）：
+
+第 0 步：set_status plan working → 成功（15:20:30Z 审计）。
+产出：workspace/pacman/plans/pacman-r1.md（38,345 字节，模板 10 节齐全）。
+
+背景处理：
+- 本需求 15:20 被人工 requeue（stages 重置、plan 重新计第 1 轮），plans/ 下已有旧 r1 及其评审（上轮 PASS 版，基于 analysis r3）。
+- 按组内既有惯例（不覆盖历史）：旧 r1 与 r1-review 已备份至
+  - workspace/pacman/archive/pacman-r1-pre-requeue-20260810-1520.md
+  - workspace/pacman/archive/pacman-r1-review-pre-requeue-20260810-1520.md
+- 新 r1 基于 analysis r4（approved 终版）。r4 相对 r3 无 FR/NFR 条目变化（仅元信息/§7 核实/§8 回应表更新），故正文设计继承上轮 PASS 结论不变，仅更新依据引用（r3→r4）、轮次说明与继承说明。
+
+方案要点：curses 渲染 + 逻辑/渲染分离 + 22×19 地图（216 豆/4 能量豆）+ 四幽灵差异化 AI（Blinky 追击/Elroy 加速、Pinky 预判 4 格、Inky 向量翻倍协同、Clyde 距离感知）+ 三态模式切换（SCATTER/CHASE/FRIGHTENED）+ 完整对局闭环（吃豆/反击/过关/扣命/结算）；零第三方 pip 依赖；8 模块划分、CLI 8 参数、validate_map() 三项离线判定、9 任务 ≈29h（3.6 人日）；Q1-Q12 全部按分析建议默认值落定（Q1 地图规格 22×19 因 FR-14 终端尺寸约束与原版 28×31 冲突，已显式标注处置）。
+
+状态迁移：set_status plan reviewing workspace/pacman/plans/pacman-r1.md → 成功（15:22:58Z 审计，plan_reviewing，failures=0），产物存在性校验通过，等待 dev-plan-reviewer 评审。
