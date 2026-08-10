@@ -1485,6 +1485,23 @@ def cmd_rollback(rid: str, reason: str = "manual") -> int:
     return 0
 
 
+def _stage_order() -> list:
+    """阶段链顺序（含需求阶段）：req → plan → testplan → code → test → quality → security → release。"""
+    return ["req"] + [s["name"] for s in STAGES] + [g["name"] for g in GATES] + [RELEASE["name"]]
+
+
+def _find_block_stage(e: dict):
+    """找 block/中断发生阶段：stages 中第一个 state != done 的阶段。
+    该阶段及其后续需重做；之前的阶段已通过（done），产物与结论复用。
+    返回阶段名；stages 缺失/全 done 时返回 None（兜底全链重跑）。"""
+    stages = e.get("stages") or {}
+    for name in _stage_order():
+        s = stages.get(name) or {}
+        if s.get("state") != "done":
+            return name
+    return None
+
+
 def cmd_requeue(rid: str) -> int:
     with acquire_lock() as _:
         st = read_status()
@@ -1492,21 +1509,36 @@ def cmd_requeue(rid: str) -> int:
         if not e:
             print(f"{rid} 不存在", file=sys.stderr)
             return 1
-        e["status"] = "pending"
-        e["failures"] = 0
-        clear_claim(e)
-        # 重跑 = 全链重来：重置各阶段四态与轮次引用（产物文件保留，仅清状态），
-        # 否则残留 done/reviewing 会卡死 set_status 迁移（tetris/tetris requeue 后 plan 阶段实测）。
-        # 注意：顶层 round 保留（req 重跑产出 r{round+1} 的连续性依赖它）。
-        for name, s in (e.get("stages") or {}).items():
+        stages = e.get("stages") or {}
+        block_stage = _find_block_stage(e)
+        if block_stage is None:
+            block_stage = "req"  # 兜底：全链重跑
+        # 重置 block 阶段及其后续（保留已 done 阶段的状态/产物/评审历史——不重跑已通过部分，省 token）
+        reset = False
+        for name in _stage_order():
+            s = stages.get(name)
+            if not s:
+                continue
+            if not reset and name != block_stage:
+                continue
+            reset = True
             s["state"] = None
             s["state_since"] = None
             s["round"] = 0
             s["product"] = None
             s["reviews"] = []
+        # 顶层状态回到该阶段可认领态（已 done 阶段自动衔接）；req 阶段保留顶层 round（产物 r{round+1} 连续性）
+        if block_stage == "req":
+            e["status"] = "pending"
+            e["failures"] = 0
+        else:
+            e["status"] = f"{block_stage}_designing"
+            e["failures"] = 0
+        clear_claim(e)
         e["updated_at"] = now_iso()
         write_status(st)
-        log(f"REQUEUE {rid} -> pending (manual, stages reset)")
+        log(f"REQUEUE {rid} -> {e['status']} (manual, resume from stage={block_stage}, kept: "
+            + ",".join(n for n in _stage_order() if (stages.get(n) or {}).get("state") == "done") + ")")
     return 0
 
 

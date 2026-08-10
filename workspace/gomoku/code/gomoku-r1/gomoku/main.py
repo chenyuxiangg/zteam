@@ -1,350 +1,169 @@
-"""main — CLI entry point and main game loop (plan §3 / §4 / §5.4).
+"""main.py — 主控（CLI 装配 / 回合循环 / 重开 / 退出）。
 
-* Parses CLI arguments via :mod:`argparse` (plan §4).
-* Builds a :class:`Config` from the arguments.
-* Drives the turn loop:
+约束（与方案 §3 / §5.4 一致）：
+- CLI 参数解析（argparse）→ Config；
+- 装配 Board / AI / UI；
+- 主循环：渲染 → 落子（人类或 AI）→ 胜负 / 禁手 / 满盘判定 → 终局提示 → 重开/退出；
+- Ctrl+C 顶层捕获并礼貌退出（exit 0）。
 
-    1. render the board
-    2. if it is the human's turn, call ``ui.get_move``; otherwise
-       call ``ai.choose_move``
-    3. validate the move (range, occupancy, forbidden-move)
-    4. check for a five-in-a-row or a full board
-    5. swap turns
-
-* Handles the three exit paths: ``quit`` command, ``Ctrl+C`` (clean
-  restore, exit 0), and the post-game "play again" prompt.
+辅助：
+    main(): CLI 入口；
+    game_loop(...): 启动一回合循环（便于测试）。
 """
+
 from __future__ import annotations
 
 import argparse
-import signal
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import Optional
 
-from . import __version__
-from .ai import choose_move as ai_choose_move
-from .board import Board, MoveError
-from .config import Config
-from .ui import (
-    TerminalTooSmall,
-    announce_winner,
-    check_terminal_size,
-    get_console,
-    get_move as ui_get_move,
-    render,
-)
+from .ai import choose_move
+from .board import Board, MoveError, parse_move
+from .config import Config, parse_args
+from .ui import GameState, UI
 
 
-# ---------------------------------------------------------------------------
-# CLI (plan §4)
-# ---------------------------------------------------------------------------
-def _build_arg_parser() -> argparse.ArgumentParser:
-    """Build the argparse parser for the gomoku CLI."""
-    p = argparse.ArgumentParser(
-        prog="gomoku",
-        description=(
-            "Linux terminal gomoku (human vs AI).  Pass --help for "
-            "options; see README.md for the full guide."
-        ),
-    )
-    p.add_argument(
-        "--size",
-        type=int,
-        choices=(13, 15),
-        default=15,
-        help="board side length (default: 15)",
-    )
-    p.add_argument(
-        "--difficulty",
-        type=str,
-        choices=("weak", "medium", "strong"),
-        default="medium",
-        help="AI difficulty tier (default: medium)",
-    )
-    p.add_argument(
-        "--forbidden",
-        type=str,
-        choices=("on", "off"),
-        default="off",
-        help="enable Renju forbidden-move rules for black (default: off)",
-    )
-    p.add_argument(
-        "--human",
-        type=str,
-        choices=("black", "white"),
-        default="black",
-        help="color the human plays (default: black)",
-    )
-    p.add_argument(
-        "--version",
-        action="version",
-        version=f"gomoku {__version__}",
-    )
-    return p
+def main(argv: Optional[list[str]] = None) -> int:
+    """CLI 入口。返回 exit code（0=正常退出）。"""
+    try:
+        cfg = parse_args(argv if argv is not None else sys.argv[1:])
+    except SystemExit as e:
+        return int(e.code) if isinstance(e.code, int) else 2
+
+    return game_loop(cfg)
 
 
-def parse_args(argv: Optional[List[str]] = None) -> Config:
-    """Parse ``argv`` (default: ``sys.argv[1:]``) and return a :class:`Config`."""
-    parser = _build_arg_parser()
-    args = parser.parse_args(argv)
-    return Config(
-        size=args.size,
-        difficulty=args.difficulty,
-        forbidden=(args.forbidden == "on"),
-        human_color="B" if args.human == "black" else "W",
-    )
+def game_loop(cfg: Config, *, board: Board | None = None, ui: UI | None = None) -> int:
+    """跑一回合循环；终局后询问重开/退出。
 
-
-# ---------------------------------------------------------------------------
-# Game-state container
-# ---------------------------------------------------------------------------
-class GameState:
-    """Mutable per-game state shared by the main loop.
-
-    Kept tiny on purpose — the main loop only needs to know whose
-    turn it is, what the last move was, and whether the game is
-    already over.  The board itself is the source of truth.
+    注入 board/UI 用于测试；不传则新建。
     """
+    if board is None:
+        board = Board(cfg.size)
+    if ui is None:
+        ui = UI(cfg.size)
 
-    __slots__ = ("turn", "last_move", "over", "winner", "forbidden_reason")
+    human_color = "B" if cfg.human_color == "black" else "W"
+    ai_color = "W" if human_color == "B" else "B"
 
-    def __init__(self, human_color: str) -> None:
-        # Black always moves first in gomoku (plan §1 / §5.4 / H3).
-        # If the human is white, the AI plays first as black.
-        self.turn: str = "B"
-        self.last_move: Optional[Tuple[int, int]] = None
-        self.over: bool = False
-        self.winner: Optional[str] = None
-        # When the game ends on a forbidden-move call, this captures
-        # the reason for the end-of-game banner.
-        self.forbidden_reason: Optional[str] = None
+    while True:
+        # 渲染初始棋盘
+        state = _initial_state(human_color)
+        board.reset()
+        ui.render(board, state)
+        # 主循环
+        try:
+            while not state.over:
+                if state.turn == human_color:
+                    _human_turn(board, state, ui)
+                else:
+                    _ai_turn(board, state, cfg, ai_color, ui)
+                # 胜负 / 满盘判定
+                _post_turn_check(board, state)
+                ui.render(board, state)
+        except (KeyboardInterrupt, EOFError):
+            # Ctrl+C / Ctrl+D 退出
+            ui.console.print("\n[bold]退出[/bold]")
+            return 0
+
+        # 终局 → 询问重开
+        try:
+            ans = ui.console.input("\n重开？(y/n) [默认 y] > ")
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans.strip().lower() in ("n", "no"):
+            ui.console.print("[bold]退出[/bold]")
+            return 0
+        # 否则进入下一轮，保持 cfg
 
 
-# ---------------------------------------------------------------------------
-# Signal handling (FR-11 / plan §3)
-# ---------------------------------------------------------------------------
-# A single SIGINT handler: raise KeyboardInterrupt from the main
-# thread so the top-level try/except in main() can perform the
-# unified cleanup path.  We install it lazily (only on first call)
-# to avoid surprising the test-suite.
-_SIGINT_INSTALLED = False
+def _initial_state(human_color: str) -> GameState:
+    """开局状态：人类执色方先手；消息为空。"""
+    return GameState(turn=human_color, last_move=None, message="", over=False)
 
 
-def _install_sigint_handler() -> None:
-    global _SIGINT_INSTALLED
-    if _SIGINT_INSTALLED:
-        return
-    def _raise_kbi(_signum, _frame):  # pragma: no cover - signal path
-        raise KeyboardInterrupt()
-    signal.signal(signal.SIGINT, _raise_kbi)
-    _SIGINT_INSTALLED = True
-
-
-# ---------------------------------------------------------------------------
-# Per-move handling
-# ---------------------------------------------------------------------------
-def _apply_human_move(
-    board: Board, x: int, y: int, config: Config, state: GameState
-) -> None:
-    """Place the human's move and update game state.
-
-    Performs the FR-07 forbidden-move check (when the human is black
-    and forbidden rules are on).  In that case the human loses
-    immediately — no re-prompt.
-    """
-    if config.forbidden and config.human_color == "B":
-        is_forbidden, reason = board.check_forbidden(x, y, "B")
-        if is_forbidden:
+def _human_turn(board: Board, state: GameState, ui: UI) -> None:
+    """人类落子：循环读取坐标 → 校验 → 落子。"""
+    while True:
+        move = ui.get_move(board, state.turn)
+        if move is None:
+            # 退出
+            raise KeyboardInterrupt()
+        x, y = move
+        # 占用校验（额外检查，因为 parse_move 不查占用）
+        if board.cell(x, y) != ".":
+            ui.console.print(f"[red]已占用[/red]：({x}, {y})")
+            continue
+        # 禁手检查（黑方）
+        if state.turn == "B" and board.check_forbidden(x, y, "B")[0]:
+            fb, reason = board.check_forbidden(x, y, "B")
+            # 禁手当判黑负白胜——但禁手判定前先看是否成五；成五则胜
+            # board.check_forbidden 已内部按"成五优先"返回 (False, None)
+            # 这里若返回 True，表示确实禁手 → 黑负
+            state.forbidden_reason = reason
+            state.over = True
             state.winner = "W"
-            state.over = True
-            state.forbidden_reason = reason
-            # We still record the move on the board so the user can
-            # *see* the offending placement before the banner appears.
-            board.place(x, y, "B")
-            state.last_move = (x, y)
             return
-
-    board.place(x, y, config.human_color)
-    state.last_move = (x, y)
-    if board.check_win(x, y):
-        state.winner = config.human_color
-        state.over = True
-        return
-    if board.is_full():
-        state.winner = None  # draw
-        state.over = True
-        return
-    state.turn = "W" if config.human_color == "B" else "B"
-
-
-def _apply_ai_move(
-    board: Board, x: int, y: int, config: Config, state: GameState
-) -> None:
-    """Place the AI's move and update game state (mirrors _apply_human_move)."""
-    ai_color = config.ai_color
-    if config.forbidden and ai_color == "B":
-        # The AI is expected to avoid forbidden moves; this is a
-        # safety net.  If we somehow landed on one, treat it as a
-        # self-forfeit.
-        is_forbidden, reason = board.check_forbidden(x, y, "B")
-        if is_forbidden:
-            state.winner = "W"  # i.e. the human wins by default
+        # 落子
+        ok = board.place(x, y, state.turn)
+        if not ok:
+            ui.console.print("[red]落子失败[/red]")
+            continue
+        state.last_move = (x, y)
+        # 检查成五：人类刚落，立即判
+        winner = board.check_win(x, y)
+        if winner:
             state.over = True
-            state.forbidden_reason = reason
-            board.place(x, y, "B")
-            state.last_move = (x, y)
+            state.winner = winner
             return
+        # 切换回合
+        state.turn = "W" if state.turn == "B" else "B"
+        state.message = ""
+        state.forbidden_reason = None
+        return
 
+
+def _ai_turn(board: Board, state: GameState, cfg: Config, ai_color: str, ui: UI) -> None:
+    """AI 落子：按 cfg.difficulty 调 AI。"""
+    state.message = f"AI 思考中（{cfg.difficulty}）..."
+    ui.render(board, state)
+    t0 = time.monotonic()
+    # 时间预算：弱/中 0.5s，强 2s（与方案 §5.3 / README §6 一致）
+    time_budget = {"weak": 0.05, "medium": 0.2, "strong": 2.0}.get(cfg.difficulty, 0.2)
+    move = choose_move(
+        board,
+        ai_color,
+        difficulty=cfg.difficulty,
+        time_budget=time_budget,
+    )
+    elapsed = time.monotonic() - t0
+    if move is None:
+        # 无合法点（满盘）—— 由 _post_turn_check 处理平局
+        return
+    x, y = move
     board.place(x, y, ai_color)
     state.last_move = (x, y)
-    if board.check_win(x, y):
-        state.winner = ai_color
+    state.message = f"AI：{chr(ord('A') + x)}{y + 1}（{elapsed:.2f}s）"
+    winner = board.check_win(x, y)
+    if winner:
         state.over = True
+        state.winner = winner
+        return
+    state.turn = "B" if state.turn == "W" else "W"
+
+
+def _post_turn_check(board: Board, state: GameState) -> None:
+    """每次落子后：检查满盘 / 平局；如成五已由调用者 set state.over。"""
+    if state.over:
         return
     if board.is_full():
-        state.winner = None
         state.over = True
-        return
-    state.turn = "W" if ai_color == "B" else "B"
+        state.winner = None  # 平局
 
 
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-def _wait_for_terminal_resize() -> None:
-    """Block until the terminal is at least 60×24 (plan §5.4 / ST-18)."""
-    console = get_console()
-    while True:
-        try:
-            check_terminal_size()
-            return
-        except TerminalTooSmall as e:
-            console.print(
-                f"[yellow]终端过小（{e}）。请放大窗口后按 Enter 继续…[/yellow]",
-                end="",
-            )
-            try:
-                input()
-            except EOFError:
-                # EOF before resize — give up and proceed; render may
-                # still partially succeed.
-                return
-            except KeyboardInterrupt:
-                raise
+# Board.reset 已在 board.py 中实现，无需此处 monkey-patch。
 
 
-def _post_game_prompt() -> bool:
-    """Ask the user whether to play again.  Returns True on "yes"."""
-    console = get_console()
-    while True:
-        try:
-            raw = input("再来一局？(y/n): ")
-        except EOFError:
-            return False
-        except KeyboardInterrupt:
-            raise
-        s = raw.strip().lower()
-        if s in ("y", "yes"):
-            return True
-        if s in ("n", "no", ""):
-            return False
-        console.print("[yellow]请输入 y 或 n。[/yellow]")
-
-
-def play_one_game(config: Config) -> bool:
-    """Run a single game.  Returns True if the user wants another game.
-
-    Encapsulates the inner game loop so ``main()`` can call it for the
-    "play again" path.  All state is local; the board is created here
-    so the second game is truly a fresh board (FR-10).
-    """
-    board = Board(config.size)
-    state = GameState(config.human_color)
-
-    # If the AI is black, make its first move before the first render.
-    while not state.over:
-        render(
-            board,
-            turn=state.turn,
-            last_move=state.last_move,
-            human_color=config.human_color,
-            difficulty=config.difficulty,
-            forbidden=config.forbidden,
-        )
-        if state.turn == config.human_color:
-            mv = ui_get_move(board, config.human_color)
-            if mv is None:
-                # Polite quit (typed "quit"/"exit"/"q" or hit EOF).
-                get_console().print("[dim]已退出。[/dim]")
-                return False
-            x, y = mv
-            _apply_human_move(board, x, y, config, state)
-        else:
-            t0 = time.monotonic()
-            mv = ai_choose_move(board, state.turn, config.difficulty)
-            dt = time.monotonic() - t0
-            if mv is None:
-                # AI has no legal move — treat as a draw.
-                state.winner = None
-                state.over = True
-                break
-            get_console().print(
-                f"[dim]AI 思考耗时 {dt * 1000:.0f} ms[/dim]"
-            )
-            _apply_ai_move(board, mv[0], mv[1], config, state)
-
-    # Final render + banner.
-    render(
-        board,
-        turn=None,
-        last_move=state.last_move,
-        human_color=config.human_color,
-        difficulty=config.difficulty,
-        forbidden=config.forbidden,
-    )
-    announce_winner(state.winner, forbidden_reason=state.forbidden_reason)
-    return _post_game_prompt()
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    """Top-level entry point.  Returns an integer exit code."""
-    _install_sigint_handler()
-    try:
-        config = parse_args(argv)
-    except SystemExit:
-        # argparse already printed a usage message.
-        return 2
-
-    console = get_console()
-    console.print(
-        f"[bold bright_blue]Gomoku[/bold bright_blue]  v{__version__}"
-        f"  ·  {config.size}×{config.size}  ·  难度 {config.difficulty}"
-        f"  ·  禁手 {'开' if config.forbidden else '关'}"
-    )
-
-    try:
-        _wait_for_terminal_resize()
-    except (EOFError, KeyboardInterrupt):
-        console.print("[dim]已取消启动。[/dim]")
-        return 0
-
-    try:
-        while True:
-            again = play_one_game(config)
-            if not again:
-                break
-            # Re-check terminal size on restart — the user may have
-            # resized during play.
-            try:
-                _wait_for_terminal_resize()
-            except (EOFError, KeyboardInterrupt):
-                break
-    except KeyboardInterrupt:
-        console.print("\n[dim]Ctrl+C 收到，已退出。[/dim]")
-        return 0
-    return 0
-
-
-if __name__ == "__main__":  # pragma: no cover - module entry
-    sys.exit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -5,7 +5,10 @@
 依赖：pacman.config / pacman.entities / pacman.ghost_ai / pacman.map。
 对应方案：plans/pacman-r1.md §3.2 game.py、§3.3 主循环时序、§5.3 边界处理、§5.4 难度公式。
 不依赖 curses（纯逻辑层，可单测）。
+
+本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
 """
+
 
 from dataclasses import dataclass, field
 from enum import Enum

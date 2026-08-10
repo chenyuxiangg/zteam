@@ -1,24 +1,24 @@
 {
   "pacman/pacman": {
-    "status": "code_reviewing",
-    "round": 2,
+    "status": "plan_designing",
+    "round": 4,
     "max_rounds": 3,
     "forced": false,
-    "analysis": "pacman/analysis/pacman-r2.md",
+    "analysis": "pacman/analysis/pacman-r4.md",
     "reviews": [
       "pacman/review/pacman-r1.md",
-      "pacman/review/pacman-r2.md"
+      "pacman/review/pacman-r2.md",
+      "pacman/review/pacman-r3.md",
+      "pacman/review/pacman-r4.md"
     ],
-    "failures": 1,
+    "failures": 0,
     "stages": {
       "plan": {
-        "round": 1,
-        "product": "pacman/plans/pacman-r1.md",
-        "reviews": [
-          "pacman/plans/pacman-r1-review.md"
-        ],
-        "state": "done",
-        "state_since": "2026-08-09T13:33:12Z",
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": "working",
+        "state_since": "2026-08-10T15:20:30Z",
         "timeline": [
           {
             "t": "2026-08-09T09:25:36Z",
@@ -59,17 +59,43 @@
           {
             "t": "2026-08-09T13:33:12Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-10T00:20:36Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T00:20:54Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T00:24:54Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T00:26:02Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T00:27:17Z",
+            "to": "done"
+          },
+          {
+            "t": "2026-08-10T15:20:01Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T15:20:30Z",
+            "to": "working"
           }
         ]
       },
       "testplan": {
-        "round": 1,
-        "product": "pacman/testplans/pacman-r1.md",
-        "reviews": [
-          "pacman/testplans/pacman-r1-review.md"
-        ],
-        "state": "done",
-        "state_since": "2026-08-09T13:44:04Z",
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
         "timeline": [
           {
             "t": "2026-08-09T09:40:45Z",
@@ -110,15 +136,35 @@
           {
             "t": "2026-08-09T13:44:04Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-10T00:30:43Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T00:30:56Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T00:35:18Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T00:36:05Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T00:38:23Z",
+            "to": "done"
           }
         ]
       },
       "code": {
         "round": 0,
-        "product": "pacman/code/pacman-r1/",
+        "product": null,
         "reviews": [],
-        "state": "reviewing",
-        "state_since": "2026-08-09T13:58:03Z",
+        "state": null,
+        "state_since": null,
         "timeline": [
           {
             "t": "2026-08-09T09:50:50Z",
@@ -151,6 +197,46 @@
           {
             "t": "2026-08-09T13:58:03Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T14:00:24Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T14:08:06Z",
+            "to": "done"
+          },
+          {
+            "t": "2026-08-10T00:40:47Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T00:42:24Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T00:53:43Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T00:56:45Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T01:00:49Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T01:08:14Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T01:11:03Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T01:16:47Z",
+            "to": "done"
           }
         ]
       },
@@ -171,6 +257,34 @@
           },
           {
             "t": "2026-08-09T10:45:16Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-09T14:10:15Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-09T14:10:37Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-09T14:35:28Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T01:20:07Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T01:20:51Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T01:32:08Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T01:35:45Z",
             "to": "reviewing"
           }
         ]
@@ -204,7 +318,7 @@
         "product": null,
         "reviews": [],
         "state": "reviewing",
-        "state_since": "2026-08-09T13:22:15Z",
+        "state_since": "2026-08-10T04:36:22Z",
         "timeline": [
           {
             "t": "2026-08-09T09:10:24Z",
@@ -229,11 +343,38 @@
           {
             "t": "2026-08-09T13:22:15Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T00:10:31Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T00:10:49Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T00:15:50Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T04:30:53Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T04:31:28Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T04:36:22Z",
+            "to": "reviewing"
           }
         ]
       }
     },
     "created_at": "2026-08-09T09:10:24Z",
-    "updated_at": "2026-08-09T13:58:03Z"
+    "updated_at": "2026-08-10T15:20:30Z",
+    "claimed_by": "dev-plan-designer",
+    "claimed_at": "2026-08-10T15:20:01Z",
+    "worker_pid": 4157215
   }
 }

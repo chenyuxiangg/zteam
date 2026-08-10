@@ -1,314 +1,176 @@
-"""测试 fixtures。
-
-集中提供：
-
-- ``small_map``  ← 22×19 截取后的 5×5 最小迷宫，便于单测；
-- ``good_map``   ← 合法 22×19 测试地图（≥100 豆 + 4 能量 + 鬼屋 + 门 + 出生点 + 连通）；
-- ``bad_*_maps`` ← 各式非法地图矩阵，覆盖 map 校验的 7 类错误；
-- ``load_map``   ← 工厂函数，把文本写到 tmp 并走 ``GameMap.load``；
-- ``ghost/player``  ← 工厂函数，返回固定局面的 Ghost/Player；
-- ``build_game`` ← 给定 Config 与可选 seed，构造 Game 实例；
-- ``screen_stub`` ← curses 屏幕桩（见 renderer_test）。
+"""测试 fixtures：合法/非法地图矩阵 + 实体/对局工厂。
 
 设计原则：
-
-- 所有 fixture **不依赖** 被测代码内部状态；只通过公开 API 构造对象。
-- 非法地图用 ``GameMap.from_text`` 直接构造，避免每次写 tmp 文件。
+- 只通过被测代码的**公开 API** 构造对象；
+- 非法地图直接走 `pacman.map._parse_grid` + `load_map` 验证（用 tmp 文件落地后被 load_map 读取以覆盖真实加载路径）。
 """
 from __future__ import annotations
 
-import io
-import sys
+import os
+import tempfile
 import unittest
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterator, Tuple
 
-from tests._path import code_dir  # noqa: F401  (把 code 目录加到 sys.path)
+from tests._path import code_dir  # noqa: F401  (注入 sys.path)
 
-from pacman.config import Config
-from pacman.entities import Dir, Ghost, GhostKind, GhostMode, Player
+from pacman.config import Config, Dir, Kind
+from pacman.entities import Ghost, Player
 from pacman.game import Game
-from pacman.map import GameMap, MapError, Pos, Tile
+from pacman.map import GameMap, MapError, Tile, load_map
 
 
 # ---------------------------------------------------------------------------
-# 地图字符串
+# 合法地图：22×19、4 能量豆、≥100 普通豆、含鬼屋+门+玩家出生区+全部可达
 # ---------------------------------------------------------------------------
 
-GOOD_22x19 = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.##------##.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#o.......#..#.......o#
-######################
-"""
+GOOD_22x19 = (
+    "######################\n"
+    "#........#..#........#\n"
+    "#o.......#..#.......o#\n"
+    "#....................#\n"
+    "#.##.#....##....#.##.#\n"
+    "#....#....##....#....#\n"
+    "###.###.######.###.###\n"
+    "###................###\n"
+    "###.#.##########.#.###\n"
+    "###.#.#HHHHHHHH#.#.###\n"
+    "###.#.##------##.#.###\n"
+    "###................###\n"
+    "###......PP........###\n"
+    "###.###.######.###.###\n"
+    "#....#....##....#....#\n"
+    "#.##.#....##....#.##.#\n"
+    "#....................#\n"
+    "#o.......#..#.......o#\n"
+    "######################\n"
+)
 
+# ---------------------------------------------------------------------------
+# 6 型非法地图：行宽不一致 / 非法字符 / 缺 P / 能量豆 <4 / 缺 H / 缺门
+# ---------------------------------------------------------------------------
 
-# GOOD_SMALL 已删除（行宽难对齐；TC-A4 验收已用 GOOD_22x19 覆盖合法加载）
+# 1. 行宽不一致（第 17 行少 1 字符）
+BAD_VARIABLE_WIDTH = (
+    "######################\n"
+    "#........#..#........#\n"
+    "#o.......#..#.......o#\n"
+    "#....................#\n"
+    "#.##.#....##....#.##.#\n"
+    "#....#....##....#....#\n"
+    "###.###.######.###.###\n"
+    "###................###\n"
+    "###.#.##########.#.###\n"
+    "###.#.#HHHHHHHH#.#.###\n"
+    "###.#.##------##.#.###\n"
+    "###................###\n"
+    "###......PP........###\n"
+    "###.###.######.###.###\n"
+    "#....#....##....#....#\n"
+    "#.##.#....##....#.##.#\n"
+    "#...................\n"          # ← 短 1
+    "#o.......#..#.......o#\n"
+    "######################\n"
+)
 
+# 2. 非法字符（X）
+BAD_ILLEGAL_CHAR = GOOD_22x19.replace("#o.......#..#.......o#\n", "#o.......#..X.......o#\n", 1)
 
-BAD_VARIABLE_WIDTH = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.##------##.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................
-#o.......#..#.......o#
-######################
-"""  # 第 17 行少 1 字符
+# 3. 缺 P（出生点缺失）
+BAD_NO_PLAYER = GOOD_22x19.replace("###......PP........###\n", "###................###\n", 1)
 
+# 4. 能量豆 <4（把第三行 o 改 .）
+BAD_FEW_POWER = (
+    GOOD_22x19
+    .replace("#o.......#..#.......o#\n", "#........#..#........#\n", 1)
+    .replace("#o.......#..#.......o#\n", "#........#..#........#\n", 1)  # 仅 0 个能量豆
+)
 
-BAD_ILLEGAL_CHAR = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.##------##.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#o.......#..X.......o#
-######################
-"""  # 含非法字符 X
+# 5. 缺 H（鬼屋消失，H 行改为等宽墙以触发"缺 H"而非"行宽不一致"）
+BAD_NO_HOUSE = GOOD_22x19.replace("HHHHHHHH", "########", 1)
 
-
-BAD_NO_PLAYER = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.##------##.#.###
-###................###
-###................###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#o.......#..#.......o#
-######################
-"""
-
-
-BAD_FEW_POWER = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.##------##.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#........#..#........#
-######################
-"""  # 能量豆 0 个
-
-
-BAD_NO_HOUSE = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.##------##.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#o.......#..#.......o#
-######################
-"""  # 没有 H
-
-
-BAD_NO_DOOR = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.#HHHHHHHH#.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#o.......#..#.......o#
-######################
-"""  # 鬼屋无 - 门
-
-
-BAD_HOUSE_OPEN = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###................###
-###.#.##########.#.###
-###.#.#HHHHHHHH#.#.###
-###.#.#........#.#.###
-###................###
-###......PP........###
-###.###.######.###.###
-#....#....##....#....#
-#.##.#....##....#.##.#
-#....................#
-#o.......#..#.......o#
-######################
-"""  # 鬼屋相邻行被替换为普通通道（无 - 门）
-
-
-BAD_FEW_DOTS = """\
-######################
-#........#..#........#
-#o.......#..#.......o#
-#....................#
-#.##.#....##....#.##.#
-#....#....##....#....#
-###.###.######.###.###
-###....            ###
-### # ########## # ###
-### # #HHHHHHHH# # ###
-### # ##------## # ###
-###                ###
-###      PP        ###
-### ### ###### ### ###
-#    #    ##    #    #
-# ## #    ##    # ## #
-#                    #
-#o       #  #       o#
-######################
-"""  # 豆子总数 94 < 100（验证 < 100 报错）；保留 4 颗 POWER
+# 6. 缺门（鬼屋邻接行被替换为通道，无 -）
+BAD_NO_DOOR = GOOD_22x19.replace("###.#.##------##.#.###\n", "###.#.#........#.#.###\n", 1)
 
 
 # ---------------------------------------------------------------------------
 # 工厂函数
 # ---------------------------------------------------------------------------
 
+def write_map_tmp(text: str) -> str:
+    """把地图文本写到 tmp，返回路径（调用方负责删除）。"""
+    fd, path = tempfile.mkstemp(suffix=".txt", prefix="pacman_test_map_")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
+
+
+def builtin_map() -> GameMap:
+    """内置 22×19 经典地图。"""
+    return load_map(str(code_dir() / "pacman" / "data" / "map_classic.txt"))
+
+
+def make_player(pos: Tuple[int, int] = (12, 9), direction: Dir = Dir.LEFT) -> Player:
+    p = Player(pos)
+    p.dir = direction
+    return p
+
+
+def make_ghost(kind: Kind = Kind.BLINKY, pos: Tuple[int, int] = (9, 10),
+               direction: Dir = Dir.UP, level: int = 1) -> Ghost:
+    g = Ghost(kind, pos, level=level)
+    g.dir = direction
+    return g
+
 
 def build_game(
     config: Config | None = None,
     game_map: GameMap | None = None,
-    seed: int | None = 42,
+    clock=None,
 ) -> Game:
-    """用内置 22×19 经典地图构造 Game。"""
+    """默认 level=1, lives=3, speed=1.0；可注入 map/clock。"""
     if config is None:
         config = Config()
     if game_map is None:
-        game_map = GameMap.load(code_dir() / "pacman" / "data" / "map_classic.txt")
-    return Game(config, game_map, seed=seed)
+        game_map = builtin_map()
+    return Game(game_map, config, clock=clock)
 
 
-def make_ghost(
-    kind: GhostKind = GhostKind.BLINKY,
-    pos: Pos = Pos(9, 11),
-    direction: Dir = Dir.UP,
-    mode: GhostMode = GhostMode.SCATTER,
-    released: bool = True,
-) -> Ghost:
-    return Ghost(
-        pos=pos,
-        spawn=pos,
-        direction=direction,
-        kind=kind,
-        mode=mode,
-        released=released,
-    )
+def frozen_clock(start: float = 1000.0):
+    """返回 (clock_fn, advance_fn)：clock_fn() 返回当前假时间；advance(dt) 推时间。"""
+    state = {"t": start}
 
+    def clock_fn() -> float:
+        return state["t"]
 
-def make_player(pos: Pos = Pos(12, 10), direction: Dir = Dir.LEFT) -> Player:
-    return Player(pos=pos, spawn=pos, direction=direction)
+    def advance(dt: float) -> None:
+        state["t"] += dt
+
+    return clock_fn, advance
 
 
 # ---------------------------------------------------------------------------
-# curses screen 桩（Renderer 单测用）
+# curses screen 桩（renderer 单测用）
 # ---------------------------------------------------------------------------
-
 
 class ScreenStub:
-    """curses 屏幕桩。
+    """记录 addnstr / erase / refresh / getmaxyx 调用并保留绘制缓冲。
 
-    不真正渲染，只记录 addnstr/getmaxyx/getch/refresh 调用并允许 stub。
-    测试用例通过 ``_captured`` 拿已绘制字符串做断言。
+    不真正渲染，测试通过 ``captured`` 拿整屏字符串做断言。
     """
 
     def __init__(self, lines: int = 24, cols: int = 80):
         self._lines = lines
         self._cols = cols
-        self._buffer: List[List[Tuple[str, int]]] = [
-            [("", 0)] * cols for _ in range(lines)
-        ]
+        self._buffer: list[list[str]] = [["\x00"] * cols for _ in range(lines)]
         self.erase_count = 0
         self.refresh_count = 0
-        self.calls: List[Tuple[int, int, str, int]] = []
+        self.calls: list[Tuple[int, int, str, int]] = []
 
-    # curses API -------------------------------------------------------------
+    # curses API ----------------------------------------------------------
     def erase(self):
         self.erase_count += 1
-        self._buffer = [[("", 0)] * self._cols for _ in range(self._lines)]
+        self._buffer = [["\x00"] * self._cols for _ in range(self._lines)]
 
     def refresh(self):
         self.refresh_count += 1
@@ -318,18 +180,30 @@ class ScreenStub:
 
     def addnstr(self, row: int, col: int, text: str, n: int, attr: int = 0):
         self.calls.append((row, col, text, attr))
-        if 0 <= row < self._lines and 0 <= col < self._cols:
-            for i in range(min(n, len(text), self._cols - col)):
-                if col + i >= 0:
-                    self._buffer[row][col + i] = (text[i], attr)
+        if not (0 <= row < self._lines):
+            return
+        # 用 overlay 方式写入
+        for i in range(min(n, len(text))):
+            cc = col + i
+            if 0 <= cc < self._cols:
+                self._buffer[row][cc] = text[i]
 
-    # 测试辅助 ---------------------------------------------------------------
+    # 测试辅助 ------------------------------------------------------------
     @property
     def captured(self) -> str:
-        return "\n".join("".join(ch for ch, _ in row) for row in self._buffer)
+        return "\n".join("".join(ch for ch in row if ch != "\x00").rstrip() for row in self._buffer)
 
     def contains(self, substring: str) -> bool:
         return substring in self.captured
 
     def line(self, row: int) -> str:
-        return "".join(ch for ch, _ in self._buffer[row])
+        return "".join(ch for ch in self._buffer[row] if ch != "\x00")
+
+
+__all__ = [
+    "GOOD_22x19",
+    "BAD_VARIABLE_WIDTH", "BAD_ILLEGAL_CHAR", "BAD_NO_PLAYER",
+    "BAD_FEW_POWER", "BAD_NO_HOUSE", "BAD_NO_DOOR",
+    "write_map_tmp", "builtin_map", "make_player", "make_ghost",
+    "build_game", "frozen_clock", "ScreenStub",
+]

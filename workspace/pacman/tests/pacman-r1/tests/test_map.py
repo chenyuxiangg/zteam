@@ -1,209 +1,176 @@
-"""map.py 单测。
+"""map.py 单测：覆盖 FR-02 内置地图规格 + FR-03 三项离线判定 + 6 型非法地图拦截。
 
-覆盖测试方案：
-- TC-A3 玩家/幽灵通道连通性
-- TC-A5 非法地图矩阵（行宽 / 非法字符 / 缺 P / 能量豆不足 / 缺 H / 缺门 / 鬼屋未封闭）
-- TC-X6 路径不存在
-- TC-X7 非法字符定位
-- TC-A4 合法自定义地图加载（用 GOOD_SMALL）
+测试方案映射：
+- T-MAP-01~03 三项离线判定 → TestBuiltinMap / TestConnectivityAndDoor
+- T-MAP-04 6 型非法地图 → TestInvalidMap
+- T-MAP-05 28×31 自定义 → TestCustomMap28x31Valid
+- T-MAP-06 路径不存在 → TestMissingFile
+- T-FR02-01 22×19/216 豆 → TestBuiltinMap
 """
 from __future__ import annotations
 
+import os
 import unittest
-from pathlib import Path
 
-from tests._path import code_dir
+from tests._path import code_dir  # noqa: F401
 
-from pacman.map import GameMap, MapError, Pos, Tile
+from pacman.map import MapError, Tile, load_map
 
 from tests.fixtures import (
-    BAD_FEW_DOTS,
-    BAD_FEW_POWER,
-    BAD_HOUSE_OPEN,
-    BAD_ILLEGAL_CHAR,
-    BAD_NO_DOOR,
-    BAD_NO_HOUSE,
-    BAD_NO_PLAYER,
-    BAD_VARIABLE_WIDTH,
-    GOOD_22x19,
+    BAD_FEW_POWER, BAD_ILLEGAL_CHAR, BAD_NO_DOOR, BAD_NO_HOUSE, BAD_NO_PLAYER,
+    BAD_VARIABLE_WIDTH, GOOD_22x19, builtin_map, write_map_tmp,
+)
+
+
+# ---------------------------------------------------------------------------
+# 28×31 合规格地图（程序化构造 + 字符串常量）
+# 布局参照经典 22×19：H 行 + 门行 + 走廊，4 能量豆 + 充足普通豆 + PP 出生区
+# ---------------------------------------------------------------------------
+
+LARGE_28x31 = (
+    "############################\n"
+    "#..........................#\n"
+    "#.......###.......###......#\n"
+    "#..........................#\n"
+    "#.......###.......###......#\n"
+    "#..........................#\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##HHHHHHHH####.######\n"
+    "######.##--------####.######\n"
+    "######.##........####.######\n"
+    "######.######.#.#####.######\n"
+    "#............PP............#\n"
+    "#.......###.......###......#\n"
+    "#..........................#\n"
+    "#.......###.......###......#\n"
+    "#o........................o#\n"
+    "#o........................o#\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "######.##############.######\n"
+    "############################\n"
 )
 
 
 class TestBuiltinMap(unittest.TestCase):
-    """内置 22×19 经典地图与 TC-A2 验收口径。"""
+    """T-FR02-01 / T-FR02-02：内置 22×19 经典地图。"""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.m = GameMap.load(code_dir() / "pacman" / "data" / "map_classic.txt")
+    def setUp(self):
+        self.gm = builtin_map()
 
-    def test_size(self):
-        self.assertEqual(self.m.height, 19)
-        self.assertEqual(self.m.width, 22)
+    def test_dimensions(self):
+        self.assertEqual(self.gm.rows, 19)
+        self.assertEqual(self.gm.cols, 22)
 
-    def test_initial_dots_total(self):
-        # TC-A2：豆子总数 216（普通 212 + 能量 4）
-        self.assertEqual(self.m.initial_dots, 216)
+    def test_dot_count_216(self):
+        self.assertEqual(self.gm.initial_dots, 216)
 
-    def test_dot_count_split(self):
-        dots = sum(1 for r in self.m._template for t in r if t is Tile.DOT)
-        powers = sum(1 for r in self.m._template for t in r if t is Tile.POWER)
-        self.assertEqual(dots, 212)
-        self.assertEqual(powers, 4)
+    def test_player_spawn_inside_arena(self):
+        r, c = self.gm.player_spawn
+        self.assertEqual((r, c), (12, 9))
+        self.assertEqual(self.gm.tile_at(r, c), Tile.PLAYER_SPAWN)
 
-    def test_player_start(self):
-        # TC-A2：玩家出生点 row12 col9~10（mid → col10）
-        self.assertEqual(self.m.player_start, Pos(12, 10))
+    def test_ghost_house_enclosed_with_door(self):
+        self.assertGreaterEqual(len(self.gm.house_cells), 1)
+        self.assertGreaterEqual(len(self.gm.door_cells), 1)
 
-    def test_house_enclosure(self):
-        # TC-A2：鬼屋 (row9 col7~14)
-        self.assertEqual(self.m.house_cells, tuple(Pos(9, c) for c in range(7, 15)))
-        # 门 (row10 col8~13)
-        self.assertEqual(self.m.door_cells, tuple(Pos(10, c) for c in range(8, 14)))
-
-    def test_ghost_home_midpoint(self):
-        # ghost_home 取鬼屋排序后的中位 cell
-        self.assertEqual(self.m.ghost_home, Pos(9, 11))
-
-    def test_initial_dots_meets_minimum(self):
-        # FR-02/TC-A2：豆子 ≥100
-        self.assertGreaterEqual(self.m.initial_dots, 100)
+    def test_spawn_not_adjacent_to_house(self):
+        """T-FR02-02：玩家出生区与鬼屋不相邻。"""
+        sr, sc = self.gm.player_spawn
+        for hr, hc in self.gm.house_cells:
+            d = abs(sr - hr) + abs(sc - hc)
+            self.assertGreaterEqual(d, 2, f"spawn {(sr,sc)} too close to house {(hr, hc)}")
 
 
-class TestMapConnectivity(unittest.TestCase):
-    """TC-A3：玩家/幽灵通道 BFS 连通性。"""
+class TestConnectivityAndDoor(unittest.TestCase):
+    """T-MAP-01/02/03：三项离线判定对内置地图均通过。"""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.m = GameMap.load(code_dir() / "pacman" / "data" / "map_classic.txt")
-        # 计算可达集
-        cls.player_reachable = cls.m._reachable(cls.m.player_start, False)
-        cls.ghost_reachable = cls.m._reachable(cls.m.house_cells[0], True)
+    def test_load_succeeds(self):
+        gm = load_map(str(code_dir() / "pacman" / "data" / "map_classic.txt"))
+        self.assertGreater(gm.initial_dots, 100)
 
-    def test_player_reach_all_passable(self):
-        required = {
-            Pos(r, c)
-            for r, row in enumerate(self.m._template)
-            for c, t in enumerate(row)
-            if t in (Tile.EMPTY, Tile.DOT, Tile.POWER)
-        }
-        self.assertEqual(required - self.player_reachable, set())
+    def test_load_succeeds_for_good_text(self):
+        p = write_map_tmp(GOOD_22x19)
+        try:
+            gm = load_map(p)
+            self.assertEqual(gm.initial_dots, 216)
+        finally:
+            os.unlink(p)
 
-    def test_ghost_reach_all_non_wall(self):
-        required = {
-            Pos(r, c)
-            for r, row in enumerate(self.m._template)
-            for c, t in enumerate(row)
-            if t is not Tile.WALL
-        }
-        self.assertEqual(required - self.ghost_reachable, set())
-
-    def test_door_only_for_ghost(self):
-        # 玩家不可穿过门，鬼可以
-        self.assertFalse(self.m.passable(Pos(10, 10), for_ghost=False))
-        self.assertTrue(self.m.passable(Pos(10, 10), for_ghost=True))
+    def test_is_passable_player_excludes_house(self):
+        gm = builtin_map()
+        hr, hc = next(iter(gm.house_cells))
+        self.assertFalse(gm.is_passable_for_player(hr, hc))
+        self.assertFalse(gm.is_passable_for_player(0, 0))
 
 
-class TestLoadValidCustomMap(unittest.TestCase):
-    """TC-A4：合法自定义地图加载（绕过 terminal 尺寸约束）。"""
+class TestInvalidMap(unittest.TestCase):
+    """T-MAP-04：6 型非法地图逐一被 load_map 拦截（MapError 异常）。"""
 
-    def test_classic_22x19_loads(self):
-        # TC-A4：用 GOOD_22x19 验证合法自定义地图加载
-        m = GameMap.from_text(GOOD_22x19, source="<test>")
-        self.assertEqual(m.height, 19)
-        self.assertEqual(m.width, 22)
-        # 至少 100 颗豆
-        self.assertGreaterEqual(m.initial_dots, 100)
+    def _assert_rejected(self, text: str, hint_substr: str = ""):
+        p = write_map_tmp(text)
+        try:
+            with self.assertRaises(MapError) as ctx:
+                load_map(p)
+            if hint_substr:
+                self.assertIn(hint_substr, str(ctx.exception))
+        finally:
+            os.unlink(p)
 
+    def test_variable_row_width(self):
+        self._assert_rejected(BAD_VARIABLE_WIDTH, "行宽")
 
-class TestInvalidMapVariants(unittest.TestCase):
-    """TC-A5 / TC-X7：非法地图矩阵 → MapError（含定位信息）。"""
+    def test_illegal_char(self):
+        self._assert_rejected(BAD_ILLEGAL_CHAR, "非法字符")
 
-    def _assert_with_context(self, text: str, substring: str, source: str = "<test>"):
-        with self.assertRaises(MapError) as ctx:
-            GameMap.from_text(text, source=source)
-        self.assertIn(substring, str(ctx.exception))
+    def test_no_player_spawn(self):
+        self._assert_rejected(BAD_NO_PLAYER, "P")
 
-    def test_variable_width(self):
-        self._assert_with_context(BAD_VARIABLE_WIDTH, "第 17 行宽度")
+    def test_too_few_power_pellets(self):
+        self._assert_rejected(BAD_FEW_POWER, "能量豆")
 
-    def test_illegal_char_with_position(self):
-        self._assert_with_context(BAD_ILLEGAL_CHAR, "非法字符")
-
-    def test_no_player(self):
-        self._assert_with_context(BAD_NO_PLAYER, "缺少玩家出生标记 P")
-
-    def test_too_few_power(self):
-        self._assert_with_context(BAD_FEW_POWER, "能量豆至少需要 4 个")
-
-    def test_no_house(self):
-        self._assert_with_context(BAD_NO_HOUSE, "缺少鬼屋 H")
+    def test_no_ghost_house(self):
+        self._assert_rejected(BAD_NO_HOUSE, "H")
 
     def test_no_door(self):
-        self._assert_with_context(BAD_NO_DOOR, "缺少鬼屋门 -")
-
-    def test_house_open(self):
-        self._assert_with_context(BAD_HOUSE_OPEN, "鬼屋")
-
-    def test_too_few_dots(self):
-        self._assert_with_context(BAD_FEW_DOTS, "豆子总数至少需要 100")
+        self._assert_rejected(BAD_NO_DOOR, "门")
 
 
 class TestMissingFile(unittest.TestCase):
-    """TC-X6：路径不存在 → MapError 含 '不存在'。"""
+    """T-MAP-06：--map 指向不存在文件。"""
 
-    def test_missing_path(self):
+    def test_nonexistent_path_raises(self):
         with self.assertRaises(MapError) as ctx:
-            GameMap.load(Path("/nonexistent/path/to.map"))
+            load_map("/tmp/pacman_definitely_does_not_exist_xyz_12345.txt")
         self.assertIn("不存在", str(ctx.exception))
 
 
-class TestTileQueries(unittest.TestCase):
-    """通用查询语义：in_bounds / clamp / tile_at / consume / dots_left。"""
+class TestCustomMap28x31Valid(unittest.TestCase):
+    """T-MAP-05：28×31 合规格自定义地图加载通过三项离线判定。"""
 
-    def setUp(self):
-        self.m = GameMap.load(code_dir() / "pacman" / "data" / "map_classic.txt")
-
-    def test_in_bounds(self):
-        self.assertTrue(self.m.in_bounds(Pos(0, 0)))
-        self.assertTrue(self.m.in_bounds(Pos(18, 21)))
-        self.assertFalse(self.m.in_bounds(Pos(-1, 0)))
-        self.assertFalse(self.m.in_bounds(Pos(19, 0)))
-        self.assertFalse(self.m.in_bounds(Pos(0, 22)))
-
-    def test_clamp(self):
-        self.assertEqual(self.m.clamp(Pos(-5, 100)), Pos(0, 21))
-        self.assertEqual(self.m.clamp(Pos(50, -5)), Pos(18, 0))
-
-    def test_tile_out_of_bounds_is_wall(self):
-        self.assertIs(self.m.tile_at(Pos(-1, 0)), Tile.WALL)
-        self.assertIs(self.m.tile_at(Pos(100, 100)), Tile.WALL)
-
-    def test_consume_dot_decrements(self):
-        before = self.m.dots_left()
-        # 找一颗普通豆子
-        for r in range(self.m.height):
-            for c in range(self.m.width):
-                if self.m.tile_at(Pos(r, c)) is Tile.DOT:
-                    self.m.consume(Pos(r, c))
-                    self.assertEqual(self.m.dots_left(), before - 1)
-                    self.assertIs(self.m.tile_at(Pos(r, c)), Tile.EMPTY)
-                    return
-        self.fail("no dot found")
-
-    def test_consume_empty_returns_empty(self):
-        empty = Pos(1, 1)  # 必然是墙
-        # 用一个 EMPTY 位置：地图第 1 行 (index 0) 是墙，找一个可达的空地
-        for r in range(self.m.height):
-            for c in range(self.m.width):
-                if self.m.tile_at(Pos(r, c)) is Tile.EMPTY:
-                    self.assertIs(self.m.consume(Pos(r, c)), Tile.EMPTY)
-                    return
-        self.fail("no empty cell")
-
-    def test_passable_wall(self):
-        # 玩家视角：墙不可穿
-        self.assertFalse(self.m.passable(Pos(0, 0), for_ghost=False))
-        self.assertFalse(self.m.passable(Pos(0, 0), for_ghost=True))
+    def test_load_succeeds(self):
+        p = write_map_tmp(LARGE_28x31)
+        try:
+            gm = load_map(p)
+            self.assertEqual(gm.rows, 31)
+            self.assertEqual(gm.cols, 28)
+            self.assertGreaterEqual(gm.initial_dots, 100)
+            self.assertGreaterEqual(len(gm.house_cells), 1)
+            self.assertGreaterEqual(len(gm.door_cells), 1)
+            # 出生点 PP 存在
+            self.assertEqual(gm.tile_at(gm.player_spawn[0], gm.player_spawn[1]), Tile.PLAYER_SPAWN)
+        finally:
+            os.unlink(p)
 
 
 if __name__ == "__main__":

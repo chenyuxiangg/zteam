@@ -4,6 +4,16 @@
 
 ![status](https://img.shields.io/badge/status-ready-brightgreen) ![python](https://img.shields.io/badge/python-≥3.8-blue) ![deps](https://img.shields.io/badge/deps-0-pip-success)
 
+## 0. 本轮信息
+
+- **本目录为 r1 第 1 轮 code 阶段产物**（2026-08-10 启动）
+- **需求**：pacman/pacman（项目 pacman）；依据 `analysis/pacman-r3.md` + `plans/pacman-r1.md` + `testplans/pacman-r1.md`
+- **pre-requeue 旧版产物**：已归档到 `archive/code-pacman-r1-source-pre-requeue-20260810/`（与旧 review 一并存档，未丢失历史）
+- **本轮相对旧版的差异**（详见 §11 修改回应表）：
+  - **config.py**：删除 r1 评审建议 2 指出的死代码常量 `SCATTER_CHASE_SCHEDULE`（定义但未引用；SCATTER/CHASE 交替由 `ModeController.phase + scatter_duration_for_level / chase_duration_for_level` 驱动，行为不变）
+  - **renderer.py**：清理 r1 评审建议 1 指出的 `_init_colors` 死代码样式（`init_pair(... if False else 208, ...) if False else init_pair(COLOR_YELLOW)` 嵌套），改为一行直白 `init_pair(COLOR_CLYDE, COLOR_YELLOW, -1)`，便于维护与静态分析
+  - 其余模块（map/entities/ghost_ai/game/input/main/run/__init__/__main__）相对旧版逻辑无变化；模块文件头新增本轮信息注释
+
 ## 1. 依赖安装
 
 本游戏**零第三方 pip 依赖**，所有功能使用 Python 标准库。
@@ -193,6 +203,40 @@ except Exception as e: print('OK:', e)
 
 # 7. 非法参数拦截
 python3 -m pacman --ghosts 5   # 期望报错退出
+
+# 8. 难度公式边界
+python3 -c "
+from pacman.config import (
+    ghost_speed_for_level, power_duration_for_level,
+    scatter_duration_for_level, elroy_threshold_for_level,
+    inky_release_dots_for_level, clyde_release_dots_for_level,
+)
+for L in (1, 5, 10, 20, 50):
+    print(L, ghost_speed_for_level(L), power_duration_for_level(L),
+          scatter_duration_for_level(L), elroy_threshold_for_level(L),
+          inky_release_dots_for_level(L), clyde_release_dots_for_level(L))
+"
+
+# 9. 连吃封顶
+python3 -c "
+from pacman.map import load_map
+from pacman.entities import Ghost, Player
+from pacman.game import Game
+from pacman.config import Config, Kind, Mode, GHOST_CHAIN_SCORES
+gm = load_map('pacman/data/map_classic.txt')
+g = Game(gm, Config())
+g.eaten_chain = 0
+g.score = 0
+# 模拟 5 只连吃
+points = []
+for i in range(5):
+    idx = min(g.eaten_chain, len(GHOST_CHAIN_SCORES) - 1)
+    p = GHOST_CHAIN_SCORES[idx]
+    g.score += p
+    points.append(p)
+    g.eaten_chain += 1
+print('连吃得分序列:', points, '（应 = 200/400/800/1600/1600 封顶）')
+"
 ```
 
 ## 10. 验收对照（FR / NFR）
@@ -226,6 +270,17 @@ python3 -m pacman --ghosts 5   # 期望报错退出
 | NFR-06 安全/隐私 | 无网络 import（`grep "^(import\|from) (socket\|urllib\|requests)"` 为空） |
 | NFR-07 可维护性 | 模块顶部 docstring 标注职责/依赖/对应方案节 |
 
-## 11. 许可
+## 11. 修改回应表（本轮调整）
+
+> pre-requeue 旧版 `code/pacman-r1-review.md` 评审结论 PASS，并附 2 条建议级意见（不阻塞）。本轮依建议逐条回应：
+
+| 旧评审编号 | 意见摘要 | 本轮处理 | 说明 |
+|------------|----------|----------|------|
+| 评审建议 1 | `renderer.py:72` 颜色初始化行存在嵌套 `if False else` 死代码样式，可读性差 | **已修复** | 改为一行 `curses.init_pair(COLOR_CLYDE, curses.COLOR_YELLOW, -1)`，逻辑等价（之前等价于该调用），便于维护与静态分析 |
+| 评审建议 2 | `config.py:140-143` `SCATTER_CHASE_SCHEDULE` 常量定义但未引用 | **已修复** | 删除该常量（模式切换由 `ModeController.phase + scatter_duration_for_level / chase_duration_for_level` 驱动，行为完整不变），仅保留注释说明 PHASE_COUNT 与交替表语义 |
+| 评审遗留事项 1 | 方案已声明的简化项（Blinky 同屋出生、Elroy 简化公式、能量时长下限 1s、原版计分、Pinky/Inky up-bug 忠实复刻、不做最高分持久化）需 release 阶段 release notes 再给用户视角说明 | 转交 release 阶段 | 本 code 阶段在 README §8 已逐条记录；releaser 引用即可 |
+| 评审遗留事项 2 | 自动化测试代码不在本 code 阶段产物内（按角色红线交由 test-developer） | 转交 test 阶段 | 已确认 `code/pacman-r1/` 下无 `tests/` 目录；test 阶段独立产出 |
+
+## 12. 许可
 
 本项目按需求方授权交付；如需开源可自由选择许可协议。

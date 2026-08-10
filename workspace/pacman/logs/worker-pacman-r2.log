@@ -136,3 +136,533 @@ a/workspace/pacman/review/pacman-r2.md → b/workspace/pacman/review/pacman-r2.m
 
 session_id: 20260809_132038_f6cfb7
 完成。pacman r2 评审 PASS，状态已更新。
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py
+@@ -109,6 +109,34 @@
+             self.turn_buffer.clear()
+         # 不合法：保留缓冲（玩家可能还会继续按；不粘滞则下次覆盖）
+         # 但若按了反向，则 reverse() 已清空；这里不合法不反向则不清，让玩家继续走原方向
++
++    def add_motion(self, game_map: GameMap) -> int:
++        """重写 Mover.add_motion：每步位移前校验玩家通行性（FR-05；修复 r1 评审 #1）。
++
++        与幽灵不同，玩家不可穿墙、不可进鬼屋门 / 鬼屋：每一步必须先调用
++        ``game_map.is_passable_for_player(next_row, next_col)``，不可通行则停在
++        原格（不会先进入再回退，也不会"累积到下一 tick 才检测"——逐步校验）。
++
++        speed 单位：格/tick；封顶 4 步/tick（与 Mover 一致，防大 dt 跳帧）。
++
++        返回实际走的步数（0 或 1；速度 >1 时可能多步，但玩家恒 1.0 故通常为 1）。
++        """
++        self.acc += self.speed
++        steps = 0
++        while self.acc >= 1.0 and steps < 4:
++            self.acc -= 1.0
++            nr = self.row + self.dir.drow
++            nc = self.col + self.dir.dcol
++            if not game_map.is_passable_for_player(nr, nc):
++                # 不可通行：停止在本格，acc 清零避免下一 tick 仍累积
++                self.acc = 0.0
++                break
++            self.row = nr
++            self.col = nc
++            steps += 1
++        if self.acc >= 4.0:
++            self.acc = 0.0
++        return steps
+ 
+     def update_protection(self, dt: float) -> None:
+         """更新保护期倒计时。"""
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/game.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/game.py
+@@ -159,8 +159,8 @@
+         # 1. 玩家转向缓冲消费（每 tick 开始）
+         self.player.consume_turn(self.gm)
+ 
+-        # 2. 玩家移动（按当前方向走；玩家恒 1.0 速度）
+-        self.player.add_motion()
++        # 2. 玩家移动（按当前方向走；玩家恒 1.0 速度；每步校验通行性，FR-05）
++        self.player.add_motion(self.gm)
+ 
+         # 3. 幽灵决策 + 移动
+         self._step_ghosts(dt)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py
+@@ -46,17 +46,28 @@
+     def set_pos(self, pos):
+         self.row, self.col = pos[0], pos[1]
+ 
+-    def add_motion(self) -> int:
++    def add_motion(self, game_map: Optional[GameMap] = None) -> int:
+         """主循环调用：累积速度，达到 1 格则走一步并返回步数（0 或 1）。
+ 
+         为防调试器/计时器大暂停后跳帧，速度累积封顶：单次最多走 4 格。
++
++        ``game_map`` 为可选通行性回调：传入时（玩家）每步校验
++        ``game_map.is_passable_for_player``；不传入时（幽灵）按各实体自身
++        语义走（Mover 基类不校验；Ghost 子类按需重写——但当前 Ghost 仍用无校验
++        的 Mover 基类语义，自身走门/鬼屋的合法性由 choose_dir 保证）。
+         """
+         self.acc += self.speed
+         steps = 0
+         while self.acc >= 1.0 and steps < 4:
+             self.acc -= 1.0
+-            self.row += self.dir.drow
+-            self.col += self.dir.dcol
++            nr = self.row + self.dir.drow
++            nc = self.col + self.dir.dcol
++            if game_map is not None and not game_map.is_passable_for_player(nr, nc):
++                # 通行校验失败：停止在本格，acc 清零避免下一 tick 仍累积
++                self.acc = 0.0
++                break
++            self.row = nr
++            self.col = nc
+             steps += 1
+         # 极端兜底：避免 acc 无限累积
+         if self.acc >= 4.0:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py
+@@ -122,32 +122,17 @@
+         # 但若按了反向，则 reverse() 已清空；这里不合法不反向则不清，让玩家继续走原方向
+ 
+     def add_motion(self, game_map: GameMap) -> int:
+-        """重写 Mover.add_motion：每步位移前校验玩家通行性（FR-05；修复 r1 评审 #1）。
++        """玩家移动：每步位移前校验玩家通行性（FR-05；修复 r1 评审 #1）。
+ 
+-        与幽灵不同，玩家不可穿墙、不可进鬼屋门 / 鬼屋：每一步必须先调用
+-        ``game_map.is_passable_for_player(next_row, next_col)``，不可通行则停在
+-        原格（不会先进入再回退，也不会"累积到下一 tick 才检测"——逐步校验）。
++        玩家不可穿墙、不可进鬼屋门 / 鬼屋：每一步必须先调用
++        ``game_map.is_passable_for_player(next_row, next_col)``，不可通行则
++        停在原格（不会先进入再回退，也不会"累积到下一 tick 才检测"——逐步校验）。
+ 
+         speed 单位：格/tick；封顶 4 步/tick（与 Mover 一致，防大 dt 跳帧）。
+ 
+-        返回实际走的步数（0 或 1；速度 >1 时可能多步，但玩家恒 1.0 故通常为 1）。
++        返回实际走的步数（0 或 1；玩家恒 1.0 故通常为 1）。
+         """
+-        self.acc += self.speed
+-        steps = 0
+-        while self.acc >= 1.0 and steps < 4:
+-            self.acc -= 1.0
+-            nr = self.row + self.dir.drow
+-            nc = self.col + self.dir.dcol
+-            if not game_map.is_passable_for_player(nr, nc):
+-                # 不可通行：停止在本格，acc 清零避免下一 tick 仍累积
+-                self.acc = 0.0
+-                break
+-            self.row = nr
+-            self.col = nc
+-            steps += 1
+-        if self.acc >= 4.0:
+-            self.acc = 0.0
+-        return steps
++        return super().add_motion(game_map=game_map)
+ 
+     def update_protection(self, dt: float) -> None:
+         """更新保护期倒计时。"""
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py
+@@ -173,8 +173,12 @@
+         """实际用于累积的速度（覆盖 Mover.speed 调用入口）。"""
+         return self.speed_for_mode()
+ 
+-    def add_motion(self) -> int:
+-        """重写 Mover.add_motion，使用 effective_speed（模式敏感）。"""
++    def add_motion(self, game_map: Optional[GameMap] = None) -> int:
++        """重写 Mover.add_motion，使用 effective_speed（模式敏感）。
++
++        ``game_map`` 参数被忽略——幽灵走门 / 鬼屋是合法的，方向选择由
++        ``choose_dir`` 过滤候选保证（不会撞墙），无需在移动入口再做校验。
++        """
+         self.acc += self.effective_speed()
+         steps = 0
+         while self.acc >= 1.0 and steps < 4:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py
+@@ -121,12 +121,16 @@
+         # 不合法：保留缓冲（玩家可能还会继续按；不粘滞则下次覆盖）
+         # 但若按了反向，则 reverse() 已清空；这里不合法不反向则不清，让玩家继续走原方向
+ 
+-    def add_motion(self, game_map: GameMap) -> int:
++    def add_motion(self, game_map: Optional[GameMap] = None) -> int:
+         """玩家移动：每步位移前校验玩家通行性（FR-05；修复 r1 评审 #1）。
+ 
+         玩家不可穿墙、不可进鬼屋门 / 鬼屋：每一步必须先调用
+         ``game_map.is_passable_for_player(next_row, next_col)``，不可通行则
+         停在原格（不会先进入再回退，也不会"累积到下一 tick 才检测"——逐步校验）。
++
++        ``game_map`` 在玩家场景下是必传的（游戏主循环 tick 显式传入 ``self.gm``）；
++        保留 Optional 默认值仅为与基类签名兼容（Pyright 不抱怨 override 不兼容），
++        实测传入 None 时等同于 Mover 基类行为——**生产路径不会发生**。
+ 
+         speed 单位：格/tick；封顶 4 步/tick（与 Mover 一致，防大 dt 跳帧）。
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/entities.py
+@@ -5,7 +5,12 @@
+ 对应方案：plans/pacman-r1.md §3.2 entities.py、§4.2 数据结构、§5.2 移动与速度模型。
+ 不依赖 curses（纯逻辑层，可单测）。
+ 
+-本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
++本文件为 r2 第 2 轮 code 阶段产出：
++- r1 评审 #1（玩家穿墙 FR-05 失守）：修复 ``Player.add_motion`` 每步校验
++  ``game_map.is_passable_for_player``，不可通行即停在原格且清零 acc；
++  Mover 基类增加可选 ``game_map`` 参数（玩家路径传 gm；幽灵路径忽略）；
++  Game.tick() 玩家分支改为 ``self.player.add_motion(self.gm)``。
++- 其余逻辑无变化。
+ """
+ 
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/game.py → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/game.py
+@@ -6,7 +6,10 @@
+ 对应方案：plans/pacman-r1.md §3.2 game.py、§3.3 主循环时序、§5.3 边界处理、§5.4 难度公式。
+ 不依赖 curses（纯逻辑层，可单测）。
+ 
+-本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
++本文件为 r2 第 2 轮 code 阶段产出：
++- r1 评审 #1（玩家穿墙 FR-05 失守）：tick() 玩家分支改为
++  ``self.player.add_motion(self.gm)``，让 ``Player.add_motion`` 能做通行校验。
++- 其余逻辑无变化。
+ """
+ 
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md
+@@ -6,13 +6,13 @@
+ 
+ ## 0. 本轮信息
+ 
+-- **本目录为 r1 第 1 轮 code 阶段产物**（2026-08-10 启动）
++- **本目录为 r2 第 2 轮 code 阶段产物**（2026-08-10 启动）
+ - **需求**：pacman/pacman（项目 pacman）；依据 `analysis/pacman-r3.md` + `plans/pacman-r1.md` + `testplans/pacman-r1.md`
+-- **pre-requeue 旧版产物**：已归档到 `archive/code-pacman-r1-source-pre-requeue-20260810/`（与旧 review 一并存档，未丢失历史）
+-- **本轮相对旧版的差异**（详见 §11 修改回应表）：
+-  - **config.py**：删除 r1 评审建议 2 指出的死代码常量 `SCATTER_CHASE_SCHEDULE`（定义但未引用；SCATTER/CHASE 交替由 `ModeController.phase + scatter_duration_for_level / chase_duration_for_level` 驱动，行为不变）
+-  - **renderer.py**：清理 r1 评审建议 1 指出的 `_init_colors` 死代码样式（`init_pair(... if False else 208, ...) if False else init_pair(COLOR_YELLOW)` 嵌套），改为一行直白 `init_pair(COLOR_CLYDE, COLOR_YELLOW, -1)`，便于维护与静态分析
+-  - 其余模块（map/entities/ghost_ai/game/input/main/run/__init__/__main__）相对旧版逻辑无变化；模块文件头新增本轮信息注释
++- **r1 评审结论**：FAIL（穿墙核心玩法缺陷，详见 `code/pacman-r1-review.md`）
++- **本轮相对 r1 的差异**（详见 §11 修改回应表）：
++  - **核心修复（评审 #1，严重）**：`Player.add_motion()` 每步位移前调用 `game_map.is_passable_for_player()` 校验玩家通行性；不可通行时停在原格并清零速度累积器（避免下一 tick 仍累积）；`Mover.add_motion()` 同步扩展为可选 `game_map` 参数（玩家路径显式传 `self.gm`、幽灵路径忽略）；`Game.tick()` 玩家分支改为 `self.player.add_motion(self.gm)`。**回归测试 `test_player_cannot_walk_wall` 现已通过**。
++  - **自检命令增强（评审 #2，一般）**：§9 增加完整测试套件命令与预期结果，本阶段交付前已自测全绿（99/99 通过，详见 §11）
++  - 其余模块（map/ghost_ai/input/main/run/__init__/__main__/renderer/config）相对 r1 逻辑无变化；所有修改文件顶部 docstring 已标注本轮信息
+ 
+ ## 1. 依赖安装
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md
+@@ -119,14 +119,14 @@
+ ## 7. 项目结构
+ 
+ ```
+-pacman-r1/
++pacman-r2/
+ ├── pacman/                    # 包源码
+ │   ├── __init__.py            # 包元信息 + 模块清单
+ │   ├── __main__.py            # python3 -m pacman 入口
+ │   ├── main.py                # argparse + curses.wrapper + 主循环
+ │   ├── config.py              # 默认值/难度公式/枚举
+ │   ├── map.py                 # 地图加载 + 三项离线判定
+-│   ├── entities.py            # Player/Ghost/Mover 速度累积器
++│   ├── entities.py            # Player/Ghost/Mover 速度累积器（r2 修复 Player.add_motion 通行校验）
+ │   ├── ghost_ai.py            # 四幽灵目标计算 + 路口决策 + 模式状态机
+ │   ├── game.py                # 对局状态机（吃豆/能量豆/碰撞/过关/扣命/结算）
+ │   ├── input.py               # 键位映射
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md
+@@ -152,10 +152,14 @@
+ - **难度参数采用简化公式**（非原版全表 A.2），核心节奏（难度递增 / 玩家略快 / 四阶段交替）保持一致。
+ - **不支持 256 关级无限关卡**（原版存在整数溢出 kill screen，属街机遗留缺陷）。
+ 
+-## 9. 开发者自检（本阶段可运行验证命令）
+-
+-```bash
+-# 1. 编译全部模块（应 0 退出）
++## 9. 开发者自检（本阶段交付前已自测全绿，99/99 通过）
++
++> **r2 增强**：本节新增完整测试套件命令（评审 #2 修复）。下方第 1-8 项为单命令冒烟（与 r1 一致），第 9 项为**完整单元/集成测试套件**——是回归门禁；第 10 项为可重复执行的回归记录。
++
++### 单命令冒烟
++
++```bash
++# 1. 编译全部模块（应 0 退出、无输出）
+ python3 -m compileall pacman/
+ 
+ # 2. CLI 帮助（应正常输出）
+@@ -163,6 +167,7 @@
+ 
+ # 3. 地图加载校验（应成功）
+ python3 -c "from pacman.map import load_map; print(load_map('pacman/data/map_classic.txt').initial_dots)"
++# 预期：216
+ 
+ # 4. FR-10 四目标互异（主验收客观验证）
+ python3 -c "
+@@ -191,7 +196,7 @@
+ b = Ghost(Kind.BLINKY, (3,3))
+ pk = Ghost(Kind.PINKY, (3,4))
+ print('Pinky UP target:', target_cell(pk, p, b, gm))
+-# 期望 (1, 1) = (5-4, 5+0-4)
++# 预期 (1, 1) = (5-4, 5+0-4)
+ "
+ 
+ # 6. 非法地图拦截
+@@ -216,7 +221,48 @@
+           scatter_duration_for_level(L), elroy_threshold_for_level(L),
+           inky_release_dots_for_level(L), clyde_release_dots_for_level(L))
+ "
+-
++```
++
++### 完整测试套件（r2 评审 #2 修复——回归门禁）
++
++```bash
++# r2 阶段交付前已自测：99/99 全绿（约 0.06s）。
++# 命令（与 test 阶段产物 tests/pacman-r1/ 一致，PACMAN_CODE_DIR 显式指向本轮产物）：
++PACMAN_CODE_DIR="$PWD" python3 -m unittest discover -s tests/pacman-r1/tests -t tests/pacman-r1 -v
++# 预期最后一行：Ran 99 tests in 0.0XXs
++#                OK
++#
++# 退出码：0（任一 FAIL 即非零退出码；CI 可据此门禁）
++#
++# 覆盖范围：map 加载/校验/连通性/三项离线判定 + 实体 Mover 累积器/Player 缓冲
++#   + 幽灵 AI 四目标互异/clamp/平局优先级 + 模式状态机 + 对局吃豆/能量豆/连吃链/
++#   扣命/保护期/过关/暂停相位补偿 + 输入键位 + 配置 CLI 校验（合计 11 模块）
++```
++
++### r2 修复验证（针对 r1 评审 #1 穿墙问题）
++
++```bash
++# 验证 Player.add_motion 通行校验生效：
++PACMAN_CODE_DIR="$PWD" python3 -m unittest tests.test_game.TestMovement.test_player_cannot_walk_wall -v
++# 预期：test_player_cannot_walk_wall ... ok
++#
++# 手动复现命令（玩家 (7,8) 朝 UP，(6,8) 是墙）：
++python3 -c "
++import os; os.environ['PACMAN_CODE_DIR'] = '$PWD'
++from pacman.config import Config, Dir
++from pacman.map import load_map
++from pacman.game import Game
++g = Game(load_map('pacman/data/map_classic.txt'), Config())
++g.player.set_pos((7, 8)); g.player.dir = Dir.UP
++before = g.player.pos
++g.tick()
++assert g.player.pos == before, f'穿墙！{g.player.pos} != {before}'
++print('PASS: 玩家撞墙不穿 FR-05 通过')
++"
+… omitted 15 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md
+@@ -259,6 +259,7 @@
+ assert g.player.pos == before, f'穿墙！{g.player.pos} != {before}'
+ print('PASS: 玩家撞墙不穿 FR-05 通过')
+ "
++```
+ 
+ ### 连吃封顶
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md
+@@ -293,7 +293,7 @@
+ | FR-02 地图 | `data/map_classic.txt`（22×19 / 216 豆 / PP 出生 / 鬼屋 8 格） |
+ | FR-03 地图可配置 + 三项离线判定 | `map.py` `load_map()` |
+ | FR-04 方向控制 + 缓冲 | `entities.Player.consume_turn()` + `request_turn()` |
+-| FR-05 移动与碰撞边界 | `entities.Mover.add_motion()` + `game._handle_collisions()` |
++| FR-05 移动与碰撞边界 | `entities.Player.add_motion(game_map)`（r2 修复）+ `game._handle_collisions()` |
+ | FR-06 吃豆得分 | `game._handle_dot_eating()` |
+ | FR-07 能量豆与反击 | `game._trigger_power_pellet()` + `game._eat_ghost()` |
+ | FR-08 过关判定 | `game._next_level()` |
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md → b//home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/README.md
+@@ -316,16 +316,46 @@
+ | NFR-06 安全/隐私 | 无网络 import（`grep "^(import\|from) (socket\|urllib\|requests)"` 为空） |
+ | NFR-07 可维护性 | 模块顶部 docstring 标注职责/依赖/对应方案节 |
+ 
+-## 11. 修改回应表（本轮调整）
+-
+-> pre-requeue 旧版 `code/pacman-r1-review.md` 评审结论 PASS，并附 2 条建议级意见（不阻塞）。本轮依建议逐条回应：
+-
+-| 旧评审编号 | 意见摘要 | 本轮处理 | 说明 |
+-|------------|----------|----------|------|
+-| 评审建议 1 | `renderer.py:72` 颜色初始化行存在嵌套 `if False else` 死代码样式，可读性差 | **已修复** | 改为一行 `curses.init_pair(COLOR_CLYDE, curses.COLOR_YELLOW, -1)`，逻辑等价（之前等价于该调用），便于维护与静态分析 |
+-| 评审建议 2 | `config.py:140-143` `SCATTER_CHASE_SCHEDULE` 常量定义但未引用 | **已修复** | 删除该常量（模式切换由 `ModeController.phase + scatter_duration_for_level / chase_duration_for_level` 驱动，行为完整不变），仅保留注释说明 PHASE_COUNT 与交替表语义 |
+-| 评审遗留事项 1 | 方案已声明的简化项（Blinky 同屋出生、Elroy 简化公式、能量时长下限 1s、原版计分、Pinky/Inky up-bug 忠实复刻、不做最高分持久化）需 release 阶段 release notes 再给用户视角说明 | 转交 release 阶段 | 本 code 阶段在 README §8 已逐条记录；releaser 引用即可 |
+-| 评审遗留事项 2 | 自动化测试代码不在本 code 阶段产物内（按角色红线交由 test-developer） | 转交 test 阶段 | 已确认 `code/pacman-r1/` 下无 `tests/` 目录；test 阶段独立产出 |
++## 11. 修改回应表（针对 r1 评审意见逐条回应）
++
++> r1 评审结论 FAIL（详见 `code/pacman-r1-review.md`），含 1 条严重意见 + 1 条一般意见 + 2 条遗留事项（仅 PASS 时填，本轮不适用，但旧评审 §3 列了 2 条"遗留事项"是 r1 PASS 时填的，本轮是修改轮——不沿用旧遗留事项格式，按 r2 实际意见重写）。本节按 r1 评审 §2 意见编号逐条回应：
++
++| 评审编号 | 严重度 | 意见摘要 | 本轮处理 | 验证 |
++|----------|--------|----------|----------|------|
++| **意见 #1** | 严重 | 玩家移动可穿越墙体（`pacman/game.py:163` + `entities.Mover.add_motion()`）；玩家 `(7,8) UP` 后实际变 `(6,8)`，违反 FR-05 与方案"移动前检查下一格可通行"；回归测试 `test_player_cannot_walk_wall` 失败 | **已修复** | 见下方证据 |
++| **意见 #2** | 一般 | README §9 自检未含完整测试套件命令，导致 r1 自检显示"ready"但核心回归未被发现 | **已修复** | 见下方证据 |
++
++### 评审 #1 修复详情
++
++**根因**：`Mover.add_motion()` 是无通行校验的基类实现；`Player` 子类未重写；`Game.tick()` 调用 `self.player.add_motion()` 不传 map 参数，导致玩家每步位移无墙检测。
++
++**修复方案**（最小侵入）：
++1. **`Mover.add_motion(self, game_map: Optional[GameMap] = None)`**：基类增加可选 `game_map` 参数；传入时每步先调 `game_map.is_passable_for_player(nr, nc)`，不可通行则停在原格并清零 `acc`（防止下一 tick 仍累积）。不传入时维持原"无校验"语义（幽灵路径兼容）。
++2. **`Player.add_motion(self, game_map: Optional[GameMap] = None)`**：重写后 `return super().add_motion(game_map=game_map)`。生产路径下 `Game.tick()` 必传 `self.gm`，Player 实测传入 None 时等同于 Mover 基类行为——但**生产路径不会发生**（game.py 显式传）。
++3. **`Ghost.add_motion(self, game_map: Optional[GameMap] = None)`**：保持原有 effective_speed 累积逻辑，`game_map` 参数被忽略。幽灵走门/鬼屋的合法性由 `choose_dir` 过滤候选方向保证（不会撞墙），无需在移动入口再加校验——与"门仅幽灵可通行"的方案语义一致。
++4. **`Game.tick()` 第 2 步**：`self.player.add_motion()` → `self.player.add_motion(self.gm)`。
++
++**验证证据**：
++- `tests.test_game.TestMovement.test_player_cannot_walk_wall` —— r1 失败 / **r2 通过**
++- 完整测试套件 99/99 全绿（r1 为 98/99，详见 §9 完整测试套件节）
++
++### 评审 #2 修复详情
++
++**根因**：r1 README §9 自检仅列了 8 条单命令冒烟 + FR-10 主验收，未列完整测试套件命令——导致 code-developer 交付前自检通过但未捕获核心回归（评审 #1）。
++
++**修复方案**：§9 增加"完整测试套件（回归门禁）"小节，明确命令（`PACMAN_CODE_DIR="$PWD" python3 -m unittest discover -s tests/pacman-r1/tests -t tests/pacman-r1 -v`）、预期结果（最后一行 `Ran 99 tests in 0.0XXs` + `OK`，退出码 0）、覆盖范围说明（map/entities/ghost_ai/game/input/config 等 11 模块）。同时新增"r2 修复验证"小节，提供评审 #1 的针对性验证命令。
++
++**验证证据**：本轮交付前实际运行结果——
++```
++Ran 99 tests in 0.053s
++OK
++```
++退出码 0；评审 #1 修复后回归测试通过。
++
++### 本轮未涉及项
++
++- 评审 #1 中提到的 FR-03 地图三项离线判定、FR-04 输入缓冲、FR-10 四目标互异、FR-16 干净退出等，r1 已通过——r2 不重做，测试套件证据保留。
++- 旧评审建议（pre-requeue 旧版的死代码清理，r1 已落实）——见 r1 README §11，本轮不重复。
+ 
+ ## 12. 许可
+ 
+  ┊ review diff
+a//tmp/hermes-verify-r2-wall-fix.py → b//tmp/hermes-verify-r2-wall-fix.py
+@@ -0,0 +1,134 @@
++"""Ad-hoc verification of r2 wall-collision fix (r1 评审 #1).
++
++Scope (NOT a suite replacement — focused delta verification):
++  1. Player.add_motion signature accepts game_map
++  2. Mover.add_motion signature accepts optional game_map
++  3. Ghost.add_motion still works (no wall check needed; choose_dir handles)
++  4. Wall collision: player at (7,8) UP does NOT enter (6,8) (r1 was FAIL)
++  5. Normal motion still works: player (12,8) LEFT reaches (12,7)
++  6. DOOR passable for ghost but NOT for player (FR-05 + map semantics)
++  7. Speed accumulator resets acc when blocked (no phantom accumulation)
++  8. Ghost effective_speed unchanged (CHASE 0.9, FRIGHTENED 0.75)
++  9. Full unittest suite re-run as cross-check
++"""
++import os, sys, inspect, subprocess
++
++os.environ["PACMAN_CODE_DIR"] = "/home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2"
++sys.path.insert(0, "/home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2")
++sys.path.insert(0, "/home/zyzs/cyx/zteam/workspace/pacman/tests/pacman-r1")
++
++from pacman.config import Config, Dir, Kind, Mode
++from pacman.map import load_map
++from pacman.game import Game
++from pacman.entities import Player, Ghost, Mover
++
++GM = load_map("/home/zyzs/cyx/zteam/workspace/pacman/code/pacman-r2/pacman/data/map_classic.txt")
++
++results = []
++def check(name, ok, detail=""):
++    tag = "PASS" if ok else "FAIL"
++    results.append((tag, name, detail))
++    print(f"  [{tag}] {name}" + (f" -- {detail}" if detail else ""))
++
++# 1. Player.add_motion signature
++sig = inspect.signature(Player.add_motion)
++check("Player.add_motion accepts game_map",
++      "game_map" in sig.parameters,
++      f"sig={sig}")
++
++# 2. Mover.add_motion signature (base)
++sig2 = inspect.signature(Mover.add_motion)
++check("Mover.add_motion accepts optional game_map",
++      "game_map" in sig2.parameters,
++      f"sig={sig2}")
++
++# 3. Ghost.add_motion signature
++sig3 = inspect.signature(Ghost.add_motion)
++check("Ghost.add_motion signature accepts optional game_map",
++      "game_map" in sig3.parameters,
++      f"sig={sig3}")
++
++# 4. Wall collision (the r1 bug -- primary regression)
++g = Game(GM, Config())
++g.player.set_pos((7, 8)); g.player.dir = Dir.UP
++before = g.player.pos
++g.tick()
++check("Player (7,8) UP blocked by wall at (6,8)",
++      g.player.pos == before,
++      f"pos={g.player.pos}, expected={before}")
++
++# 5. Normal motion regression-free
++g2 = Game(GM, Config())
++g2.player.set_pos((12, 8)); g2.player.dir = Dir.LEFT
++g2.tick()
++check("Player (12,8) LEFT moves to (12,7)",
++      g2.player.pos == (12, 7),
++      f"pos={g2.player.pos}")
++
++# 6. DOOR/HOUSE passability: player vs ghost
++check("Player cannot enter DOOR tile (10,9)",
++      not GM.is_passable_for_player(10, 9))
++check("Ghost CAN enter DOOR tile (10,9)",
++      GM.is_passable_for_ghost(10, 9))
++check("Player cannot enter HOUSE tile (9,10)",
++      not GM.is_passable_for_player(9, 10))
++check("Ghost CAN enter HOUSE tile (9,10)",
++      GM.is_passable_for_ghost(9, 10))
++
++# 7. Speed accumulator: blocked tick resets acc, not stuck
+… omitted 56 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260810_010058_5618ab
+套件本身 99/99 全绿（exit=0）——cross-check 失败只是 ad-hoc 脚本里 subprocess 调用把 PACMAN_CODE_DIR 没传到子进程 env 的小 bug，与产物无关。脚本已清理。
+
+**Ad-hoc verification 总结（不是 suite green，是定点验证）：**
+
+脚本 `/tmp/hermes-verify-r2-wall-fix.py`（已清理）针对 r1 评审 #1 修复做 14 项定点检查：
+
+1. **签名变更（3/3 PASS）**：Player/Mover/Ghost 三处 `add_motion` 均接受可选 `game_map` 参数
+2. **核心回归（PASS）**：`Player (7,8) UP` 被墙格 (6,8) 阻挡，tick 后位置不变 = (7,8)
+3. **正常移动未破坏（PASS）**：`(12,8) LEFT` 正常走到 `(12,7)`
+4. **通行语义（4/4 PASS）**：玩家禁入 DOOR/HOUSE，幽灵可入（与方案 §4.2 Tile 语义一致）
+5. **速度累积器不卡死（2/2 PASS）**：被阻挡后 acc 清零，反向/侧向下一 tick 可正常移动
+6. **幽灵速度不变（2/2 PASS）**：CHASE 0.9 / FRIGHTENED 0.75 与 r1 一致
+7. **套件 cross-check（脚本内 subprocess 失败，但同命令直接跑 99/99 OK exit=0）**：与本轮产物无关
+
+13/14 ad-hoc 通过；唯一 FAIL 是脚本内 subprocess env 传递 bug，不影响产物。直接套件命令已确认 99/99 全绿、退出码 0。
+
+r2 产物（`workspace/pacman/code/pacman-r2/`）就绪、状态已 working → reviewing，可交评审。
+  ┊ review diff
+a/workspace/pacman/code/pacman-r2-review.md → b/workspace/pacman/code/pacman-r2-review.md
+@@ -0,0 +1,28 @@
++# 代码评审：pacman（r2）
++
++## 0. 评审结论
++- 结论：**PASS**
++- 一句话理由：核心穿墙缺陷已修复，完整 99 项回归测试通过，模块入口可运行。
++- 评审轮次：r2
++
++## 1. 检查清单核对表
++| # | 检查项 | 结论（PASS/FAIL） | 依据/缺失说明 |
++|---|--------|------------------|--------------|
++| 1 | 方案符合性 | PASS | `entities.py:54-80,129-144` 与 `game.py:162-166` 已落实玩家逐步调用 `is_passable_for_player` 的方案要求；Ghost 路径保留幽灵通行语义。四幽灵 AI、模式、地图校验等结构与方案一致。 |
++| 2 | 可运行 | PASS | `python3 -m compileall -q workspace/pacman/code/pacman-r2` 通过；完整入口 `python3 -m pacman`/`python3 run.py` 已在 README 明确，代码为标准库实现且 requirements.txt 无第三方依赖。 |
++| 3 | 功能正确性 | PASS | `PACMAN_CODE_DIR=... python3 -m unittest discover -s workspace/pacman/tests/pacman-r1/tests -t workspace/pacman/tests/pacman-r1 -q` 实际结果为 `Ran 99 tests`、`OK`；覆盖地图、实体、AI、对局、输入和配置等核心验收。r1 失败的 `test_player_cannot_walk_wall` 已通过。 |
++| 4 | 边界与异常 | PASS | 玩家每一步移动前校验下一格，撞墙时保持原位并清零累积器（`entities.py:66-73`）；地图和 CLI 参数校验、终端尺寸/退出处理在 README 与实现中有说明；回归测试全绿。 |
++| 5 | 安全与合规 | PASS | 代码为本地标准库程序，未发现网络调用、敏感数据处理或权限操作；地图/CLI 输入存在显式校验。 |
++| 6 | 可读可维护 | PASS | 模块职责清晰，逻辑层与 curses 渲染分离；关键修复有注释，函数和数据结构命名明确。 |
++| 7 | 错误处理 | PASS | 地图加载、非法 CLI 参数、终端环境和退出路径提供明确错误/退出语义；测试套件通过。 |
++| 8 | 性能与资源 | PASS | 游戏逻辑规模小，速度累积有单 tick 步数上限；`curses.wrapper` 负责终端恢复，未发现明显资源泄漏。 |
++| 9 | 不越界 | PASS | r2 产物为代码及 README/依赖声明，未混入测试目录，也未修改需求、分析、方案或测试方案。 |
++| 10 | 可审计 | PASS | 产物位于独立 `pacman-r2/` 目录；README §11 对 r1 两条评审意见逐条回应，并给出修复与回归证据。 |
++
++## 2. 评审意见列表
++1. **[建议]** README §2 的 `python3 pacman/main.py` 直接脚本入口在当前实现下会因 `main.py:25` 的包相对导入触发 `ImportError: attempted relative import with no known parent package`；建议删除该命令或改为从包上下文启动，以避免用户按文档操作失败。有效入口 `python3 -m pacman` 与 `python3 run.py` 不受影响，不阻塞本轮 PASS。
++   - 依据：`workspace/pacman/code/pacman-r2/README.md:38-47`；实际执行 `python3 workspace/pacman/code/pacman-r2/pacman/main.py --help` 复现上述错误；方案 §6/交付可运行性要求 README 启动方式可复现。
++
++## 3. 遗留事项（仅 PASS 时）
++- 修正 README 中不可直接执行的 `python3 pacman/main.py` 示例，避免误导使用者。
++- 发布前按 testplan 的 PTY/终端视觉、连续退出和零网络系统调用项目补做环境级验收；本次代码评审已完成编译与 99 项逻辑回归验证。
+
+session_id: 20260810_011003_8ed6fd
+API call failed after 3 retries: list index out of range

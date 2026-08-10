@@ -4,7 +4,10 @@
 依赖：仅 pacman.config、pacman.map。
 对应方案：plans/pacman-r1.md §3.2 entities.py、§4.2 数据结构、§5.2 移动与速度模型。
 不依赖 curses（纯逻辑层，可单测）。
+
+本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
 """
+
 
 from collections import deque
 from dataclasses import dataclass, field
