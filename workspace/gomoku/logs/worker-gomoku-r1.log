@@ -10660,3 +10660,6 @@ a/workspace/gomoku/testplans/gomoku-r1-review.md → b/workspace/gomoku/testplan
 +- U-A07 的耗时断言在 CI 环境宽限 0.5s（方案 §5.4 约定），建议测试实施时在 CI pipeline 中明确区分"基线环境严格断言"与"CI 宽限断言"，避免 flaky 误报。
 +- U-A05 强档进攻性验收依赖人工对"威胁链"的语义判定（§6 风险表已识别），建议测试实施阶段首次判定时由评审者参与复核，避免判定标准漂移。
 +- §4 数据准备中提到"AI 封堵棋局集 ≥10 局"需人工复核每局形态（防构造失真），建议复核结果记录到测试文档中留痕。
+
+session_id: 20260810_153510_9b2653
+testplan 阶段评审完成，PASS。状态已更新为 `testplan_done`，下一阶段进入 code。

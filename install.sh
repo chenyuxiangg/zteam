@@ -11,10 +11,10 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_SCRIPTS="$HERMES_HOME/scripts"
 HERMES_SKILLS="$HERMES_HOME/skills"
 
-JOBS=(req-analyst-top req-reviewer-top req-worker-top req-weekly-audit req-result-notify)
-SCHEDULES=("*/5 * * * *" "*/5 * * * *" "*/5 * * * *" "0 9 * * 1" "*/15 * * * *")
-WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-worker.sh watchdog-weekly.sh watchdog-notify.sh)
-WORKER_ENTRIES=(watchdog-analyst.py watchdog-reviewer.py watchdog-worker.py watchdog-weekly.py watchdog-notify.py)
+JOBS=(req-analyst-top req-reviewer-top req-worker-top req-weekly-audit req-quota-tick req-result-notify)
+SCHEDULES=("*/5 * * * *" "*/5 * * * *" "*/5 * * * *" "0 9 * * 1" "*/30 * * * *" "*/15 * * * *")
+WRAPPERS=(watchdog-analyst.sh watchdog-reviewer.sh watchdog-worker.sh watchdog-weekly.sh watchdog-quota.sh watchdog-notify.sh)
+WORKER_ENTRIES=(watchdog-analyst.py watchdog-reviewer.py watchdog-worker.py watchdog-weekly.py watchdog-quota.py watchdog-notify.py)
 
 say() { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[install]\033[0m %s\n' "$*" >&2; }

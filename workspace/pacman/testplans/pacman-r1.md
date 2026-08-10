@@ -1,7 +1,8 @@
 # 测试方案：pacman（r1）
 
 ## 0. 元信息
-- 需求：pacman/pacman｜依据方案：workspace/pacman/plans/pacman-r1.md（plan 阶段终版，基于 analysis r4）｜轮次：r1（2026-08-10 15:20 人工 requeue 重置 stages 后，testplan 阶段重新计数的第 1 轮）
+- 需求：pacman/pacman（需求原文：workspace/pacman/input/pacman.md）｜依据方案：workspace/pacman/plans/pacman-r1.md（plan 阶段终版，基于 analysis r4）｜轮次：r1（2026-08-10 15:20 人工 requeue 重置 stages 后，testplan 阶段重新计数的第 1 轮）
+- 本轮触发说明：上一轮 r1 产出（2026-08-10 15:35 落盘）后评审进程未产出结论即卡死，16:00 被 stale 恢复回滚至 working（failures +1），本轮为同轮次重做。内容以上轮产物为基础做全量复核（对照 analysis r4 全部 FR/NFR 验收口径与 plans/pacman-r1.md 全部接口/公式/边界表），复核结论：需求全覆盖、用例可执行、映射计数自洽、边界异常完备、9 节模板齐全，无缺漏项，保持原设计不变；本节新增本轮背景说明与需求原文引用。
 - 测试要点一句话：以四幽灵差异化 AI（target_cell 客观验证）与对局闭环（吃豆/反击/过关/扣命）为 P0 主线，叠加终端卫生（干净退出/小终端）与安全（零网络）验证，全部 FR/NFR 可追溯。
 - 继承说明：本方案继承上次 requeue（2026-08-10 15:20）前已评审 PASS 的 testplan r1（testplans/pacman-r1.md 与 pacman-r1-review.md，已备份至 archive/testplan-pacman-r1-pre-requeue-20260810-1520.md 与 archive/testplan-pacman-r1-review-pre-requeue-20260810-1520.md，不覆盖历史），吸收其评审 2 条建议（§3.1 映射表 FR-03 计数 6→8、FR-10 计数 5→9 并全表复核自洽，见 §3.1 说明）；需求依据由 analysis r2 更新为 **analysis r4**（approved 终版）、方案依据更新为 **plans/pacman-r1.md**（基于 r4 的新终版，其相对旧 plan 的差异——Q1 默认 22×19 处置、依赖两路径声明、§5.1 TDD 规格说明、§8 N1/N2/N3——本方案原用例已全部覆盖，见 §1 范围外与 §3.1 映射表 N1/N2/N3 行）。r4 相对 r2 的 FR/NFR 编号稳定（r3 起无新增/删除/修改），Q1-Q12 待确认问题建议默认值不变（r4 §7 已核实），故用例挂载点与预期值保持 r1 成熟结论不变，仅更新元信息、§3.1 计数自洽性与 §9 说明。
 

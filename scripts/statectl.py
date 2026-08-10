@@ -1205,6 +1205,65 @@ def weekly_tick() -> int:
     return 0
 
 
+# ---------------- 配额巡检 tick（cron no_agent，每 30 分钟） ----------------
+
+QUOTA_SCRIPT = os.path.join(SCRIPTS_DIR, "check_minimax_quota.py")
+
+
+def _format_beijing(ts_ms: int) -> str:
+    from datetime import datetime, timedelta
+    return (datetime.utcfromtimestamp(ts_ms / 1000) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def quota_tick() -> int:
+    """调用 check_minimax_quota.py，根据退出码生成告警；脚本不可用或调用失败时静默（避免与上游重复告警）。
+
+    退出码语义（脚本约定）：
+      0 = 健康（5h 窗口 ≥ 30% 且 周配额 ≥ 50%）
+      1 = 紧张（5h 窗口 < 30% 或 周配额 < 50%）
+      2 = 严重受限（5h 窗口 < 10%）
+      3 = 调用失败（凭据/网络/格式）
+    """
+    if not os.path.exists(QUOTA_SCRIPT):
+        return 0
+    try:
+        r = subprocess.run([sys.executable, QUOTA_SCRIPT, "--json"], capture_output=True, text=True, timeout=20)
+    except (subprocess.TimeoutExpired, Exception):
+        return 0
+    code = r.returncode
+    if code == 0:
+        return 0  # 健康：不输出
+    if code == 3:
+        # 调用失败：静默（凭据可能没配，不刷屏）
+        return 0
+    # code 1 (紧张) 或 2 (严重受限)：解析 JSON 取关键数值
+    try:
+        import json as _json
+        data = _json.loads(r.stdout)
+        general = next((m for m in data.get("model_remains", []) if m.get("model_name") == "general"), None)
+    except Exception:
+        general = None
+    if general is None:
+        return 0
+    interval_pct = general.get("current_interval_remaining_percent", 0)
+    weekly_pct = general.get("current_weekly_remaining_percent", 0)
+    reset_bj = _format_beijing(general.get("end_time", 0))
+    if code == 2:
+        level = "🔴 严重受限"
+        hint = "建议暂停流水线（hermes cron pause <job_id>）避免无意义消耗 5h 窗口"
+    else:
+        level = "🟡 紧张"
+        hint = "流水线跑 code/test 阶段密集调用时可能触发 429；持续 BLOCKED 模式 C 时优先排除配额"
+    print(
+        f"[QUOTA] minimax {level}\n"
+        f"  5h 窗口剩余: {interval_pct}%\n"
+        f"  周配额剩余:   {weekly_pct}%\n"
+        f"  5h 窗口重置: {reset_bj}（北京时间）\n"
+        f"  建议: {hint}"
+    )
+    return 0
+
+
 # ---------------- 下半部 release（worker 内调用） ----------------
 
 def release_analyze(rid: str, product: str) -> int:
@@ -1841,6 +1900,8 @@ def main(argv) -> int:
             return worker_tick()
         if cmd == "weekly_tick":
             return weekly_tick()
+        if cmd == "quota_tick":
+            return quota_tick()
         if cmd == "diagnose":
             return diagnose()
         if cmd == "notify":
