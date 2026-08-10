@@ -1,6 +1,6 @@
 {
   "pacman/pacman": {
-    "status": "plan_reviewing",
+    "status": "testplan_reviewing",
     "round": 4,
     "max_rounds": 3,
     "forced": false,
@@ -14,11 +14,13 @@
     "failures": 0,
     "stages": {
       "plan": {
-        "round": 0,
+        "round": 1,
         "product": "pacman/plans/pacman-r1.md",
-        "reviews": [],
-        "state": "reviewing",
-        "state_since": "2026-08-10T15:22:58Z",
+        "reviews": [
+          "pacman/plans/pacman-r1-review.md"
+        ],
+        "state": "done",
+        "state_since": "2026-08-10T15:27:34Z",
         "timeline": [
           {
             "t": "2026-08-09T09:25:36Z",
@@ -91,15 +93,23 @@
           {
             "t": "2026-08-10T15:22:58Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T15:26:21Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T15:27:34Z",
+            "to": "done"
           }
         ]
       },
       "testplan": {
         "round": 0,
-        "product": null,
+        "product": "pacman/testplans/pacman-r1.md",
         "reviews": [],
-        "state": null,
-        "state_since": null,
+        "state": "reviewing",
+        "state_since": "2026-08-10T15:35:33Z",
         "timeline": [
           {
             "t": "2026-08-09T09:40:45Z",
@@ -160,6 +170,18 @@
           {
             "t": "2026-08-10T00:38:23Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-10T15:30:08Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T15:30:25Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T15:35:33Z",
+            "to": "reviewing"
           }
         ]
       },
@@ -376,9 +398,6 @@
       }
     },
     "created_at": "2026-08-09T09:10:24Z",
-    "updated_at": "2026-08-10T15:25:05Z",
-    "claimed_by": "dev-plan-reviewer",
-    "claimed_at": "2026-08-10T15:25:05Z",
-    "worker_pid": 4165022
+    "updated_at": "2026-08-10T15:35:33Z"
   }
 }

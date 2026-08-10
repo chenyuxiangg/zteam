@@ -203,7 +203,7 @@ t3  [下半部·评审师 worker] 产出 review/{project}/{req_id}-r{N}.md → �
 ### 7.3 人工介入方式
 
 - 查看进度：`python3 scripts/statectl.py list`（总览）或 `get <req_id>`（详情）；
-- 重投 `blocked` 需求：`python3 scripts/statectl.py requeue <req_id>`（等价 jq 重置：`status=pending, failures=0`）；
+- 重投 `blocked` 需求：`python3 scripts/statectl.py requeue <req_id>`——**从 block 阶段续跑**（`_find_block_stage` 定位第一个未 done 阶段，只重置该阶段及其后续，已通过阶段的状态/产物/评审历史保留；req 阶段 block 才回 `pending` 全链重跑；`failures=0`；审计日志记录续跑点与保留阶段）；
 - 手动回滚中间态：`python3 scripts/statectl.py rollback <req_id>`；
 - 全程可审计：`workspace/logs/pipeline.log`（每步状态迁移）+ `workspace/logs/worker-*.log`（每次下半部执行明细）。
 
@@ -302,7 +302,7 @@ python3 scripts/statectl.py release_release {key} {项目}/release/{req_id}-r{N}
 
 | 场景 | 行为 | 期望效果时怎么办 |
 |------|------|------------------|
-| 修改已注册需求的内容（**不改文件名**） | **不会**重新检测/重新分析；状态机按 `req_id` 追踪需求 | `python3 scripts/statectl.py requeue <req_id>` 重置回 `pending` 重跑 |
+| 修改已注册需求的内容（**不改文件名**） | **不会**重新检测/重新分析；状态机按 `req_id` 追踪需求 | `python3 scripts/statectl.py requeue <req_id>` 从当前阶段续跑（已通过阶段保留；req 阶段未过才全链重跑） |
 | 修改文件名 | 文件名即 ID，改名 = 全新需求（旧条目保留，不自动清理） | 如需"替换"而非"新增"，先处理旧条目 |
 | 删除 `workspace/<项目>/input/` 中的文件 | 状态条目**保留**（历史可审计，不自动清理） | 保留作记录，或手工编辑 status.json 删除条目 |
 | 非 `.md` 文件（`README.md`、`.gitkeep` 等） | 完全忽略 | — |

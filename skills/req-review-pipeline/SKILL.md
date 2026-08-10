@@ -32,7 +32,7 @@ python3 scripts/statectl.py get <req_id>  # 单条详情（含 claim 字段 + �
 python3 scripts/statectl.py set_status <req_id> <stage> working              # worker 启动时（第 0 步）
 python3 scripts/statectl.py set_status <req_id> <stage> reviewing <产物路径>  # 产出完成 → 待评审
 # 人工干预
-python3 scripts/statectl.py requeue <req_id>   # blocked 后重投（回 pending、清零 failures）
+python3 scripts/statectl.py requeue <req_id>   # blocked 后重投（**从 block 阶段续跑**：只重置失败阶段及后续，已通过阶段保留；req 阶段未过才全链重跑；failures 清零）
 python3 scripts/statectl.py rollback <req_id>  # 手动回滚中间态
 python3 scripts/statectl.py resume <req_id> <stage> <designing|reviewing|gating|releasing|done>  # 人工恢复指定阶段状态
 # 审计
@@ -65,11 +65,13 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 1. **定位卡死点**：`statectl list` + `tail workspace/logs/pipeline.log`——找 BLOCKED 前最后一条 RECOVER/FAIL 属于哪个阶段，failures 如何累计（**stale 回滚** vs **评审 FAIL** 性质不同：前者是进程问题，后者是内容问题）；
 2. **查 worker 生死**：pipeline.log 的 SPAWN/SKIP 行有 pid；`ps -p <pid>`——存活且多 tick 无进展=可能"干完活没退出"（模式 A）；已死=崩溃（模式 B）；
 3. **看 worker 日志**：`tail workspace/logs/worker-<key>-r<N>.log` 最后输出 + 对比日志 mtime 与停止时间差，grep `error|traceback|timeout`；
-4. **产物完整性**：`ls workspace/{项目}/{stage}/{req_id}-r{N}/`——决定 requeue 后是否丢工作。
+4. **产物完整性**：`ls workspace/{项目}/{stage}/{req_id}-r{N}/`——决定 requeue 后该阶段是否重做（已通过阶段产物保留复用，只有失败阶段及其后续重做）。
 
-**已知模式**：
-- **模式 A「干完活没退出」**（2026-08-08 tetris 实测）：worker 日志有完整成功收尾（验证全绿/产物落盘/set_status 已在 pipeline.log 留下审计）+ 进程存活但连续多 tick 无进展 + dmesg 无 OOM/kill → 判定为 **hermes chat 进程完成响应后挂住不退出**（网络/会话收尾卡住，与 Telegram 适配器挂起 #63309 同族，环境网络不稳是背景）。**产物无损 → 直接 requeue 重跑即可，无需改任何代码**；
-- **模式 B「中途崩溃」**：worker 日志尾部有 traceback/API 报错（模型名不存在/限流/代码缺陷）→ 先修根因再 requeue；
+**已知模式**（共 4 类，按排查顺序）：
+- **模式 A「干完活没退出」**（2026-08-08 tetris 实测）：worker 日志有完整成功收尾（验证全绿/产物落盘/set_status 已在 pipeline.log 留下审计）+ 进程存活但连续多 tick 无进展 + dmesg 无 OOM/kill → 判定为 **hermes chat 进程完成响应后挂住不退出**（网络/会话收尾卡住，与 Telegram 适配器挂起 #63309 同族，环境网络不稳是背景）。**产物无损 → 直接 requeue 从该阶段续跑即可，无需改任何代码**（已通过阶段不重跑）；
+- **模式 B「中途崩溃」**：worker 日志尾部有 traceback/代码缺陷 → 先修根因再 requeue；
+- **模式 C「API 配额耗尽」**（2026-08-09 gomoku/pacman 实测，minimax-M3）：worker 日志尾部有 `HTTP 429: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量`。**requeue 不能解决问题**，必须先充值/换套餐/换模型（如切回 deepseek），否则再跑仍 429。区分要点：模式 A 是"进程挂着不死"，模式 C 是"进程秒退/重试3次后失败"，看 pipeline.log SPAWN 到 RECOVER 的时间差（模式 A 通常满 20 分钟，模式 C 通常分钟级）+ worker 日志尾部有无 429；
+- **模式 D「评审 FAIL 累计」**（2026-08-09 gomoku 实测，混合模式 C）：代码/方案等阶段连续 FAIL → requeue 回上一阶段让产出者修改，可能也撞上 API 限额，要先排除模式 C。
 - **告警送达验证**：BLOCKED 文本由上半部 tick `drain_alarms` 后经 cron deliver 推送；alarms.txt 为空**不代表没推送**（已被消费）。判断以用户是否收到为准，别用文件存在性判断。
 
 ## 部署事实与坑（全部踩过）

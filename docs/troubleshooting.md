@@ -54,7 +54,7 @@ cd <工作区> && python3 scripts/statectl.py diagnose
 |---|---|
 | 1 | 看失败根因：`tail workspace/logs/worker-{id}-r{N}.log` + `grep {id} workspace/logs/pipeline.log` |
 | 2 | 修根因（通常是 S7 的模型/API/权限问题） |
-| 3 | 重投：`python3 scripts/statectl.py requeue <req_id>`（回 pending，failures 清零） |
+| 3 | 重投：`python3 scripts/statectl.py requeue <req_id>`（**从 block 阶段续跑**，已通过阶段保留，failures 清零） |
 | 4 | 复跑 `diagnose` 确认无 FAIL |
 
 ### S4 收到 `[FORCED]` 告警（达 max_rounds 强制归档）
@@ -134,7 +134,7 @@ python3 scripts/statectl.py diagnose                 # 一键体检（先跑这�
 python3 scripts/statectl.py list                     # 看全部
 python3 scripts/statectl.py get <req_id>             # 看单条（含 claim）
 python3 scripts/statectl.py rollback <req_id>        # 中间态 → 可认领态（failures+1）
-python3 scripts/statectl.py requeue <req_id>         # blocked/需重跑 → pending（failures 清零）
+python3 scripts/statectl.py requeue <req_id>         # blocked/需重跑 → 从 block 阶段续跑（已通过阶段保留，failures 清零）
 
 # 调度类
 hermes gateway start|stop|restart                    # gateway 控制
