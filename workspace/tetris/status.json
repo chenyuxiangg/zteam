@@ -293,8 +293,8 @@
         "round": 0,
         "product": "tetris/analysis/tetris-r1.md",
         "reviews": [],
-        "state": "reviewing",
-        "state_since": "2026-08-09T03:20:23Z",
+        "state": "done",
+        "state_since": "2026-08-10T17:00:00Z",
         "timeline": [
           {
             "t": "2026-08-08T15:24:13Z",
@@ -311,6 +311,10 @@
           {
             "t": "2026-08-09T03:20:23Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T17:00:00Z",
+            "to": "done"
           }
         ]
       }

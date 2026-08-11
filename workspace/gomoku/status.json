@@ -1,16 +1,17 @@
 {
   "gomoku/gomoku": {
-    "status": "blocked",
-    "round": 5,
+    "status": "code_designing",
+    "round": 6,
     "max_rounds": 3,
     "forced": false,
-    "analysis": "gomoku/analysis/gomoku-r5.md",
+    "analysis": "gomoku/analysis/gomoku-r6.md",
     "reviews": [
       "gomoku/review/gomoku-r1.md",
       "gomoku/review/gomoku-r2.md",
       "gomoku/review/gomoku-r3.md",
       "gomoku/review/gomoku-r4.md",
-      "gomoku/review/gomoku-r5.md"
+      "gomoku/review/gomoku-r5.md",
+      "gomoku/review/gomoku-r6.md"
     ],
     "failures": 2,
     "stages": {
@@ -21,7 +22,7 @@
           "gomoku/plans/gomoku-r1-review.md"
         ],
         "state": "done",
-        "state_since": "2026-08-10T15:27:53Z",
+        "state_since": "2026-08-10T16:38:34Z",
         "timeline": [
           {
             "t": "2026-08-09T09:25:36Z",
@@ -122,6 +123,26 @@
           {
             "t": "2026-08-10T15:27:53Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-10T16:30:02Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T16:30:25Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T16:34:08Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T16:35:20Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T16:38:34Z",
+            "to": "done"
           }
         ]
       },
@@ -132,7 +153,7 @@
           "gomoku/testplans/gomoku-r1-review.md"
         ],
         "state": "done",
-        "state_since": "2026-08-10T15:39:25Z",
+        "state_since": "2026-08-11T01:24:58Z",
         "timeline": [
           {
             "t": "2026-08-09T09:35:43Z",
@@ -233,6 +254,26 @@
           {
             "t": "2026-08-10T15:39:25Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-11T01:15:19Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-11T01:15:32Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-11T01:19:03Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:20:38Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:24:58Z",
+            "to": "done"
           }
         ]
       },
@@ -241,7 +282,7 @@
         "product": null,
         "reviews": [],
         "state": "working",
-        "state_since": "2026-08-10T15:40:34Z",
+        "state_since": "2026-08-11T01:26:03Z",
         "timeline": [
           {
             "t": "2026-08-09T09:45:47Z",
@@ -354,6 +395,14 @@
           {
             "t": "2026-08-10T15:40:34Z",
             "to": "working"
+          },
+          {
+            "t": "2026-08-11T01:25:25Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-11T01:26:03Z",
+            "to": "working"
           }
         ]
       },
@@ -422,8 +471,8 @@
         "round": 0,
         "product": null,
         "reviews": [],
-        "state": "reviewing",
-        "state_since": "2026-08-10T04:36:38Z",
+        "state": "done",
+        "state_since": "2026-08-11T01:27:38Z",
         "timeline": [
           {
             "t": "2026-08-09T09:10:24Z",
@@ -484,11 +533,31 @@
           {
             "t": "2026-08-10T04:36:38Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T16:20:58Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T16:24:04Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T16:26:28Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:27:38Z",
+            "to": "done",
+            "note": "backfill req done (data repair)"
           }
         ]
       }
     },
     "created_at": "2026-08-09T09:10:24Z",
-    "updated_at": "2026-08-10T16:00:23Z"
+    "updated_at": "2026-08-11T01:26:03Z",
+    "claimed_by": "code-developer",
+    "claimed_at": "2026-08-11T01:25:25Z",
+    "worker_pid": 1124154
   }
 }

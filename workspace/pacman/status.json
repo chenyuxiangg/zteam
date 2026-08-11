@@ -1,26 +1,25 @@
 {
   "pacman/pacman": {
     "status": "code_designing",
-    "round": 4,
+    "round": 5,
     "max_rounds": 3,
     "forced": false,
-    "analysis": "pacman/analysis/pacman-r4.md",
+    "analysis": "pacman/analysis/pacman-r5.md",
     "reviews": [
       "pacman/review/pacman-r1.md",
       "pacman/review/pacman-r2.md",
       "pacman/review/pacman-r3.md",
-      "pacman/review/pacman-r4.md"
+      "pacman/review/pacman-r4.md",
+      "pacman/review/pacman-r5.md"
     ],
-    "failures": 1,
+    "failures": 0,
     "stages": {
       "plan": {
         "round": 1,
         "product": "pacman/plans/pacman-r1.md",
-        "reviews": [
-          "pacman/plans/pacman-r1-review.md"
-        ],
+        "reviews": [],
         "state": "done",
-        "state_since": "2026-08-10T15:27:34Z",
+        "state_since": "2026-08-11T01:15:19Z",
         "timeline": [
           {
             "t": "2026-08-09T09:25:36Z",
@@ -101,6 +100,22 @@
           {
             "t": "2026-08-10T15:27:34Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-10T16:30:02Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T16:30:23Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T16:35:30Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:15:19Z",
+            "to": "done"
           }
         ]
       },
@@ -111,7 +126,7 @@
           "pacman/testplans/pacman-r1-review.md"
         ],
         "state": "done",
-        "state_since": "2026-08-10T16:07:38Z",
+        "state_since": "2026-08-11T01:24:06Z",
         "timeline": [
           {
             "t": "2026-08-09T09:40:45Z",
@@ -204,6 +219,26 @@
           {
             "t": "2026-08-10T16:07:38Z",
             "to": "done"
+          },
+          {
+            "t": "2026-08-11T01:15:19Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-11T01:15:31Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-11T01:18:39Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:20:36Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:24:06Z",
+            "to": "done"
           }
         ]
       },
@@ -212,7 +247,7 @@
         "product": null,
         "reviews": [],
         "state": "working",
-        "state_since": "2026-08-10T16:10:46Z",
+        "state_since": "2026-08-11T01:25:42Z",
         "timeline": [
           {
             "t": "2026-08-09T09:50:50Z",
@@ -292,6 +327,14 @@
           },
           {
             "t": "2026-08-10T16:10:46Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-11T01:25:25Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-11T01:25:42Z",
             "to": "working"
           }
         ]
@@ -373,8 +416,8 @@
         "round": 0,
         "product": null,
         "reviews": [],
-        "state": "reviewing",
-        "state_since": "2026-08-10T04:36:22Z",
+        "state": "done",
+        "state_since": "2026-08-11T01:27:38Z",
         "timeline": [
           {
             "t": "2026-08-09T09:10:24Z",
@@ -423,14 +466,31 @@
           {
             "t": "2026-08-10T04:36:22Z",
             "to": "reviewing"
+          },
+          {
+            "t": "2026-08-10T16:20:58Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-10T16:21:54Z",
+            "to": "working"
+          },
+          {
+            "t": "2026-08-10T16:26:17Z",
+            "to": "reviewing"
+          },
+          {
+            "t": "2026-08-11T01:27:38Z",
+            "to": "done",
+            "note": "backfill req done (data repair)"
           }
         ]
       }
     },
     "created_at": "2026-08-09T09:10:24Z",
-    "updated_at": "2026-08-10T16:10:46Z",
+    "updated_at": "2026-08-11T01:25:42Z",
     "claimed_by": "code-developer",
-    "claimed_at": "2026-08-10T16:10:28Z",
-    "worker_pid": 70991
+    "claimed_at": "2026-08-11T01:25:25Z",
+    "worker_pid": 1124155
   }
 }

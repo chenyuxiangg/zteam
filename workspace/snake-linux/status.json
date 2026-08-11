@@ -61,6 +61,19 @@
         "round": 1,
         "product": "snake-linux/release/snake-linux-r1.md",
         "reviews": []
+      },
+      "req": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "timeline": [
+          {
+            "t": "2026-08-10T17:00:00Z",
+            "to": "done"
+          }
+        ],
+        "state": "done",
+        "state_since": "2026-08-10T17:00:00Z"
       }
     }
   }

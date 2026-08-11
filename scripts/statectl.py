@@ -1316,6 +1316,18 @@ def release_review(rid: str, product: str, conclusion: str) -> int:
         e["reviews"] = e.get("reviews", []) + [product]
         if conclusion == "PASS":
             e["status"] = "approved"
+            # 同步写 stages.req.state=done，让 _find_block_stage 能识别 req 已通过（避免 requeue 兜底回 req 全链重置）。
+            # 这里不用 set_stage_state：它的 done 校验要求 cur=reviewing，但 req 评审走的是顶层 reviewing（stages.req 可能从未 working），
+            # 我们只在 done 字段上写一个事实标记（_find_block_stage 只读这个字段判断是否 done）。
+            try:
+                stages = ensure_stages(e)
+                req_s = stages.get("req") or {"round": 0, "product": None, "reviews": [], "timeline": []}
+                req_s["state"] = "done"
+                req_s["state_since"] = now_iso()
+                req_s.setdefault("timeline", []).append({"t": now_iso(), "to": "done"})
+                stages["req"] = req_s
+            except Exception:
+                pass  # 老数据兜底失败不阻塞主流程
         else:
             if e["round"] >= int(e.get("max_rounds", DEFAULT_MAX_ROUNDS)):
                 e["status"] = "approved"
@@ -1552,11 +1564,19 @@ def _stage_order() -> list:
 def _find_block_stage(e: dict):
     """找 block/中断发生阶段：stages 中第一个 state != done 的阶段。
     该阶段及其后续需重做；之前的阶段已通过（done），产物与结论复用。
+    req 阶段特殊处理：顶层状态已越过需求阶段（approved/released/任一阶段态）即视为 req 已通过，
+    不依赖 stages.req.state 完整性（存量数据/评审路径可能不写 req 四态——曾致 requeue 兜底回 req 全链重跑）。
     返回阶段名；stages 缺失/全 done 时返回 None（兜底全链重跑）。"""
     stages = e.get("stages") or {}
+    s = e.get("status", "")
+    req_passed = (s in ("approved", "released")
+                  or s.startswith(("plan_", "testplan_", "code_", "test_",
+                                   "quality_", "security_", "release_", "releasing")))
     for name in _stage_order():
-        s = stages.get(name) or {}
-        if s.get("state") != "done":
+        if name == "req" and req_passed:
+            continue  # 顶层状态证明 req 已通过
+        stg = stages.get(name) or {}
+        if stg.get("state") != "done":
             return name
     return None
 
