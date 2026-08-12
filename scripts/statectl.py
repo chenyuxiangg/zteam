@@ -126,6 +126,8 @@ def next_action(e: dict):
     """根据当前状态返回下一步动作 (role, stage, phase) 或 None。
     phase ∈ design / review / gate / release；stage ∈ req / plan / testplan / code / test / quality / security / release。"""
     s = e.get("status")
+    if s == "waiting":
+        return None  # 依赖/迭代前置未满足，等待调度（不 spawn 不烧 token）
     if s in ("pending", "needs_fix"):
         return ("req-analyst", "req", "design")
     if s == "analyzing":
@@ -1198,6 +1200,7 @@ def _tick_common() -> int:
                     pst[key] = e
             if not pst:
                 continue
+            _apply_deps(pst, proj)  # 依赖调度：waiting 挂起 / 依赖满足转 pending
             alarms += stale_recovery(pst)
             alarms += guard_recovery(pst)  # 巡检：worker 漏设状态/卡死的自动补正
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
@@ -1759,6 +1762,39 @@ def cmd_record_product(rid: str, stage: str, product: str) -> int:
 def _stage_order() -> list:
     """阶段链顺序（含需求阶段）：req → plan → testplan → code → test → quality → security → release。"""
     return ["req"] + [s["name"] for s in STAGES] + [g["name"] for g in GATES] + [RELEASE["name"]]
+
+
+def _deps_satisfied(e: dict, st: dict) -> bool:
+    """依赖满足判定：depends_on 全部需求处于 approved/released（需求确定即可解锁下游）。
+    无依赖 / 依赖不存在（已删除）→ 视为满足。"""
+    deps = e.get("depends_on") or []
+    if not deps:
+        return True
+    project = e.get("_project") or ""
+    for dep in deps:
+        dep_key = f"{project}/{dep}" if project and "/" not in dep else dep
+        de = st.get(dep_key) or st.get(dep)
+        if de is None:
+            continue  # 依赖需求已删除 → 不阻塞
+        if de.get("status") not in ("approved", "released"):
+            return False
+    return True
+
+
+def _apply_deps(st: dict, project: str = None) -> None:
+    """依赖状态应用：pending 且依赖未满足 → waiting；waiting 且依赖满足 → pending。
+    tick 每项目锁内调用（waiting 不 spawn 不烧 token）。"""
+    for key, e in st.items():
+        if project and not key.startswith(project + "/"):
+            continue
+        e["_project"] = key.split("/", 1)[0]
+        s = e.get("status")
+        if s == "pending":
+            if e.get("depends_on") and not _deps_satisfied(e, st):
+                e["status"] = "waiting"
+        elif s == "waiting":
+            if _deps_satisfied(e, st):
+                e["status"] = "pending"
 
 
 def _find_block_stage(e: dict):

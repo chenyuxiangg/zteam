@@ -602,6 +602,7 @@
     "updated_at": "2026-08-11T12:49:58Z",
     "version": "v1.0.0",
     "iteration": null,
-    "depends_on": []
+    "depends_on": [],
+    "_project": "pacman"
   }
 }

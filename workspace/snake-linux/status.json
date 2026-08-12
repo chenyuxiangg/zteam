@@ -78,6 +78,7 @@
     },
     "version": "v1.0.0",
     "iteration": null,
-    "depends_on": []
+    "depends_on": [],
+    "_project": "snake-linux"
   }
 }
