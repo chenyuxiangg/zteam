@@ -172,3 +172,5 @@ tail workspace/logs/pipeline.log                  # 最新审计行符合预期�
 | 2 | jobs.json 损坏/格式异常 | `hermes cron list` 报错；对比 `jobs.json` 的 `jobs` 数组 | 重跑 `bash install.sh` 幂等重建 |
 
 > 守护部署：`~/.config/systemd/user/hermes-cron-guard.{service,timer}`（timer 每 5 分钟），脚本在工作区 `scripts/hermes-cron-guard.sh`；查看运行：`systemctl --user list-timers hermes-cron-guard.timer`。
+
+> **想手动停流水线**（如异常排查防 token 消耗）：用 `python3 scripts/statectl.py halt [原因]` / `unhalt`（暂停标记 `workspace/.pause`），**不要用 `hermes cron pause`**——guard 会在 5 分钟内自动恢复它。

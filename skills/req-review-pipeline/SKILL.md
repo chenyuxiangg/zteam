@@ -34,6 +34,7 @@ python3 scripts/statectl.py set_status <req_id> <stage> reviewing <产物路径>
 # 人工干预
 python3 scripts/statectl.py requeue <req_id>   # blocked 后重投（**从 block 阶段续跑**：只重置失败阶段及后续，已通过阶段保留；req 阶段未过才全链重跑；failures 清零）
 python3 scripts/statectl.py record_product <req_id> <stage> <产物路径>  # 人工补记产物（评审已过但漏记；校验存在，合规替代手改 status.json）
+python3 scripts/statectl.py halt [原因] / unhalt  # 手动暂停/恢复流水线（tick 整体跳过调度，防异常时烧 token；已运行 worker 不受影响）
 python3 scripts/statectl.py rollback <req_id>  # 手动回滚中间态
 python3 scripts/statectl.py resume <req_id> <stage> <designing|reviewing|gating|releasing|done>  # 人工恢复指定阶段状态
 # 审计

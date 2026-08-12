@@ -248,6 +248,7 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 - **归档快速阅读**：`workspace/artifacts/<project>/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
 - **改内容不改文件名不会触发重新分析**——重跑用 `python3 scripts/statectl.py requeue <req_id>`（从失败阶段续跑，已通过阶段不重跑，省 token）；
 - **人工补记产物**（评审已过但 product 漏记）：`python3 scripts/statectl.py record_product <req_id> <stage> <产物路径>`（校验存在，合规替代手改 status.json）；
+- **手动暂停/恢复流水线**（异常排查时防 token 消耗）：`python3 scripts/statectl.py halt [原因]` / `unhalt`（touch/删 `workspace/.pause` 标记，tick 整体跳过调度；已运行 worker 不受影响；**halt 是唯一暂停方式**——`hermes cron pause` 会被 cron guard 自动恢复）
 - 删除 `workspace/<项目>/input/` 文件不会清理状态条目（历史保留）；
 - 非 `.md` 文件忽略；一个文件放多个需求会被当作一个需求处理；
 - 完整边界行为表见 `docs/state-machine.md` §9.1。

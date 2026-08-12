@@ -1004,6 +1004,10 @@ def _tick_common() -> int:
     项目间并发（不同项目由不同 tick/进程并行处理），同项目串行（项目锁 + claim 防重复）。
     注册的新条目随各项目锁合并写入（避免阶段 1 全量写覆盖其他 tick 的项目更新——并发安全）。"""
     alarms = []
+    # 手动暂停检查：halt 标记存在 → 整体跳过调度（不认领不 spawn，静默；已 spawn 的 worker 不受影响）。
+    # 注意：guard 只管 cron job enabled，不干预此标记——halt 是流水线唯一暂停方式（cron pause 会被 guard 自动恢复）。
+    if os.path.exists(PAUSE_FILE):
+        return 0
     # 阶段 1：全局锁注册（扫描全部项目 input/，仅内存注册；新条目随项目锁落盘）
     with acquire_lock() as _:
         st_all = read_status()
@@ -1743,6 +1747,33 @@ def cmd_get(rid: str) -> int:
 # ---------------- 通知（结果推送，no_agent cron 用） ----------------
 
 NOTIFY_MARKER = os.path.join(LOG_DIR, ".notify_marker")
+PAUSE_FILE = os.path.join(WORKSPACE_DIR, ".pause")  # 手动暂停标记：touch = 流水线整体停止调度（halt）
+
+
+def cmd_halt(reason: str = "") -> int:
+    """手动暂停流水线：touch workspace/.pause（可带原因）。
+    暂停后 tick 整体跳过调度（不认领不 spawn），已运行 worker 不受影响；
+    恢复：unhalt。暂停期间告警/notify cron 仍运行（job 未 pause），只是不调度新工作。"""
+    with acquire_lock() as _:
+        if os.path.exists(PAUSE_FILE):
+            print(f"流水线已处于暂停状态（{PAUSE_FILE}）", file=sys.stderr)
+            return 1
+        os.makedirs(WORKSPACE_DIR, exist_ok=True)
+        with open(PAUSE_FILE, "w", encoding="utf-8") as f:
+            f.write(f"halted at {now_iso()} by manual\nreason: {reason or '(未说明)'}\n")
+        log(f"HALT pipeline paused (manual, reason={reason or 'unspecified'})")
+    return 0
+
+
+def cmd_unhalt() -> int:
+    """恢复流水线：删除 workspace/.pause 标记，下个 tick 恢复调度。"""
+    with acquire_lock() as _:
+        if not os.path.exists(PAUSE_FILE):
+            print("流水线未处于暂停状态", file=sys.stderr)
+            return 1
+        os.remove(PAUSE_FILE)
+        log("UNHALT pipeline resumed (manual)")
+    return 0
 
 
 def cmd_notify() -> int:
@@ -1982,6 +2013,10 @@ def main(argv) -> int:
             return cmd_requeue(rest[0])
         if cmd == "record_product":
             return cmd_record_product(rest[0], rest[1], rest[2])
+        if cmd == "halt":
+            return cmd_halt(" ".join(rest) if rest else "")
+        if cmd == "unhalt":
+            return cmd_unhalt()
         if cmd == "resume":
             return cmd_resume(rest[0], rest[1], rest[2])
         if cmd == "list":
