@@ -1,0 +1,16 @@
+{
+  "versions": [
+    {
+      "name": "v1.0.0",
+      "status": "released",
+      "iterations": [
+        1
+      ],
+      "reqs": [
+        "pacman"
+      ],
+      "released_at": "2026-08-12T00:40:53Z"
+    }
+  ],
+  "current": "v1.0.0"
+}

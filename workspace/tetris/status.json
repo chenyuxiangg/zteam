@@ -320,6 +320,9 @@
       }
     },
     "created_at": "2026-08-08T15:18:43Z",
-    "updated_at": "2026-08-09T04:32:40Z"
+    "updated_at": "2026-08-09T04:32:40Z",
+    "version": "v1.0.0",
+    "iteration": null,
+    "depends_on": []
   }
 }

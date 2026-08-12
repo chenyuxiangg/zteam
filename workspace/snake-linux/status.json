@@ -75,6 +75,9 @@
         "state": "done",
         "state_since": "2026-08-10T17:00:00Z"
       }
-    }
+    },
+    "version": "v1.0.0",
+    "iteration": null,
+    "depends_on": []
   }
 }

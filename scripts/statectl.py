@@ -388,7 +388,164 @@ def pid_alive(pid) -> bool:
         return True  # 存在但无权限 → 视为存活
 
 
-# ---------------- 状态机操作 ----------------
+# ---------------- 版本管理（v2 P1-01：项目 → 语义化版本 → 需求归属） ----------------
+
+VERSIONS_FILE = "versions.json"
+
+
+def versions_path(project: str) -> str:
+    return os.path.join(project_dir(project), VERSIONS_FILE)
+
+
+def ensure_versions(project: str) -> dict:
+    """项目版本清单：不存在则初始化（v1.0.0 planning + current）。
+    结构：{"versions": [{"name","status","iterations","reqs","released_at"}], "current": "v1.0.0"}"""
+    p = versions_path(project)
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    vd = {"versions": [{"name": "v1.0.0", "status": "planning",
+                        "iterations": [1], "reqs": [], "released_at": None}],
+          "current": "v1.0.0"}
+    write_versions(project, vd)
+    return vd
+
+
+def read_versions(project: str) -> dict:
+    return ensure_versions(project)
+
+
+def write_versions(project: str, vd: dict) -> None:
+    os.makedirs(project_dir(project), exist_ok=True)
+    tmp = versions_path(project) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(vd, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, versions_path(project))
+
+
+def _parse_req_meta(path: str) -> dict:
+    """解析需求文件头元数据：version:/iteration:/depends_on:（frontmatter 或注释行）。
+    未指定 → version 用项目 current，iteration/depends_on 后续期自动排。"""
+    meta = {"version": None, "iteration": None, "depends_on": []}
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.read(2000)
+        for line in head.splitlines()[:20]:
+            line = line.strip().lstrip("#-* ").strip()
+            if not line or ":" not in line:
+                continue
+            k, _, v = line.partition(":")
+            k = k.strip().lower()
+            v = v.strip()
+            if k == "version" and v:
+                meta["version"] = v
+            elif k == "iteration" and v:
+                try:
+                    meta["iteration"] = int(v)
+                except ValueError:
+                    pass
+            elif k == "depends_on" and v:
+                meta["depends_on"] = [x.strip() for x in v.split(",") if x.strip()]
+    except Exception:
+        pass
+    return meta
+
+
+def advance_versions(project: str, st: dict) -> None:
+    """版本状态推进：版本下全部需求 released → 版本 released（惰性，查看/调度时调用）。"""
+    vd = read_versions(project)
+    changed = False
+    for v in vd.get("versions", []):
+        if v.get("status") == "released":
+            continue
+        reqs = v.get("reqs") or []
+        if reqs and all(st.get(f"{project}/{r}", {}).get("status") == "released" for r in reqs):
+            v["status"] = "released"
+            v["released_at"] = now_iso()
+            changed = True
+            log(f"VERSION {project}/{v['name']} -> released (all reqs done)")
+    if changed:
+        write_versions(project, vd)
+
+
+def cmd_versions(project: str = None) -> int:
+    """版本聚合视图：statectl versions [project]（无参 = 全部项目）。"""
+    projects = [project] if project else [p for p in sorted(os.listdir(WORKSPACE_DIR))
+                                          if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
+                                          and p not in ("logs",) and not p.startswith(".")]
+    st = read_status()
+    for proj in projects:
+        vd = read_versions(proj)
+        advance_versions(proj, st)
+        vd = read_versions(proj)  # 推进后重读
+        print(f"== 项目 {proj}（当前开发版本: {vd.get('current')}） ==")
+        for v in vd.get("versions", []):
+            reqs = v.get("reqs") or []
+            done = sum(1 for r in reqs if st.get(f"{proj}/{r}", {}).get("status") == "released")
+            print(f"  {v.get('name'):10s} {v.get('status'):9s} 迭代={v.get('iterations')} 需求 {done}/{len(reqs)}"
+                  + (f"  released_at={v.get('released_at')}" if v.get("released_at") else ""))
+            for r in reqs:
+                print(f"      - {r}: {st.get(f'{proj}/{r}', {}).get('status', '?')}")
+    return 0
+
+
+def cmd_assign(rid: str, spec: str) -> int:
+    """人工干预需求归属（v2）：assign <req_id> version=v1.1.0 [iteration=2] [depends_on=a,b]。
+    覆盖自动排期（用户拍板：自动排 + 保留人工干预途径）。"""
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        project, _ = split_key(rid)
+        vd = ensure_versions(project)
+        updates = {}
+        for kv in spec.split():
+            if "=" not in kv:
+                continue
+            k, _, v = kv.partition("=")
+            k = k.strip().lower()
+            v = v.strip()
+            if k == "version":
+                if v not in [x["name"] for x in vd["versions"]]:
+                    vd["versions"].append({"name": v, "status": "planning",
+                                           "iterations": [], "reqs": [], "released_at": None})
+                updates["version"] = v
+            elif k == "iteration":
+                try:
+                    updates["iteration"] = int(v)
+                except ValueError:
+                    print(f"iteration 必须为数字: {v}", file=sys.stderr)
+                    return 1
+            elif k == "depends_on":
+                updates["depends_on"] = [x.strip() for x in v.split(",") if x.strip()]
+        if "version" in updates:
+            old_v = e.get("version")
+            e["version"] = updates["version"]
+            # 维护 versions.json 的 reqs 归属（旧版本移除、新版本加入）
+            for x in vd["versions"]:
+                if x["name"] == old_v and rid.split("/", 1)[1] in x.get("reqs", []):
+                    x["reqs"] = [r for r in x["reqs"] if r != rid.split("/", 1)[1]]
+            for x in vd["versions"]:
+                if x["name"] == updates["version"]:
+                    rid_short = rid.split("/", 1)[1]
+                    if rid_short not in x.get("reqs", []):
+                        x.setdefault("reqs", []).append(rid_short)
+        for k, val in updates.items():
+            if k != "version":
+                e[k] = val
+        write_versions(project, vd)
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"ASSIGN {rid} {updates} (manual)")
+    return 0
+
+
+
 
 def register_new_inputs(st: dict) -> list:
     """扫描各项目 input/ 下未登记文件自动注册为 pending（项目目录自动创建）。
@@ -412,6 +569,16 @@ def register_new_inputs(st: dict) -> list:
                 key = f"{proj}/{rid}"
                 if key in st:
                     continue
+                vd = ensure_versions(proj)
+                meta = _parse_req_meta(os.path.join(idir, name))
+                ver = meta["version"] or vd.get("current", "v1.0.0")
+                if ver not in [x["name"] for x in vd["versions"]]:
+                    vd["versions"].append({"name": ver, "status": "planning",
+                                           "iterations": [], "reqs": [], "released_at": None})
+                for x in vd["versions"]:
+                    if x["name"] == ver and rid not in x.get("reqs", []):
+                        x.setdefault("reqs", []).append(rid)
+                write_versions(proj, vd)
                 st[key] = {
                     "status": "pending",
                     "round": 0,
@@ -420,12 +587,15 @@ def register_new_inputs(st: dict) -> list:
                     "analysis": None,
                     "reviews": [],
                     "failures": 0,
+                    "version": ver,
+                    "iteration": meta["iteration"],
+                    "depends_on": meta["depends_on"],
                     "stages": new_stages(),
                     "created_at": now_iso(),
                     "updated_at": now_iso(),
                 }
                 registered.append(key)
-                log(f"REGISTER {key} status=pending round=0 project={proj}")
+                log(f"REGISTER {key} status=pending round=0 project={proj} version={ver}")
     # 兼容旧结构：workspace/input/<project>/*.md 与平铺 input/<req_id>.md（迁移前）
     legacy_input = os.path.join(WORKSPACE_DIR, "input")
     if os.path.isdir(legacy_input):
@@ -2019,6 +2189,10 @@ def main(argv) -> int:
             return cmd_unhalt()
         if cmd == "resume":
             return cmd_resume(rest[0], rest[1], rest[2])
+        if cmd == "versions":
+            return cmd_versions(rest[0] if rest else None)
+        if cmd == "assign":
+            return cmd_assign(rest[0], rest[1] if len(rest) > 1 else "")
         if cmd == "list":
             return cmd_list()
         if cmd == "get":
