@@ -1781,20 +1781,65 @@ def _deps_satisfied(e: dict, st: dict) -> bool:
     return True
 
 
-def _apply_deps(st: dict, project: str = None) -> None:
-    """依赖状态应用：pending 且依赖未满足 → waiting；waiting 且依赖满足 → pending。
-    tick 每项目锁内调用（waiting 不 spawn 不烧 token）。"""
+def _assign_iteration(e: dict, st: dict, vd: dict) -> int:
+    """惰性自动排迭代（用户拍板：自动排 + assign 可覆盖）：
+    iteration=None 时按依赖拓扑分配（max(依赖迭代)+1），无依赖则版本内最大迭代 +1。
+    已显式指定（文件头/assign）的不覆盖。"""
+    if e.get("iteration") is not None:
+        return e["iteration"]
+    project = e.get("_project") or ""
+    ver = e.get("version")
+    dep_iters = []
+    for dep in e.get("depends_on") or []:
+        de = st.get(f"{project}/{dep}")
+        if de and de.get("iteration") is not None:
+            dep_iters.append(de["iteration"])
+    if dep_iters:
+        it = max(dep_iters) + 1
+    else:
+        it = 1  # 无依赖 → 迭代 1（迭代内需求并行；有依赖才排后续迭代）
+    v = next((x for x in vd.get("versions", []) if x["name"] == ver), None)
+    if v and it not in v.get("iterations", []):
+        v.setdefault("iterations", []).append(it)
+    e["iteration"] = it
+    return it
+
+
+def _iterations_prev_done(e: dict, st: dict) -> bool:
+    """迭代间串行：需求所属迭代的前序迭代（同版本内 iteration < e.iteration）全部 released 才可调度。"""
+    project = e.get("_project") or ""
+    ver = e.get("version")
+    it = e.get("iteration") or 0
+    if it <= 1:
+        return True
+    for key, x in st.items():
+        if not key.startswith(project + "/"):
+            continue
+        if x.get("version") == ver and (x.get("iteration") or 0) < it and x.get("status") != "released":
+            return False
+    return True
+
+
+def _apply_deps(st: dict, project: str = None, vd: dict = None) -> None:
+    """调度前置检查（每 tick 每项目锁内）：依赖 + 迭代间串行。
+    pending 且前置未满足 → waiting；waiting 且前置满足 → pending。
+    waiting 不 spawn 不烧 token。"""
+    if vd is None and project:
+        vd = ensure_versions(project)
+    vd = vd or {"versions": []}
     for key, e in st.items():
         if project and not key.startswith(project + "/"):
             continue
         e["_project"] = key.split("/", 1)[0]
         s = e.get("status")
-        if s == "pending":
-            if e.get("depends_on") and not _deps_satisfied(e, st):
-                e["status"] = "waiting"
-        elif s == "waiting":
-            if _deps_satisfied(e, st):
-                e["status"] = "pending"
+        if s not in ("pending", "waiting"):
+            continue
+        _assign_iteration(e, st, vd)
+        ready = _deps_satisfied(e, st) and _iterations_prev_done(e, st)
+        if s == "pending" and not ready:
+            e["status"] = "waiting"
+        elif s == "waiting" and ready:
+            e["status"] = "pending"
 
 
 def _find_block_stage(e: dict):
