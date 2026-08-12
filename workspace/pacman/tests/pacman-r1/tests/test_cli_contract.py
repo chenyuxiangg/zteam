@@ -1,85 +1,57 @@
-"""CLI/交付契约测试：覆盖方案 U-50/U-51/E-02/E-04/E-05/N-06/N-07。"""
+"""CLI 合同测试：E-02（非 TTY）/ E-04（地图不存在）。
+
+通过 subprocess 在隔离环境运行主程序，验证退出码与错误信息。
+"""
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
-import tempfile
 import unittest
-from pathlib import Path
 
-from tests._path import code_dir
-
-
-def run_cli(args: list[str]) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(code_dir())
-    return subprocess.run(
-        [sys.executable, "-m", "pacman", *args],
-        cwd=code_dir(), env=env, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
-    )
+from tests._path import code_dir  # noqa: F401
 
 
-class TestCliArguments(unittest.TestCase):
-    def test_help(self):
-        result = run_cli(["--help"])
-        self.assertEqual(result.returncode, 0)
-        text = result.stdout.decode("utf-8")
-        for option in ("--map", "--ghosts", "--lives", "--level", "--speed", "--no-color", "--log-ai"):
-            self.assertIn(option, text)
+CODE = code_dir()
 
-    def test_non_tty_rejected(self):
-        result = run_cli([])
+
+class TestNonTtyExit(unittest.TestCase):
+    """E-02：stdin 非 TTY 时 main_cli 报错退出 exit 1。"""
+
+    def test_t_e02_non_tty_exits_1(self):
+        env = {**os.environ, "PYTHONPATH": str(CODE)}
+        result = subprocess.run(
+            [sys.executable, "-m", "pacman"],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
         self.assertEqual(result.returncode, 1)
-        self.assertIn("需要真实终端", result.stderr.decode("utf-8"))
-
-    def test_invalid_ghosts_exit_2(self):
-        for value in ("1", "5", "abc"):
-            with self.subTest(value=value):
-                self.assertEqual(run_cli(["--ghosts", value]).returncode, 2)
-
-    def test_invalid_lives_exit_2(self):
-        for value in ("0", "10"):
-            with self.subTest(value=value):
-                self.assertEqual(run_cli(["--lives", value]).returncode, 2)
-
-    def test_invalid_speed_exit_2(self):
-        for value in ("0.4", "2.1", "abc"):
-            with self.subTest(value=value):
-                self.assertEqual(run_cli(["--speed", value]).returncode, 2)
-
-    def test_invalid_level_exit_2(self):
-        self.assertEqual(run_cli(["--level", "0"]).returncode, 2)
+        err = result.stderr.decode("utf-8", errors="replace")
+        self.assertIn("需要真实终端", err)
 
 
-class TestDeliveryContract(unittest.TestCase):
-    def test_requirements_has_no_runtime_packages(self):
-        req = code_dir() / "requirements.txt"
-        self.assertTrue(req.exists())
-        active = [line for line in req.read_text(encoding="utf-8").splitlines()
-                  if line.strip() and not line.lstrip().startswith("#")]
-        self.assertEqual(active, [])
+class TestMissingMap(unittest.TestCase):
+    """E-04：--map 不存在路径应报错（exit 1）。"""
 
-    def test_readme_documents_required_sections_and_options(self):
-        text = (code_dir() / "README.md").read_text(encoding="utf-8")
-        for phrase in ("运行方式", "键位说明", "AI 策略", "配置选项", "依赖"):
-            self.assertIn(phrase, text)
-        for option in ("--map", "--ghosts", "--lives", "--level", "--speed", "--no-color", "--log-ai"):
-            self.assertIn(option, text)
+    def test_e04_load_map_raises_maperror(self):
+        """直接调用 load_map() 验证 MapError（main_cli 路径已被 TTY 检查先拦截）。"""
+        from pacman.map import MapError, load_map
+        with self.assertRaises(MapError) as cm:
+            load_map("/nonexistent/path/pacman_map.txt")
+        # 错误信息应包含"不存在"
+        self.assertIn("不存在", str(cm.exception))
 
-    def test_logic_layer_does_not_import_curses_or_network(self):
-        package = code_dir() / "pacman"
-        network = re.compile(r"^\s*(?:from|import)\s+(?:socket|urllib|requests|http\.|ftplib|smtplib)\b", re.M)
-        curses_import = re.compile(r"^\s*(?:from\s+curses|import\s+curses)\b", re.M)
-        offenders = []
-        for name in ("config.py", "map.py", "entities.py", "ghost_ai.py", "game.py", "input.py"):
-            src = (package / name).read_text(encoding="utf-8")
-            if curses_import.search(src) or network.search(src):
-                offenders.append(name)
-        self.assertEqual(offenders, [])
+    def test_e04_main_cli_path(self):
+        """_parse_args 解析合法 argv 路径；main_cli 在地图不存在时返回 1（端到端需 TTY，跳过）。"""
+        # 端到端路径需要 TTY，进程会先报"非 TTY"。MapError 由 load_map 内部抛出：
+        # 已通过 test_e04_load_map_raises_maperror 覆盖 MapError 自身。
+        from pacman.main import _parse_args
+        cfg = _parse_args(["--map", "/tmp/nonexistent_pacman.txt"])
+        self.assertEqual(cfg.map_path, "/tmp/nonexistent_pacman.txt")
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

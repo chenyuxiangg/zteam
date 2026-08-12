@@ -1,88 +1,126 @@
-"""config.py — 配置数据类与默认值。
+"""Configuration model for gomoku.
 
-与方案 §1（范围与默认值）、§5.4（边界处理）对应。
+The :class:`Config` dataclass is the single source of truth for runtime
+parameters.  It is constructed from CLI arguments in :mod:`gomoku.main` and
+immutable thereafter.  See plan §4 (interfaces) and §5.4 (edge handling).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import argparse
+from dataclasses import dataclass
+from typing import Literal
 
+ALLOWED_SIZES = (13, 15)
+ALLOWED_DIFFICULTIES = ("weak", "medium", "strong")
+ALLOWED_HUMAN_COLORS = ("black", "white")
+ALLOWED_FORBIDDEN = ("on", "off")
 
-_VALID_SIZES = (13, 15)
-_VALID_DIFFICULTIES = ("weak", "medium", "strong")
-_VALID_FORBIDDEN = ("on", "off")
-_VALID_HUMAN_COLORS = ("black", "white")
+Size = Literal[13, 15]
+Difficulty = Literal["weak", "medium", "strong"]
+HumanColor = Literal["black", "white"]
+Forbidden = Literal["on", "off"]
 
 
 @dataclass(frozen=True)
 class Config:
-    """不可变配置。所有字段必须在构造时合法（构造期校验）。"""
+    """Immutable game configuration.
 
-    size: int = 15           # 棋盘边长；仅 13/15 合法
-    difficulty: str = "medium"  # AI 难度；weak/medium/strong
-    forbidden: str = "off"   # 禁手规则开关；on/off（仅黑方生效）
-    human_color: str = "black"  # 人类执色；black/white（white 为实验性）
-
-    def __post_init__(self) -> None:
-        if self.size not in _VALID_SIZES:
-            raise ValueError(
-                f"size 必须是 {list(_VALID_SIZES)} 之一，得到 {self.size!r}"
-            )
-        if self.difficulty not in _VALID_DIFFICULTIES:
-            raise ValueError(
-                f"difficulty 必须是 {_VALID_DIFFICULTIES} 之一，得到 {self.difficulty!r}"
-            )
-        if self.forbidden not in _VALID_FORBIDDEN:
-            raise ValueError(
-                f"forbidden 必须是 {_VALID_FORBIDDEN} 之一，得到 {self.forbidden!r}"
-            )
-        if self.human_color not in _VALID_HUMAN_COLORS:
-            raise ValueError(
-                f"human_color 必须是 {_VALID_HUMAN_COLORS} 之一，得到 {self.human_color!r}"
-            )
-
-    def with_changes(self, **changes) -> "Config":
-        """返回带修改字段的新 Config（保持 frozen 不可变）。"""
-        return replace(self, **changes)
-
-
-def parse_args(argv: list[str]) -> Config:
-    """解析 CLI 参数为 Config。
-
-    与方案 §2.3、§4（CLI 接口）对应：
-        --size 13|15
-        --difficulty weak|medium|strong
-        --forbidden on|off
-        --human black|white
+    Attributes
+    ----------
+    size:
+        Board side length.  Only 13 or 15 are accepted (plan §1).
+    difficulty:
+        AI strength: ``weak`` / ``medium`` / ``strong``.
+    forbidden:
+        Whether Renju forbidden moves apply (``on`` / ``off``).
+    human_color:
+        Which side the human plays.  ``black`` (default) means the human
+        moves first.  ``white`` is the experimental swap.
+    debug_timing:
+        When True, ``ui.render`` records per-frame render timings to stderr.
     """
-    import argparse
+
+    size: Size
+    difficulty: Difficulty
+    forbidden: Forbidden
+    human_color: HumanColor = "black"
+    debug_timing: bool = False
+
+    # -- derived helpers --------------------------------------------------
+
+    @property
+    def forbidden_enabled(self) -> bool:
+        """Whether forbidden-move detection is active for this game."""
+
+        return self.forbidden == "on"
+
+    @property
+    def ai_color(self) -> str:
+        """The color the AI plays (``'W'`` if human is black, else ``'B'``)."""
+
+        return "W" if self.human_color == "black" else "B"
+
+    @property
+    def human_letter(self) -> str:
+        """The color letter used on the board for the human side."""
+
+        return "B" if self.human_color == "black" else "W"
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser.  Kept in :mod:`config` so it can be
+    reused by tests and tools."""
 
     parser = argparse.ArgumentParser(
         prog="gomoku",
-        description="Linux 终端五子棋（人机对战）",
+        description="Linux terminal gomoku (human vs AI).",
     )
     parser.add_argument(
-        "--size", type=int, choices=list(_VALID_SIZES), default=15,
-        help="棋盘边长（默认 15）",
+        "--size",
+        choices=[str(s) for s in ALLOWED_SIZES],
+        default="15",
+        help="Board side length (13 or 15).",
     )
     parser.add_argument(
         "--difficulty",
-        choices=list(_VALID_DIFFICULTIES), default="medium",
-        help="AI 难度（默认 medium）",
+        choices=ALLOWED_DIFFICULTIES,
+        default="medium",
+        help="AI strength: weak / medium / strong.",
     )
     parser.add_argument(
-        "--forbidden", choices=list(_VALID_FORBIDDEN), default="off",
-        help="黑方禁手规则开关（默认 off）",
+        "--forbidden",
+        choices=ALLOWED_FORBIDDEN,
+        default="off",
+        help="Renju forbidden-move rule (black double-three / double-four / overline).",
     )
     parser.add_argument(
-        "--human", choices=list(_VALID_HUMAN_COLORS), default="black",
+        "--human",
         dest="human_color",
-        help="人类执色（默认 black；white 为实验性）",
+        choices=ALLOWED_HUMAN_COLORS,
+        default="black",
+        help="Side the human plays.  Default: black (human moves first).",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="gomoku 0.4.0",
+    )
+    parser.add_argument(
+        "--debug-timing",
+        action="store_true",
+        help="Emit per-frame render timings to stderr (NFR-02 verification).",
+    )
+    return parser
+
+
+def config_from_args(args: argparse.Namespace) -> Config:
+    """Build a :class:`Config` from parsed CLI args."""
+
     return Config(
-        size=args.size,
-        difficulty=args.difficulty,
-        forbidden=args.forbidden,
-        human_color=args.human_color,
+        size=int(args.size),  # type: ignore[arg-type]
+        difficulty=args.difficulty,  # type: ignore[arg-type]
+        forbidden=args.forbidden,  # type: ignore[arg-type]
+        human_color=args.human_color,  # type: ignore[arg-type]
+        debug_timing=bool(args.debug_timing),
     )

@@ -4,7 +4,9 @@
 依赖：仅 pacman.config。
 对应方案：plans/pacman-r1.md §3.2 input.py、§5.3 非法键忽略（FR-04/FR-16/NFR-04）。
 
-本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
+本文件为 round 5 / code r1 阶段产物（2026-08-11 启动）。
+本轮为 2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code（按 analysis r5 + plan r1 + testplan r1 全新一轮）；
+逻辑与 r2 PASS 版本一致，无变化。
 """
 
 

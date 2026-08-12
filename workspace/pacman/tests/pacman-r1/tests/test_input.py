@@ -1,13 +1,10 @@
-"""input.py 单测：键位映射（T-CTRL-03 非法键 + T-EXIT-02 q 退出 + T-UI-01 P 暂停）。
+"""输入映射测试：FR-04 键位 + parse_key + keycode_to_str。
 
-键位（README §3）：
-- ↑ / W → UP
-- ↓ / S → DOWN
-- ← / A → LEFT
-- → / D → RIGHT
-- P → 暂停
-- Q → 退出
-- 其他键 → NONE（忽略）
+覆盖：
+- FR-04：方向键（curses keycode 259/258/260/261）+ WASD → Action.TURN_*
+- FR-16：q 键 → Action.QUIT
+- Q11：p 键 → Action.PAUSE
+- 非法键 → Action.NONE（忽略）
 """
 from __future__ import annotations
 
@@ -15,58 +12,113 @@ import unittest
 
 from tests._path import code_dir  # noqa: F401
 
-from pacman import input as inp
 from pacman.input import (
-    KEY_A, KEY_D, KEY_DOWN, KEY_LEFT, KEY_PAUSE, KEY_QUIT,
-    KEY_RIGHT, KEY_S, KEY_UP, KEY_W, Action, parse_key,
+    parse_key, keycode_to_str, Action,
+    KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
+    KEY_W, KEY_A, KEY_S, KEY_D,
+    KEY_PAUSE, KEY_QUIT,
 )
 
 
-class TestParseKey(unittest.TestCase):
-    """T-CTRL-03 / T-EXIT-02 / T-UI-01：parse_key 正确映射。"""
+class TestKeycodeToStr(unittest.TestCase):
+    """curses keycode → 字符串（main.py 渲染前先转）。"""
 
-    def test_arrow_keys(self):
+    def test_arrow_key_codes(self):
+        self.assertEqual(keycode_to_str(259), KEY_UP)
+        self.assertEqual(keycode_to_str(258), KEY_DOWN)
+        self.assertEqual(keycode_to_str(260), KEY_LEFT)
+        self.assertEqual(keycode_to_str(261), KEY_RIGHT)
+
+    def test_ascii_letters(self):
+        """小写字母通过 chr() 直接转换。"""
+        self.assertEqual(keycode_to_str(ord('w')), 'w')
+        self.assertEqual(keycode_to_str(ord('p')), 'p')
+
+    def test_unknown_returns_empty(self):
+        self.assertEqual(keycode_to_str(-1), "")
+        # 极大值/无效 keycode
+        self.assertEqual(keycode_to_str(0xFFFFFFFF + 1), "")
+
+
+class TestParseKeyDirectionKeys(unittest.TestCase):
+    """FR-04：方向键 → TURN_UP/DOWN/LEFT/RIGHT。"""
+
+    def test_up(self):
         self.assertEqual(parse_key(KEY_UP), Action.TURN_UP)
+
+    def test_down(self):
         self.assertEqual(parse_key(KEY_DOWN), Action.TURN_DOWN)
+
+    def test_left(self):
         self.assertEqual(parse_key(KEY_LEFT), Action.TURN_LEFT)
+
+    def test_right(self):
         self.assertEqual(parse_key(KEY_RIGHT), Action.TURN_RIGHT)
 
-    def test_wasd(self):
+
+class TestParseKeyWASD(unittest.TestCase):
+    """FR-04：WASD 兼容键位。"""
+
+    def test_w_is_up(self):
         self.assertEqual(parse_key(KEY_W), Action.TURN_UP)
-        self.assertEqual(parse_key(KEY_S), Action.TURN_DOWN)
+
+    def test_a_is_left(self):
         self.assertEqual(parse_key(KEY_A), Action.TURN_LEFT)
+
+    def test_s_is_down(self):
+        self.assertEqual(parse_key(KEY_S), Action.TURN_DOWN)
+
+    def test_d_is_right(self):
         self.assertEqual(parse_key(KEY_D), Action.TURN_RIGHT)
 
-    def test_pause(self):
-        self.assertEqual(parse_key(KEY_PAUSE), Action.PAUSE)
 
-    def test_quit(self):
+class TestParseKeySpecial(unittest.TestCase):
+    """FR-16 / Q11：q 退出 + p 暂停。"""
+
+    def test_q_quits(self):
         self.assertEqual(parse_key(KEY_QUIT), Action.QUIT)
 
-    def test_invalid_returns_none(self):
-        """T-CTRL-03：非法键被忽略。"""
-        for k in ["1", "@", "F5", "x", "Y", "ESC", "ENTER", ""]:
-            self.assertEqual(parse_key(k), Action.NONE, f"key {k!r} should be NONE")
-
-    def test_key_constants_unique(self):
-        """健壮性：所有 KEY_* 常量互异。"""
-        keys = [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_W, KEY_S, KEY_A, KEY_D, KEY_PAUSE, KEY_QUIT]
-        self.assertEqual(len(keys), len(set(keys)))
+    def test_p_pauses(self):
+        self.assertEqual(parse_key(KEY_PAUSE), Action.PAUSE)
 
 
-class TestKeycodeToStr(unittest.TestCase):
-    """T-EXIT-04 配套：keycode → string 转换（curses 集成点）。"""
+class TestParseKeyInvalid(unittest.TestCase):
+    """非法键 → Action.NONE（NFR-04 忽略，不中断）。"""
 
-    def test_keycode_to_str_basic(self):
-        # 假设 keycode_to_str 接受 int 返回 str；非 curses 键返回 "?"
-        # 不强制实现细节，只断言不抛异常
-        try:
-            for code in [65, 97, 258, 259, 260, 261, 113, 112, -1]:
-                s = inp.keycode_to_str(code)
-                self.assertIsInstance(s, str)
-        except (NotImplementedError, AttributeError):
-            self.skipTest("keycode_to_str requires curses context")
+    def test_random_letter_ignored(self):
+        self.assertEqual(parse_key("x"), Action.NONE)
+        self.assertEqual(parse_key("z"), Action.NONE)
+
+    def test_digit_ignored(self):
+        self.assertEqual(parse_key("1"), Action.NONE)
+        self.assertEqual(parse_key("9"), Action.NONE)
+
+    def test_symbol_ignored(self):
+        self.assertEqual(parse_key("!"), Action.NONE)
+        self.assertEqual(parse_key(" "), Action.NONE)
+
+    def test_uppercase_w_ignored(self):
+        """input.py 只接受小写 wasd；大写 W 应被忽略。"""
+        self.assertEqual(parse_key("W"), Action.NONE)
+        self.assertEqual(parse_key("P"), Action.NONE)
+
+    def test_empty_string_ignored(self):
+        self.assertEqual(parse_key(""), Action.NONE)
+
+
+class TestActionEnumExhaustiveness(unittest.TestCase):
+    """Action 枚举涵盖所有解析路径。"""
+
+    def test_action_members(self):
+        names = {a.name for a in Action}
+        self.assertIn("TURN_UP", names)
+        self.assertIn("TURN_DOWN", names)
+        self.assertIn("TURN_LEFT", names)
+        self.assertIn("TURN_RIGHT", names)
+        self.assertIn("PAUSE", names)
+        self.assertIn("QUIT", names)
+        self.assertIn("NONE", names)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

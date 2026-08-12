@@ -6,7 +6,11 @@
 对应方案：plans/pacman-r1.md §3.2 game.py、§3.3 主循环时序、§5.3 边界处理、§5.4 难度公式。
 不依赖 curses（纯逻辑层，可单测）。
 
-本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
+本文件为 round 5 / code r1 阶段产物（2026-08-11 启动）。
+本轮为 2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code（按 analysis r5 + plan r1 + testplan r1 全新一轮）；
+本轮直接吸收 r2（PASS）修复并从产出开始即落实 FR-05：
+- tick() 玩家分支改为 ``self.player.add_motion(self.gm)``，让 ``Player.add_motion`` 能做通行校验。
+其余逻辑无变化（与 r2 PASS 版本一致）。
 """
 
 
@@ -159,8 +163,8 @@ class Game:
         # 1. 玩家转向缓冲消费（每 tick 开始）
         self.player.consume_turn(self.gm)
 
-        # 2. 玩家移动（按当前方向走；玩家恒 1.0 速度）
-        self.player.add_motion()
+        # 2. 玩家移动（按当前方向走；玩家恒 1.0 速度；每步校验通行性，FR-05）
+        self.player.add_motion(self.gm)
 
         # 3. 幽灵决策 + 移动
         self._step_ghosts(dt)

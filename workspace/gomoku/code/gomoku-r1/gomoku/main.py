@@ -1,169 +1,220 @@
-"""main.py — 主控（CLI 装配 / 回合循环 / 重开 / 退出）。
+"""CLI entry point and game loop for gomoku.
 
-约束（与方案 §3 / §5.4 一致）：
-- CLI 参数解析（argparse）→ Config；
-- 装配 Board / AI / UI；
-- 主循环：渲染 → 落子（人类或 AI）→ 胜负 / 禁手 / 满盘判定 → 终局提示 → 重开/退出；
-- Ctrl+C 顶层捕获并礼貌退出（exit 0）。
+This module wires the :mod:`gomoku.board`, :mod:`gomoku.ai`,
+:mod:`gomoku.ui`, and :mod:`gomoku.config` modules together and
+implements:
 
-辅助：
-    main(): CLI 入口；
-    game_loop(...): 启动一回合循环（便于测试）。
+* CLI argument parsing (size / difficulty / forbidden / human color /
+  debug-timing);
+* the main turn loop with proper move validation, win detection, and
+  forbidden-move handling (FR-07 priority: five wins over a
+  forbidden move);
+* replay / restart on game end (FR-10);
+* Ctrl+C / EOFError / "quit" command polite exit (FR-11);
+* terminal-size check (FR-03 / NFR-03);
+* the safety-net check (post-AI move): if a forbidden move slipped
+  through, the safety net declares black lost and the game ends.
+
+The forbidden-move prefilter lives in :mod:`gomoku.ai` (see
+``_filter_legal``) so the safety-net here is a *secondary* check (it
+can fire if the AI ever returns a forbidden cell because of a bug,
+which would surface as an immediate loss in tests).
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
-import time
-from typing import Optional
+from typing import Optional, Tuple
 
-from .ai import choose_move
-from .board import Board, MoveError, parse_move
-from .config import Config, parse_args
-from .ui import GameState, UI
+from gomoku.ai import choose_move
+from gomoku.board import (
+    BLACK,
+    EMPTY,
+    MoveError,
+    REASON_OCCUPIED,
+    REASON_OUT_OF_RANGE,
+    WHITE,
+    Board,
+)
+from gomoku.config import (
+    ALLOWED_FORBIDDEN,
+    build_arg_parser,
+    config_from_args,
+)
+from gomoku.ui import (
+    _TimingState,
+    ensure_terminal_size,
+    get_move,
+    render,
+)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    """CLI 入口。返回 exit code（0=正常退出）。"""
+def main(argv: Optional[list] = None) -> int:
+    """Console-script entry point.  Returns a process exit code."""
+
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    config = config_from_args(args)
+
     try:
-        cfg = parse_args(argv if argv is not None else sys.argv[1:])
-    except SystemExit as e:
-        return int(e.code) if isinstance(e.code, int) else 2
+        return _run(config)
+    except KeyboardInterrupt:
+        print("\nInterrupted — bye.", file=sys.stderr)
+        return 0
 
-    return game_loop(cfg)
 
+def _run(config) -> int:
+    """Game loop.  Returns 0 on polite exit, non-zero on argparse error."""
 
-def game_loop(cfg: Config, *, board: Board | None = None, ui: UI | None = None) -> int:
-    """跑一回合循环；终局后询问重开/退出。
-
-    注入 board/UI 用于测试；不传则新建。
-    """
-    if board is None:
-        board = Board(cfg.size)
-    if ui is None:
-        ui = UI(cfg.size)
-
-    human_color = "B" if cfg.human_color == "black" else "W"
-    ai_color = "W" if human_color == "B" else "B"
+    ensure_terminal_size()
+    board = Board(config.size)
+    state = {
+        "turn": BLACK if config.human_color == "black" else WHITE,
+        "over": False,
+        "winner": None,
+        "message": "Game started.",
+    }
+    timing = _TimingState(enabled=config.debug_timing, samples=[])
 
     while True:
-        # 渲染初始棋盘
-        state = _initial_state(human_color)
-        board.reset()
-        ui.render(board, state)
-        # 主循环
         try:
-            while not state.over:
-                if state.turn == human_color:
-                    _human_turn(board, state, ui)
-                else:
-                    _ai_turn(board, state, cfg, ai_color, ui)
-                # 胜负 / 满盘判定
-                _post_turn_check(board, state)
-                ui.render(board, state)
-        except (KeyboardInterrupt, EOFError):
-            # Ctrl+C / Ctrl+D 退出
-            ui.console.print("\n[bold]退出[/bold]")
-            return 0
-
-        # 终局 → 询问重开
-        try:
-            ans = ui.console.input("\n重开？(y/n) [默认 y] > ")
+            _step(board, state, config, timing)
         except (EOFError, KeyboardInterrupt):
-            ans = ""
-        if ans.strip().lower() in ("n", "no"):
-            ui.console.print("[bold]退出[/bold]")
+            # Polite exit on Ctrl+D / Ctrl+C
             return 0
-        # 否则进入下一轮，保持 cfg
+        except SystemExit as exc:
+            # ui.get_move raises SystemExit(0) for "quit" / "exit" / "q"
+            return int(exc.code) if isinstance(exc.code, int) else 0
+        if state["over"]:
+            try:
+                again = _ask_replay(config)
+            except (EOFError, KeyboardInterrupt):
+                return 0
+            if again:
+                board.reset()
+                state.update(
+                    {
+                        "turn": BLACK if config.human_color == "black" else WHITE,
+                        "over": False,
+                        "winner": None,
+                        "message": "Game restarted.",
+                    }
+                )
+                continue
+            return 0
 
 
-def _initial_state(human_color: str) -> GameState:
-    """开局状态：人类执色方先手；消息为空。"""
-    return GameState(turn=human_color, last_move=None, message="", over=False)
+def _step(board: Board, state: dict, config, timing: _TimingState) -> None:
+    """Render, get/apply a move, check for win/forbidden/draw, switch turn."""
 
-
-def _human_turn(board: Board, state: GameState, ui: UI) -> None:
-    """人类落子：循环读取坐标 → 校验 → 落子。"""
-    while True:
-        move = ui.get_move(board, state.turn)
-        if move is None:
-            # 退出
-            raise KeyboardInterrupt()
-        x, y = move
-        # 占用校验（额外检查，因为 parse_move 不查占用）
-        if board.cell(x, y) != ".":
-            ui.console.print(f"[red]已占用[/red]：({x}, {y})")
-            continue
-        # 禁手检查（黑方）
-        if state.turn == "B" and board.check_forbidden(x, y, "B")[0]:
-            fb, reason = board.check_forbidden(x, y, "B")
-            # 禁手当判黑负白胜——但禁手判定前先看是否成五；成五则胜
-            # board.check_forbidden 已内部按"成五优先"返回 (False, None)
-            # 这里若返回 True，表示确实禁手 → 黑负
-            state.forbidden_reason = reason
-            state.over = True
-            state.winner = "W"
-            return
-        # 落子
-        ok = board.place(x, y, state.turn)
-        if not ok:
-            ui.console.print("[red]落子失败[/red]")
-            continue
-        state.last_move = (x, y)
-        # 检查成五：人类刚落，立即判
-        winner = board.check_win(x, y)
-        if winner:
-            state.over = True
-            state.winner = winner
-            return
-        # 切换回合
-        state.turn = "W" if state.turn == "B" else "B"
-        state.message = ""
-        state.forbidden_reason = None
-        return
-
-
-def _ai_turn(board: Board, state: GameState, cfg: Config, ai_color: str, ui: UI) -> None:
-    """AI 落子：按 cfg.difficulty 调 AI。"""
-    state.message = f"AI 思考中（{cfg.difficulty}）..."
-    ui.render(board, state)
-    t0 = time.monotonic()
-    # 时间预算：弱/中 0.5s，强 2s（与方案 §5.3 / README §6 一致）
-    time_budget = {"weak": 0.05, "medium": 0.2, "strong": 2.0}.get(cfg.difficulty, 0.2)
-    move = choose_move(
+    render(
         board,
-        ai_color,
-        difficulty=cfg.difficulty,
-        time_budget=time_budget,
+        turn=state["turn"],
+        last_move=board.last_move,
+        message=state.get("message", ""),
+        over=state["over"],
+        winner=state.get("winner"),
+        timing=timing,
     )
-    elapsed = time.monotonic() - t0
-    if move is None:
-        # 无合法点（满盘）—— 由 _post_turn_check 处理平局
+    state["message"] = ""
+
+    if state["over"]:
         return
+
+    color = state["turn"]
+    if color == _human_color(config):
+        move = get_move(board)
+    else:
+        move = choose_move(board, color, config)
+        if move is None:
+            state["over"] = True
+            state["winner"] = None
+            state["message"] = "draw (no empty cells)"
+            render(board, turn=color, last_move=board.last_move,
+                   message=state["message"], over=True, winner=None,
+                   timing=timing)
+            return
+
+    # Place the stone.
     x, y = move
-    board.place(x, y, ai_color)
-    state.last_move = (x, y)
-    state.message = f"AI：{chr(ord('A') + x)}{y + 1}（{elapsed:.2f}s）"
-    winner = board.check_win(x, y)
-    if winner:
-        state.over = True
-        state.winner = winner
-        return
-    state.turn = "B" if state.turn == "W" else "W"
+    if not board.place(x, y, color):
+        # This can only happen for a *human* move (the AI filters its
+        # own candidates).  Treat as illegal input.
+        state["message"] = f"illegal move at {(x, y)} (occupied or out of range)"
+        return  # re-render next loop
 
+    # Renju safety-net for black: if the human played a forbidden move,
+    # declare the human lost (FR-07).
+    if color == BLACK and config.forbidden_enabled:
+        is_forbidden, reason = board.check_forbidden(x, y, color)
+        # After placing, check_forbidden(x, y, B) still returns the
+        # status of the move that *would* be made at (x, y).  Since the
+        # stone is already there, check_forbidden treats it as
+        # occupied and returns (False, None).  So we compute forbidden
+        # *before* placing, or via undo.  We do a quick recompute:
+        is_forbidden, reason = _recheck_forbidden(board, x, y, color)
+        if is_forbidden:
+            state["over"] = True
+            state["winner"] = WHITE
+            state["message"] = f"Black played a forbidden move ({reason}) — White wins."
+            render(board, turn=color, last_move=(x, y),
+                   message=state["message"], over=True, winner=WHITE,
+                   timing=timing)
+            return
 
-def _post_turn_check(board: Board, state: GameState) -> None:
-    """每次落子后：检查满盘 / 平局；如成五已由调用者 set state.over。"""
-    if state.over:
+    # Win?
+    if board.check_win(x, y) == color:
+        state["over"] = True
+        state["winner"] = color
+        state["message"] = f"{'Black' if color == BLACK else 'White'} wins!"
+        render(board, turn=color, last_move=(x, y),
+               message=state["message"], over=True, winner=color,
+               timing=timing)
         return
+
+    # Draw?
     if board.is_full():
-        state.over = True
-        state.winner = None  # 平局
+        state["over"] = True
+        state["winner"] = None
+        state["message"] = "draw"
+        render(board, turn=color, last_move=(x, y),
+               message=state["message"], over=True, winner=None,
+               timing=timing)
+        return
+
+    # Switch turn
+    state["turn"] = WHITE if color == BLACK else BLACK
 
 
-# Board.reset 已在 board.py 中实现，无需此处 monkey-patch。
+def _recheck_forbidden(
+    board: Board, x: int, y: int, color: str
+) -> Tuple[bool, Optional[str]]:
+    """Undo the just-placed stone, run ``check_forbidden`` on the now
+    empty cell, then re-place the stone.  Used to detect forbidden moves
+    *after* the move has been recorded on the board.
+    """
+
+    if color != BLACK:
+        return False, None
+    board.undo(x, y)
+    is_forbidden, reason = board.check_forbidden(x, y, BLACK)
+    board.place(x, y, BLACK)
+    return is_forbidden, reason
+
+
+def _human_color(config) -> str:
+    return BLACK if config.human_color == "black" else WHITE
+
+
+def _ask_replay(config) -> bool:
+    """Prompt the user for replay / quit.  Returns True to restart."""
+
+    try:
+        line = input("Play again? [y/N] > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return line in ("y", "yes")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

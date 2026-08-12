@@ -5,7 +5,13 @@
 对应方案：plans/pacman-r1.md §3.2 entities.py、§4.2 数据结构、§5.2 移动与速度模型。
 不依赖 curses（纯逻辑层，可单测）。
 
-本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
+本文件为 round 5 / code r1 阶段产物（2026-08-11 启动）。
+本轮为 2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code（按 analysis r5 + plan r1 + testplan r1 全新一轮）；
+本轮直接吸收 r2（PASS）修复并从产出开始即落实 FR-05：
+- ``Player.add_motion`` 每步校验 ``game_map.is_passable_for_player``，不可通行即停在原格且清零 acc；
+- Mover 基类增加可选 ``game_map`` 参数（玩家路径传 gm；幽灵路径忽略）；
+- Game.tick() 玩家分支改为 ``self.player.add_motion(self.gm)``。
+其余逻辑无变化（与 r2 PASS 版本一致）。
 """
 
 
@@ -46,17 +52,28 @@ class Mover:
     def set_pos(self, pos):
         self.row, self.col = pos[0], pos[1]
 
-    def add_motion(self) -> int:
+    def add_motion(self, game_map: Optional[GameMap] = None) -> int:
         """主循环调用：累积速度，达到 1 格则走一步并返回步数（0 或 1）。
 
         为防调试器/计时器大暂停后跳帧，速度累积封顶：单次最多走 4 格。
+
+        ``game_map`` 为可选通行性回调：传入时（玩家）每步校验
+        ``game_map.is_passable_for_player``；不传入时（幽灵）按各实体自身
+        语义走（Mover 基类不校验；Ghost 子类按需重写——但当前 Ghost 仍用无校验
+        的 Mover 基类语义，自身走门/鬼屋的合法性由 choose_dir 保证）。
         """
         self.acc += self.speed
         steps = 0
         while self.acc >= 1.0 and steps < 4:
             self.acc -= 1.0
-            self.row += self.dir.drow
-            self.col += self.dir.dcol
+            nr = self.row + self.dir.drow
+            nc = self.col + self.dir.dcol
+            if game_map is not None and not game_map.is_passable_for_player(nr, nc):
+                # 通行校验失败：停止在本格，acc 清零避免下一 tick 仍累积
+                self.acc = 0.0
+                break
+            self.row = nr
+            self.col = nc
             steps += 1
         # 极端兜底：避免 acc 无限累积
         if self.acc >= 4.0:
@@ -110,6 +127,23 @@ class Player(Mover):
         # 不合法：保留缓冲（玩家可能还会继续按；不粘滞则下次覆盖）
         # 但若按了反向，则 reverse() 已清空；这里不合法不反向则不清，让玩家继续走原方向
 
+    def add_motion(self, game_map: Optional[GameMap] = None) -> int:
+        """玩家移动：每步位移前校验玩家通行性（FR-05；修复 r1 评审 #1）。
+
+        玩家不可穿墙、不可进鬼屋门 / 鬼屋：每一步必须先调用
+        ``game_map.is_passable_for_player(next_row, next_col)``，不可通行则
+        停在原格（不会先进入再回退，也不会"累积到下一 tick 才检测"——逐步校验）。
+
+        ``game_map`` 在玩家场景下是必传的（游戏主循环 tick 显式传入 ``self.gm``）；
+        保留 Optional 默认值仅为与基类签名兼容（Pyright 不抱怨 override 不兼容），
+        实测传入 None 时等同于 Mover 基类行为——**生产路径不会发生**。
+
+        speed 单位：格/tick；封顶 4 步/tick（与 Mover 一致，防大 dt 跳帧）。
+
+        返回实际走的步数（0 或 1；玩家恒 1.0 故通常为 1）。
+        """
+        return super().add_motion(game_map=game_map)
+
     def update_protection(self, dt: float) -> None:
         """更新保护期倒计时。"""
         if self.protection_timer > 0.0:
@@ -149,8 +183,12 @@ class Ghost(Mover):
         """实际用于累积的速度（覆盖 Mover.speed 调用入口）。"""
         return self.speed_for_mode()
 
-    def add_motion(self) -> int:
-        """重写 Mover.add_motion，使用 effective_speed（模式敏感）。"""
+    def add_motion(self, game_map: Optional[GameMap] = None) -> int:
+        """重写 Mover.add_motion，使用 effective_speed（模式敏感）。
+
+        ``game_map`` 参数被忽略——幽灵走门 / 鬼屋是合法的，方向选择由
+        ``choose_dir`` 过滤候选保证（不会撞墙），无需在移动入口再做校验。
+        """
         self.acc += self.effective_speed()
         steps = 0
         while self.acc >= 1.0 and steps < 4:

@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "purpose": "Midgame board fixtures for NFR-01 timing (TC-AI-07).",
+    "rule": "Each case is a partial board (~20 stones). The strong AI (15x15, off-forbidden) must produce a move in under 2.0 seconds. We pre-compute 10 different seeds so the timing distribution can be sampled.",
+    "size": 15
+  },
+  "cases": [
+    {"id": "M01", "seed": 1001, "target_moves": 20},
+    {"id": "M02", "seed": 1002, "target_moves": 22},
+    {"id": "M03", "seed": 1003, "target_moves": 24},
+    {"id": "M04", "seed": 1004, "target_moves": 26},
+    {"id": "M05", "seed": 1005, "target_moves": 28},
+    {"id": "M06", "seed": 1006, "target_moves": 30},
+    {"id": "M07", "seed": 1007, "target_moves": 32},
+    {"id": "M08", "seed": 1008, "target_moves": 34},
+    {"id": "M09", "seed": 1009, "target_moves": 36},
+    {"id": "M10", "seed": 1010, "target_moves": 38}
+  ]
+}

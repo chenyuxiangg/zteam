@@ -1,0 +1,129 @@
+{
+  "_meta": {
+    "purpose": "AI blocking-case fixtures for FR-06 acceptance.",
+    "rule": "Each case places N stones so that the human side (B) is one move away from a win. The AI (W, medium difficulty) MUST play at one of the candidate cells listed (or at any cell that blocks the threat).",
+    "note": "The 'win_cells' list is the set of empty cells the human can play to win (5-in-a-row). The 'must_block_any_of' list is the same set — a blocking response is any subset of these cells. We also accept AI responses that create a counter-threat (a 4-run of its own, which forces the human to respond) as a valid block, since the AI's medium path uses _must_block_move + eval."
+  },
+  "blocking_cases": [
+    {
+      "id": "B01_horizontal_open_four",
+      "label": "横线 open-four: 4 stones in a row, both ends open",
+      "setup": [[7, 7], [8, 7], [9, 7], [10, 7]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[6, 7], [11, 7]],
+      "seed": 1
+    },
+    {
+      "id": "B02_horizontal_closed_four",
+      "label": "横线 冲四: 4 stones in a row, one end closed",
+      "setup": [[7, 7], [8, 7], [9, 7], [10, 7], [6, 7, "W"]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[11, 7]],
+      "seed": 2
+    },
+    {
+      "id": "B03_vertical_open_four",
+      "label": "纵线 open-four",
+      "setup": [[7, 5], [7, 6], [7, 7], [7, 8]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[7, 4], [7, 9]],
+      "seed": 3
+    },
+    {
+      "id": "B04_diag_open_four",
+      "label": "正斜线 open-four",
+      "setup": [[3, 3], [4, 4], [5, 5], [6, 6]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[2, 2], [7, 7]],
+      "seed": 4
+    },
+    {
+      "id": "B05_anti_diag_open_four",
+      "label": "反斜线 open-four",
+      "setup": [[6, 3], [5, 4], [4, 5], [3, 6]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[7, 2], [2, 7]],
+      "seed": 5
+    },
+    {
+      "id": "B06_horizontal_live_three",
+      "label": "横线 活三: _XXX_ pattern",
+      "setup": [[7, 7], [8, 7], [9, 7]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[6, 7], [10, 7]],
+      "seed": 6
+    },
+    {
+      "id": "B07_jump_three_a1",
+      "label": "跳三 _X_XX_ (plan A1 棋形, red-line)",
+      "setup": [[7, 7], [9, 7], [10, 7]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[6, 7], [8, 7], [11, 7]],
+      "seed": 7
+    },
+    {
+      "id": "B08_jump_three_a3",
+      "label": "跳三 _XX_X_ (plan A3 棋形, red-line)",
+      "setup": [[7, 7], [8, 7], [10, 7]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[6, 7], [9, 7], [11, 7]],
+      "seed": 8
+    },
+    {
+      "id": "B09_vertical_live_three",
+      "label": "纵线 活三",
+      "setup": [[7, 5], [7, 6], [7, 7]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[7, 4], [7, 8]],
+      "seed": 9
+    },
+    {
+      "id": "B10_diag_live_three",
+      "label": "斜线 活三",
+      "setup": [[3, 3], [4, 4], [5, 5]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[2, 2], [6, 6]],
+      "seed": 10
+    },
+    {
+      "id": "B11_double_threat_four_and_three",
+      "label": "横线 4 + 纵线 3 (双威胁, 一手必堵)",
+      "setup": [[7, 7], [8, 7], [9, 7], [10, 7], [7, 5], [7, 6]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[6, 7], [11, 7], [7, 4], [7, 8]],
+      "seed": 11
+    },
+    {
+      "id": "B12_double_threat",
+      "label": "双三 (两条活三)",
+      "setup": [[7, 7], [8, 7], [9, 7], [7, 8], [7, 9]],
+      "human_color": "B",
+      "ai_color": "W",
+      "difficulty": "medium",
+      "must_block_any_of": [[6, 7], [10, 7], [7, 6], [7, 10]],
+      "seed": 12
+    }
+  ]
+}

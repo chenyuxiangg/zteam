@@ -1,17 +1,25 @@
-"""ai.py — AI 决策层。
+"""AI decision layer for gomoku.
 
-对应方案 §5.3（评估函数 + 候选点生成 + Alpha-Beta + 三档难度）/ §5.4（边界与异常）。
+Three difficulty levels (plan §5.3):
 
-模块要素：
-    SCORE:                模式 → 分值（方案 §5.3 / README §5.2）
-    evaluate(board, c):   全盘静态评估（差值 = c_score - opp_score）
-    evaluate_point(board, x, y, c): 单点评估（落子后）
-    classify_point(board, x, y, c): 给出单点最关键模式
-    candidates(board, color, ...):  邻域剪枝候选
-    choose_move(board, color, diff, ...): 三档调度入口
-    _alpha_beta(...):              迭代加深搜索
+* ``weak``    — legal random among neighbors, with a basic "do not
+  actively lose" filter (avoid letting the opponent get a free open
+  four on the very next move).
+* ``medium``  — pattern-evaluation function (live-two / sleep-two /
+  live-three / sleep-three / open-four / five).  Blocks immediate
+  opponent threats (open-four / open-three) before attacking.
+* ``strong``  — alpha-beta search with iterative deepening and a
+  time budget, plus the same pattern-eval as ``medium`` for leaf
+  scoring.  Strong mode also constructs its own open-fours /
+  open-threes.
 
-依赖：仅 board（标准库）；无第三方依赖，零依赖可玩（H6 / 退化基线）。
+The ``choose_move`` entry point takes a :class:`Config` (or, for
+backward-compat with the dev-only forbidden_cases module, an explicit
+``forbidden`` flag) and applies the **forbidden-move prefilter** before
+any search (plan §5.3 末段; this is the requirement tracked by the
+code-reviewer's "严重 意见 1" — every candidate is run through
+:meth:`Board.check_forbidden` and forbidden moves are dropped, so the
+AI can never play a forbidden stone when ``forbidden=True``).
 """
 
 from __future__ import annotations
@@ -19,501 +27,591 @@ from __future__ import annotations
 import math
 import random
 import time
-from typing import Callable, Iterable
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
-from .board import Board
+from gomoku.board import BLACK, EMPTY, WHITE, Board
+from gomoku.config import Config
 
+# Pattern scores for the evaluation function (plan §5.3).  These are
+# inspired by the canonical Gomocup patterns and tuned for "block
+# double-three / open-four" baseline play.
+SCORE_FIVE = 10_000_000
+SCORE_OPEN_FOUR = 1_000_000   # _XXXX_   (one move to win)
+SCORE_DOUBLE_FOUR = 800_000   # two fours at once
+SCORE_SIMPLE_FOUR = 100_000   # XXXX. / .XXXX / XX_XX (open or closed)
+SCORE_DOUBLE_THREE = 50_000   # two live-threes at once
+SCORE_LIVE_THREE = 10_000     # _XXX_ (open three)
+SCORE_SLEEP_THREE = 1_000     # closed three
+SCORE_LIVE_TWO = 100
+SCORE_SLEEP_TWO = 10
 
-# ---- 评分表（方案 §5.3）----
-#
-# 分值档次按指数级拉开，避免双重 0.0 的相互抵消；具体数值是经验值。
+# Search parameters (plan §5.3 / H8).
+DEFAULT_TIME_BUDGET = 1.5  # seconds
+DEFAULT_MAX_CANDIDATES = 12
+DEFAULT_STRONG_DEPTH = 4
+DEFAULT_MEDIUM_DEPTH = 2
 
-SCORE: dict[str, int] = {
-    "FIVE":       1_000_000,   # 5 连 = 胜
-    "LIVE_FOUR":    100_000,   # 活四：下一步必成五
-    "RUSH_FOUR":     10_000,   # 冲四
-    "LIVE_THREE":     5_000,   # 活三
-    "SLEEP_THREE":      500,
-    "LIVE_TWO":         200,
-    "SLEEP_TWO":         20,
-    "ONE":                1,
-}
-
-
-# ---- 评估函数（方案 §5.3）----
-#
-# 实现：单点评估 evaluate_point；全盘评估 evaluate（按"局面已有棋子位置"做 4 方向扫描）。
-# 模式归类：以 (x, y) 为中心，对 4 方向各取一段 9 窗口，按包含的 B-stone 数 + 两端开放
-# 情况归类为 FIVE / LIVE_FOUR / RUSH_FOUR / LIVE_THREE / SLEEP_THREE / LIVE_TWO / SLEEP_TWO / ONE。
-
-_DIRECTIONS = ((1, 0), (0, 1), (1, 1), (1, -1))
-
-
-def _line_through_b(board: Board, x: int, y: int, dx: int, dy: int) -> str:
-    """以 (x, y) 为中心，沿 (dx, dy) 取 9 字符，按 B 视角：
-        B → 'B'; . → '.'; W or 越界 → '*' （阻挡）。
-    """
-    chars = []
-    for k in range(-4, 5):
-        nx, ny = x + dx * k, y + dy * k
-        chars.append(_polar_cell_b(board, nx, ny))
-    return "".join(chars)
+# Neighbourhood for "candidate" generation (plan §5.3).
+CANDIDATE_RADIUS = 2
 
 
-def _polar_cell_b(board: Board, x: int, y: int) -> str:
-    """B 视角的格子字符（仅用于评估模式识别，不修改棋盘）。"""
-    if not (0 <= x < board.size and 0 <= y < board.size):
-        return "*"
-    c = board.cell(x, y)
-    if c == "B":
-        return "B"
-    if c == ".":
-        return "."
-    return "*"
+@dataclass
+class _SearchBudget:
+    """Time budget + deadline helpers shared by weak/medium/strong."""
+
+    deadline: float
+    time_budget: float
+
+    @classmethod
+    def from_config(cls, config: Config, time_budget: Optional[float] = None) -> "_SearchBudget":
+        tb = time_budget if time_budget is not None else DEFAULT_TIME_BUDGET
+        return cls(deadline=time.monotonic() + tb, time_budget=tb)
+
+    def is_expired(self) -> bool:
+        return time.monotonic() >= self.deadline
 
 
-def _classify_line(line: str) -> str:
-    """对 9 字符 line（含中心 B），返回最关键模式。
-
-    中心 B 是 line 模拟的"我方刚下的子"或"棋盘已有 B"。
-    模式归类按"全局最强者"：FIVE > LIVE_FOUR > RUSH_FOUR > LIVE_THREE > SLEEP_THREE > LIVE_TWO > SLEEP_TWO > ONE
-    """
-    # FIVE: 5+ B
-    if line.count("B") >= 5:
-        return "FIVE"
-    # 找 LIVE_FOUR: 中心 B + 4 子（5 子含 B）span 5 且两端开放 → _XXXX_
-    # 简化：枚举所有长度 5/6 包含中心的窗口
-    best = "ONE"
-    best_score = SCORE["ONE"]
-    n = len(line)
-    center = n // 2
-    for win_len in (3, 4, 5, 6):
-        s_lo = max(0, center - (win_len - 1))
-        s_hi = min(n - win_len + 1, center + 1)
-        for s in range(s_lo, s_hi):
-            e = s + win_len
-            w = line[s:e]
-            if center not in range(s, e):
-                continue
-            if "*" in w:
-                continue
-            cat = _classify_window(w, line, s, e, n)
-            if cat is None:
-                continue
-            score = SCORE.get(cat, 0)
-            if score > best_score:
-                best_score = score
-                best = cat
-    return best
-
-
-def _classify_window(w: str, line: str, s: int, e: int, n: int) -> str | None:
-    """对 line[s:e] 窗口分类。
-
-    返回：
-        None            窗口不足以归类
-        'FIVE'/'LIVE_FOUR'/...  最强模式
-    """
-    b_count = w.count("B")
-    if b_count == 0:
-        return None
-    if b_count >= 5:
-        return "FIVE"
-    if b_count == 4:
-        # 4 B 含中心 → check 开放
-        # 找最左 B 与最右 B 的下标
-        first_b = w.index("B")
-        last_b = len(w) - 1 - w[::-1].index("B")
-        left = line[s - 1] if s - 1 >= 0 else "*"
-        right = line[e] if e < n else "*"
-        if left == "." and right == ".":
-            return "LIVE_FOUR"
-        if left == "." or right == ".":
-            return "RUSH_FOUR"
-        # 两端都被封（含边界）
-        return "RUSH_FOUR"  # 4 子即使两端都封闭，威胁对方也能挡住一次，仍按 RUSH_FOUR 简化
-    if b_count == 3:
-        first_b = w.index("B")
-        last_b = len(w) - 1 - w[::-1].index("B")
-        # 两端开放
-        left = line[s - 1] if s - 1 >= 0 else "*"
-        right = line[e] if e < n else "*"
-        if left == "." and right == ".":
-            return "LIVE_THREE"
-        # 一端开放一端封闭
-        if left == "." or right == ".":
-            return "SLEEP_THREE"
-        # 都封闭 → 也按 SLEEP_THREE 简化
-        return "SLEEP_THREE"
-    if b_count == 2:
-        first_b = w.index("B")
-        last_b = len(w) - 1 - w[::-1].index("B")
-        left = line[s - 1] if s - 1 >= 0 else "*"
-        right = line[e] if e < n else "*"
-        if left == "." and right == ".":
-            return "LIVE_TWO"
-        if left == "." or right == ".":
-            return "SLEEP_TWO"
-        return "SLEEP_TWO"
-    if b_count == 1:
-        return "ONE"
-    return None
-
-
-def evaluate_point(board: Board, x: int, y: int, color: str) -> int:
-    """单点评估：模拟落 color 在 (x, y) 后，4 方向最关键模式之和。
-
-    返回该点的分值（我方 - 对手 视角的差值，已等于该点本身的分值）。
-    实际调用方通常对"我方落这点的得分"使用。
-    """
-    if not (0 <= x < board.size and 0 <= y < board.size):
-        return 0
-    if board.cell(x, y) != ".":
-        return 0
-    score = 0
-    opp = "W" if color == "B" else "B"
-    for dx, dy in _DIRECTIONS:
-        my_line = _line_through_color(board, x, y, dx, dy, color)
-        cat = _classify_line(my_line)
-        score += SCORE.get(cat, 0)
-    return score
-
-
-def _line_through_color(board: Board, x: int, y: int, dx: int, dy: int, color: str) -> str:
-    """以 color 视角构造 line（中心为 color）。"""
-    chars = []
-    for k in range(-4, 5):
-        nx, ny = x + dx * k, y + dy * k
-        chars.append(_polar_cell_color(board, nx, ny, color))
-    s = "".join(chars)
-    return s[:4] + color + s[5:]
-
-
-def _polar_cell_color(board: Board, x: int, y: int, color: str) -> str:
-    if not (0 <= x < board.size and 0 <= y < board.size):
-        return "*"
-    c = board.cell(x, y)
-    if c == color:
-        return color
-    if c == ".":
-        return "."
-    return "*"
-
-
-def evaluate(board: Board, color: str) -> int:
-    """全盘静态评估：color_score - opp_score 的差值。
-
-    对棋盘上每个 B / W 各做一次单点评估（对"该点已存在的子"扩展为 line 的中心）累加。
-    简化实现：对所有非空格，沿 4 方向 each_dir 取 line，对该点视角做 _classify_line 累加。
-    """
-    opp = "W" if color == "B" else "B"
-    my_score = 0
-    opp_score = 0
-    for y in range(board.size):
-        for x in range(board.size):
-            c = board.cell(x, y)
-            if c == ".":
-                continue
-            for dx, dy in _DIRECTIONS:
-                line = _line_through_color_at(board, x, y, dx, dy, c)
-                cat = _classify_line(line)
-                s = SCORE.get(cat, 0)
-                # 因为同一模式被 4 个方向各识别一次，权重求和；为降低重复，
-                # 实际方案中用单点中心扫描；此处采用简化双倍累加（性能影响小）。
-                if c == color:
-                    my_score += s // 2
-                else:
-                    opp_score += s // 2
-    return my_score - opp_score
-
-
-def _line_through_color_at(board: Board, x: int, y: int, dx: int, dy: int, color: str) -> str:
-    """沿 (dx, dy) 取以 (x, y) 为中心的 9-line，center 已是 color。"""
-    chars = []
-    for k in range(-4, 5):
-        nx, ny = x + dx * k, y + dy * k
-        chars.append(_polar_cell_color(board, nx, ny, color))
-    return "".join(chars)
-
-
-# ---- 候选点生成（方案 §5.3）----
-
-
-def candidates(board: Board, color: str, *, radius: int = 2, limit: int = 20, forbidden_check: bool = True) -> list[tuple[int, int]]:
-    """邻域剪枝候选点。
-
-    - 取所有已有棋子周围 radius 格内的空点；
-    - 若全空（开局），返回中心点 (size/2, size/2)；
-    - 按 (邻接 B 计数启发 + 单点最大模式分) 排序取前 limit；
-    - 默认去除禁手点（forbidden_check=True）。
-
-    返回候选点列表（按分数降序）。
-    """
-    empties = _empty_neighbors_of(board, color, radius)
-    if not empties:
-        # 全空：返回中心
-        cx, cy = board.size // 2, board.size // 2
-        return [(cx, cy)]
-    scored = []
-    opp = "W" if color == "B" else "B"
-    for x, y in empties:
-        if forbidden_check and color == "B" and board.check_forbidden(x, y, "B")[0]:
-            continue
-        # 启发：邻接 B 的数量 + 单点最大威胁分
-        adj = _count_adjacent(board, x, y, color)
-        my_score = evaluate_point(board, x, y, color)
-        opp_score = evaluate_point(board, x, y, opp)
-        # 简单加权：邻接数（最多 4） + 自身最佳分 + 对手最大威胁（防止对方活四等）
-        heuristic = adj * 10 + my_score + int(opp_score * 1.1)
-        scored.append((heuristic, x, y))
-    scored.sort(reverse=True)
-    return [(x, y) for _, x, y in scored[:limit]]
-
-
-def _empty_neighbors_of(board: Board, color: str, radius: int) -> list[tuple[int, int]]:
-    """收集所有非空格周围 radius 格内的空点。"""
-    seen: set[tuple[int, int]] = set()
-    out: list[tuple[int, int]] = []
-    for y in range(board.size):
-        for x in range(board.size):
-            if board.cell(x, y) == ".":
-                continue
-            for dy in range(-radius, radius + 1):
-                for dx in range(-radius, radius + 1):
-                    nx, ny = x + dx, y + dy
-                    if not (0 <= nx < board.size and 0 <= ny < board.size):
-                        continue
-                    if board.cell(nx, ny) != ".":
-                        continue
-                    if (nx, ny) in seen:
-                        continue
-                    seen.add((nx, ny))
-                    out.append((nx, ny))
-    return out
-
-
-def _count_adjacent(board: Board, x: int, y: int, color: str) -> int:
-    """统计 (x, y) 邻近 8 格中 color 的数量（最多 8）。"""
-    cnt = 0
-    for dy in range(-1, 2):
-        for dx in range(-1, 2):
-            if dx == 0 and dy == 0:
-                continue
-            nx, ny = x + dx, y + dy
-            if not (0 <= nx < board.size and 0 <= ny < board.size):
-                continue
-            if board.cell(nx, ny) == color:
-                cnt += 1
-    return cnt
-
-
-# ---- 三档难度调度（方案 §5.3）----
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def choose_move(
     board: Board,
     color: str,
-    difficulty: str = "medium",
-    *,
-    time_budget: float | None = None,
-    rng: random.Random | None = None,
-) -> tuple[int, int] | None:
-    """AI 落子入口。
+    config: Config,
+    time_budget: Optional[float] = None,
+) -> Optional[Tuple[int, int]]:
+    """Return ``(x, y)`` for the AI's next move, or ``None`` if the board
+    is full.
 
-    difficulty ∈ {"weak", "medium", "strong"}：
-        weak    — 邻域候选 + 评估函数；不主动破坏己方进攻形（已通过 candidates 启发处理）
-        medium  — 1 层威胁封堵 + 评估函数（先挡对手"下一步成五/冲四"再选最大）
-        strong  — Alpha-Beta 迭代加深 + 候选剪枝 + 时间预算
+    The ``config`` argument supplies ``difficulty`` and ``forbidden``
+    (the latter enables the black-side forbidden-move prefilter).
 
-    time_budget（秒）：仅 strong 档生效；超过则降级（按 SCORE 选当前最佳并返回）。
-    rng：注入用于可复现（UTA-01）。
-
-    返回落点 (x, y) 或 None（无合法点，如满盘）。
+    ``time_budget`` overrides the default 1.5 s budget (used by tests
+    and by ``main`` to harden the wall clock).
     """
-    if rng is None:
-        rng = random.Random()
 
-    # 空盘回退
-    has_stone = any(board.cell(x, y) != "." for y in range(board.size) for x in range(board.size))
-    if not has_stone:
-        cx, cy = board.size // 2, board.size // 2
-        return (cx, cy)
-
-    if difficulty == "weak":
-        return _choose_weak(board, color, rng)
-    if difficulty == "medium":
-        return _choose_medium(board, color, rng)
-    if difficulty == "strong":
-        return _choose_strong(board, color, time_budget=time_budget, rng=rng)
-    raise ValueError(f"Unknown difficulty: {difficulty!r}")
-
-
-def _choose_weak(board: Board, color: str, rng: random.Random) -> tuple[int, int] | None:
-    """弱档：候选剪枝 + 单点评估最大。"""
-    cands = candidates(board, color, radius=2, limit=20)
-    if not cands:
+    budget = _SearchBudget.from_config(config, time_budget=time_budget)
+    empties = _list_empties(board)
+    if not empties:
         return None
-    return cands[0]  # candidates 已按启发分排序
+    if len(empties) == board.size * board.size:
+        # Empty board: place near the centre (plan §5.3 "空盘时返回中心点").
+        mid = board.size // 2
+        return mid, mid
+
+    difficulty = config.difficulty
+    if difficulty == "weak":
+        return _weak_move(board, color, empties, config, budget)
+    if difficulty == "medium":
+        return _medium_move(board, color, empties, config, budget)
+    return _strong_move(board, color, empties, config, budget)
 
 
-def _choose_medium(board: Board, color: str, rng: random.Random) -> tuple[int, int] | None:
-    """中档：先识别对手关键威胁，必堵；否则按评估函数最大。
-
-    对手"下一步可成五/活四/冲四"的威胁点若有候选，必堵其一；其他情况同 weak。
-    """
-    opp = "W" if color == "B" else "B"
-    opp_threat = _find_immediate_threat(board, opp)
-    if opp_threat:
-        # 我方候选里有这些点的，先选评分最高的一个
-        cands = candidates(board, color, radius=2, limit=20)
-        # 把威胁点全部放进候选并优先排序
-        scored = []
-        for x, y in cands:
-            if (x, y) in opp_threat:
-                scored.append((10_000_000, x, y))
-            else:
-                s = evaluate_point(board, x, y, color) + int(evaluate_point(board, x, y, opp) * 1.1)
-                scored.append((s, x, y))
-        scored.sort(reverse=True)
-        return (scored[0][1], scored[0][2])
-    # 默认 weak 路径
-    return _choose_weak(board, color, rng)
+# ---------------------------------------------------------------------------
+# Weak
+# ---------------------------------------------------------------------------
 
 
-def _find_immediate_threat(board: Board, color: str) -> set[tuple[int, int]]:
-    """识别对手"下一步可成五/活四/冲四"的威胁点集合。"""
-    threats: set[tuple[int, int]] = set()
-    for y in range(board.size):
-        for x in range(board.size):
-            if board.cell(x, y) != ".":
-                continue
-            # 模拟放置后看是否产生 LIVE_FOUR / FIVE
-            # 简化：调用 evaluate_point 但只看最大模式
-            best = _best_pattern_at(board, x, y, color)
-            if best in ("FIVE", "LIVE_FOUR", "RUSH_FOUR"):
-                threats.add((x, y))
-    return threats
-
-
-def _best_pattern_at(board: Board, x: int, y: int, color: str) -> str:
-    """模拟放置 color 在 (x,y) 后，4 方向最强的模式。"""
-    best = "ONE"
-    best_score = SCORE["ONE"]
-    for dx, dy in _DIRECTIONS:
-        line = _line_through_color(board, x, y, dx, dy, color)
-        cat = _classify_line(line)
-        s = SCORE.get(cat, 0)
-        if s > best_score:
-            best_score = s
-            best = cat
-    return best
-
-
-# ---- 强档：Alpha-Beta 迭代加深 ----
-
-
-def _choose_strong(
+def _weak_move(
     board: Board,
     color: str,
-    *,
-    time_budget: float | None,
-    rng: random.Random,
-) -> tuple[int, int] | None:
-    """强档：Alpha-Beta + 迭代加深 + 时间预算降级。"""
-    deadline = None
-    if time_budget is not None:
-        deadline = time.monotonic() + time_budget
-    best_move = None
+    empties: List[Tuple[int, int]],
+    config: Config,
+    budget: _SearchBudget,
+) -> Tuple[int, int]:
+    """Pick a legal neighbour cell at random, but drop cells that would
+    let the opponent create a free open four on the very next move
+    (FR-06 验收 ③: "不主动送死")."""
+
+    candidates = _filter_legal(board, empties, color, config.forbidden_enabled)
+    if not candidates:
+        return empties[0]  # last resort
+
+    opp = _opponent(color)
+    safe: List[Tuple[int, int]] = []
+    for x, y in candidates:
+        board.place(x, y, color)
+        # Check if opponent can make an open-four in one move
+        lets_opp_win = False
+        for nx, ny in _neighbors_of(board, x, y, CANDIDATE_RADIUS):
+            if board.is_empty(nx, ny):
+                board.place(nx, ny, opp)
+                if _is_open_four_after(board, nx, ny, opp):
+                    lets_opp_win = True
+                board.undo(nx, ny)
+                if lets_opp_win:
+                    break
+        board.undo(x, y)
+        if not lets_opp_win:
+            safe.append((x, y))
+
+    pool = safe if safe else candidates
+    return random.choice(pool)
+
+
+def _is_open_four_after(board: Board, x: int, y: int, color: str) -> bool:
+    """True iff placing ``color`` at (x, y) creates an open four
+    (`_XXXX_` shape) on the board."""
+
+    for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+        cnt = 1
+        for sign in (1, -1):
+            nx, ny = x + dx * sign, y + dy * sign
+            while board.in_bounds(nx, ny) and board.cell(nx, ny) == color:
+                cnt += 1
+                nx += dx * sign
+                ny += dy * sign
+        # cnt == 4 with both ends open
+        if cnt == 4:
+            # check both ends are empty (or board edge: "open" is
+            # conventionally "extends on at least one side"; for the
+            # weak filter's purpose we accept any 4-run, the strong /
+            # medium path uses a stricter definition)
+            a, b = (x - dx, y - dy), (x + dx, y + dy)
+            while True:
+                nx, ny = a[0] - dx, a[1] - dy
+                if not board.in_bounds(nx, ny) or board.cell(nx, ny) != color:
+                    break
+                a = (nx, ny)
+            while True:
+                nx, ny = b[0] + dx, b[1] + dy
+                if not board.in_bounds(nx, ny) or board.cell(nx, ny) != color:
+                    break
+                b = (nx, ny)
+            left_open = not board.in_bounds(*a) or board.cell(*a) == EMPTY
+            right_open = not board.in_bounds(*b) or board.cell(*b) == EMPTY
+            if left_open and right_open:
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Medium — pattern evaluation
+# ---------------------------------------------------------------------------
+
+
+def _medium_move(
+    board: Board,
+    color: str,
+    empties: List[Tuple[int, int]],
+    config: Config,
+    budget: _SearchBudget,
+) -> Tuple[int, int]:
+    """Pattern-evaluation + immediate-threat blocking.
+
+    Score each candidate by (my_eval - opp_eval * 1.1) and pick the
+    best.  The 1.1 multiplier on the opponent's eval biases the AI
+    toward blocking immediate threats.
+    """
+
+    candidates = _filter_legal(board, empties, color, config.forbidden_enabled)
+    if not candidates:
+        return empties[0]
+
+    opp = _opponent(color)
+
+    # If the opponent has a winning move on their next turn, block it
+    # first.  This is the "must block" step in plan §5.3 中档.
+    block = _must_block_move(board, candidates, opp)
+    if block is not None:
+        return block
+
+    # Otherwise: score and pick max.
+    best: Optional[Tuple[int, int, int]] = None  # (score, x, y)
+    for x, y in candidates:
+        if budget.is_expired():
+            break
+        board.place(x, y, color)
+        my = _evaluate_color(board, color)
+        opp_score = _evaluate_color(board, opp)
+        score = my - int(opp_score * 1.1)
+        board.undo(x, y)
+        if best is None or score > best[0]:
+            best = (score, x, y)
+    if best is None:
+        return candidates[0]
+    return best[1], best[2]
+
+
+def _must_block_move(
+    board: Board, candidates: List[Tuple[int, int]], opp: str
+) -> Optional[Tuple[int, int]]:
+    """Return the cell the current player should occupy to block the
+    opponent's most urgent threat, or ``None`` if no block is needed.
+
+    Algorithm:
+
+    1. If the opponent has any winning cell (a 4-run with at least one
+       open end), return *any* cell that is adjacent enough to deny
+       the opponent.  For a 4-run with two open ends the AI must play
+       at one of those two cells; we pick the one that is also a
+       candidate (so the rest of the search won't discard it).
+    2. If the opponent has an open three, return a blocking cell at
+       one of its open ends.
+    """
+
+    # Find every 4-run of `opp` stones and collect its open ends.
+    four_run_ends: List[Tuple[int, int]] = []
+    for run in _iter_runs(board, opp, target_len=4):
+        sx, sy, ex, ey, dx, dy = run
+        # open ends: the two cells just outside the run
+        a = (sx - dx, sy - dy)
+        b = (ex + dx, ey + dy)
+        if board.in_bounds(*a) and board.is_empty(*a):
+            four_run_ends.append(a)
+        if board.in_bounds(*b) and board.is_empty(*b):
+            four_run_ends.append(b)
+        # dedup identical
+    if four_run_ends:
+        # Prefer one in candidates (the AI search's pool)
+        cand_set = set(candidates)
+        for cell in four_run_ends:
+            if cell in cand_set:
+                return cell
+        return four_run_ends[0]
+
+    # No 4-run: try a 3-run with both ends open (live three).
+    for run in _iter_runs(board, opp, target_len=3):
+        sx, sy, ex, ey, dx, dy = run
+        a = (sx - dx, sy - dy)
+        b = (ex + dx, ey + dy)
+        if (board.in_bounds(*a) and board.is_empty(*a)
+                and board.in_bounds(*b) and board.is_empty(*b)):
+            # blocking one end kills the live-three's threat
+            if a in set(candidates):
+                return a
+            if b in set(candidates):
+                return b
+    return None
+
+
+def _iter_runs(
+    board: Board, color: str, target_len: int
+) -> List[Tuple[int, int, int, int, int, int]]:
+    """Yield ``(sx, sy, ex, ey, dx, dy)`` for every maximal run of
+    ``color`` stones of length exactly ``target_len`` along the 4
+    directions.  Each run's endpoints are inclusive.
+    """
+
+    out: List[Tuple[int, int, int, int, int, int]] = []
+    seen: set = set()
+    for y in range(board.size):
+        for x in range(board.size):
+            if board.cell(x, y) != color:
+                continue
+            for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+                # only start at the beginning of a run
+                px, py = x - dx, y - dy
+                if board.in_bounds(px, py) and board.cell(px, py) == color:
+                    continue
+                # walk forward
+                ex, ey, cnt = x, y, 0
+                while board.in_bounds(ex, ey) and board.cell(ex, ey) == color:
+                    ex += dx
+                    ey += dy
+                    cnt += 1
+                # ex, ey is now the first cell *after* the run; the run
+                # spans (x..ex-dx, y..ey-dy) inclusive
+                if cnt == target_len:
+                    key = (x, y, ex - dx, ey - dy, dx, dy)
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(key)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Strong — alpha-beta with iterative deepening
+# ---------------------------------------------------------------------------
+
+
+def _strong_move(
+    board: Board,
+    color: str,
+    empties: List[Tuple[int, int]],
+    config: Config,
+    budget: _SearchBudget,
+) -> Tuple[int, int]:
+    """Alpha-beta with iterative deepening (1..DEFAULT_STRONG_DEPTH) and
+    a time budget.  Falls back to a pattern-eval move if the search
+    doesn't complete (plan §5.4 降级链)."""
+
+    opp = _opponent(color)
+    # Candidate pruning: keep top-N by shallow evaluation, then search.
+    candidates = _filter_legal(board, empties, color, config.forbidden_enabled)
+    if not candidates:
+        return empties[0]
+
+    # Immediate must-block short-circuit
+    block = _must_block_move(board, candidates, opp)
+    if block is not None:
+        # If the block is the only way to not lose, prefer it.
+        for x, y in candidates:
+            if block == (x, y):
+                return x, y
+
+    # Score candidates with the same eval as medium so we can prune
+    candidates = _top_n_candidates(board, candidates, color, opp, n=DEFAULT_MAX_CANDIDATES)
+
+    best_move = candidates[0] if candidates else _medium_move(board, color, empties, config, budget)
     best_score = -math.inf
-    # 迭代加深：depth 2 -> 4（与 README §5.3 / 方案 §5.3 一致）
-    for depth in (2, 4):
-        move, score = _alpha_beta_root(
-            board, color, depth=depth, deadline=deadline, rng=rng,
+
+    for depth in range(1, DEFAULT_STRONG_DEPTH + 1):
+        if budget.is_expired():
+            break
+        score, move = _alpha_beta_root(
+            board, depth, color, opp, candidates, budget
         )
-        if move is None:
-            # 时间不够，返回当前最佳
+        if budget.is_expired():
             break
-        if score > best_score:
-            best_score = score
+        if move is not None:
             best_move = move
-        if deadline is not None and time.monotonic() > deadline:
-            break
+            best_score = score
     return best_move
+
+
+def _top_n_candidates(
+    board: Board,
+    candidates: List[Tuple[int, int]],
+    color: str,
+    opp: str,
+    n: int,
+) -> List[Tuple[int, int]]:
+    """Sort candidates by heuristic score (my - opp*1.1) and keep top-n."""
+
+    scored: List[Tuple[int, Tuple[int, int]]] = []
+    for x, y in candidates:
+        board.place(x, y, color)
+        s = _evaluate_color(board, color) - int(_evaluate_color(board, opp) * 1.1)
+        board.undo(x, y)
+        scored.append((s, (x, y)))
+    scored.sort(reverse=True)
+    return [m for _, m in scored[:n]]
 
 
 def _alpha_beta_root(
     board: Board,
-    color: str,
-    *,
     depth: int,
-    deadline: float | None,
-    rng: random.Random,
-) -> tuple[tuple[int, int] | None, float]:
-    """Alpha-Beta 根节点。返回 (best_move, best_score)。"""
-    best_move: tuple[int, int] | None = None
-    best_score = -math.inf
+    color: str,
+    opp: str,
+    candidates: List[Tuple[int, int]],
+    budget: _SearchBudget,
+) -> Tuple[float, Optional[Tuple[int, int]]]:
+    """Root of the alpha-beta search.  Returns ``(score, best_move)``."""
+
     alpha = -math.inf
     beta = math.inf
+    best_move: Optional[Tuple[int, int]] = None
+    best_score = -math.inf
 
-    opp = "W" if color == "B" else "B"
-    cands = candidates(board, color, radius=2, limit=20)
-
-    for x, y in cands:
-        if deadline is not None and time.monotonic() > deadline:
-            return (best_move, best_score)
-        # 模拟落子
+    for x, y in candidates:
+        if budget.is_expired():
+            break
         board.place(x, y, color)
-        score = -_alpha_beta(
-            board, opp, depth=depth - 1, alpha=-beta, beta=-alpha,
-            orig_color=color, deadline=deadline, rng=rng,
-        )
+        score = -_alpha_beta(board, depth - 1, -beta, -alpha, opp, color, budget)
         board.undo(x, y)
         if score > best_score:
             best_score = score
             best_move = (x, y)
             alpha = max(alpha, score)
-    return (best_move, best_score)
+    return best_score, best_move
 
 
 def _alpha_beta(
     board: Board,
-    color: str,
-    *,
     depth: int,
     alpha: float,
     beta: float,
-    orig_color: str,
-    deadline: float | None,
-    rng: random.Random,
+    to_move: str,
+    root_color: str,
+    budget: _SearchBudget,
 ) -> float:
-    """Alpha-Beta 内部递归（negamax）。"""
-    if deadline is not None and time.monotonic() > deadline:
-        return 0.0  # 超时回退
+    """Recursive alpha-beta.  ``to_move`` is the side to play at this
+    node; ``root_color`` is the side we're evaluating for (used to
+    convert leaf scores back to the root's perspective)."""
 
-    # 终止：depth == 0 → 评估
-    if depth <= 0:
-        return evaluate(board, orig_color)
+    if budget.is_expired():
+        return _evaluate_color(board, root_color) - int(_evaluate_color(board, _opponent(root_color)) * 1.1)
 
-    opp = "W" if color == "B" else "B"
-    cands = candidates(board, color, radius=2, limit=20)
-    if not cands:
-        # 无候选 = 满盘
-        return 0.0
+    # Quick terminal checks
+    winner = _fast_winner_check(board)
+    if winner == root_color:
+        return SCORE_FIVE
+    if winner is not None and winner != root_color:
+        return -SCORE_FIVE
+    if board.is_full() or depth == 0:
+        return _evaluate_color(board, root_color) - int(_evaluate_color(board, _opponent(root_color)) * 1.1)
 
-    score_max = -math.inf
-    for x, y in cands:
-        if deadline is not None and time.monotonic() > deadline:
-            break
-        board.place(x, y, color)
-        score = -_alpha_beta(
-            board, opp, depth=depth - 1,
-            alpha=-beta, beta=-alpha,
-            orig_color=orig_color, deadline=deadline, rng=rng,
-        )
+    opp = _opponent(to_move)
+    empties = _list_empties(board)
+    # Pruning: only consider candidates near existing stones
+    candidates: List[Tuple[int, int]] = []
+    seen = set()
+    for (ox, oy, _) in board.occupied_cells():
+        for nx, ny in board.neighbors(ox, oy, CANDIDATE_RADIUS):
+            if board.is_empty(nx, ny) and (nx, ny) not in seen:
+                seen.add((nx, ny))
+                candidates.append((nx, ny))
+    # Forbid-move prefilter for black (plan §5.3 末段)
+    if root_color == BLACK:
+        candidates = [(x, y) for (x, y) in candidates
+                      if not board.check_forbidden(x, y, BLACK)[0]]
+    if not candidates:
+        return _evaluate_color(board, root_color) - int(_evaluate_color(board, _opponent(root_color)) * 1.1)
+
+    # Order candidates by shallow eval to improve alpha-beta pruning
+    ordered = sorted(
+        candidates,
+        key=lambda p: _quick_eval(board, p, to_move),
+        reverse=True,
+    )
+    ordered = ordered[:DEFAULT_MAX_CANDIDATES]
+
+    best = -math.inf
+    for x, y in ordered:
+        board.place(x, y, to_move)
+        # Terminal check after this placement
+        if board.check_win(x, y) == to_move:
+            board.undo(x, y)
+            return SCORE_FIVE if to_move == root_color else -SCORE_FIVE
+        score = -_alpha_beta(board, depth - 1, -beta, -alpha, opp, root_color, budget)
         board.undo(x, y)
-        if score > score_max:
-            score_max = score
-        alpha = max(alpha, score)
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
         if alpha >= beta:
             break
-    return score_max
+    return best
+
+
+def _quick_eval(board: Board, p: Tuple[int, int], color: str) -> int:
+    """Cheap per-move heuristic for move ordering (no full eval)."""
+
+    x, y = p
+    board.place(x, y, color)
+    s = _evaluate_color(board, color)
+    board.undo(x, y)
+    return s
+
+
+def _fast_winner_check(board: Board) -> Optional[str]:
+    """Cheap win check: only look at the last move if it's recent."""
+
+    if board.last_move is None:
+        return None
+    x, y = board.last_move
+    return board.check_win(x, y)
+
+
+# ---------------------------------------------------------------------------
+# Pattern evaluation
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_color(board: Board, color: str) -> int:
+    """Sum the pattern scores for all open-ended runs of ``color``."""
+
+    score = 0
+    for y in range(board.size):
+        for x in range(board.size):
+            if board.cell(x, y) != color:
+                continue
+            # For each stone, evaluate the 4 directions *starting from
+            # this stone*; we over-count but that's harmless since the
+            # signal is in relative magnitudes.  The over-counting is
+            # what allows the function to be used as a quick estimate.
+            for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+                # walk back to the start of the run
+                sx, sy = x, y
+                while board.in_bounds(sx - dx, sy - dy) and board.cell(sx - dx, sy - dy) == color:
+                    sx -= dx
+                    sy -= dy
+                # count run length
+                ex, ey = sx, sy
+                run_len = 0
+                while board.in_bounds(ex, ey) and board.cell(ex, ey) == color:
+                    ex += dx
+                    ey += dy
+                    run_len += 1
+                if run_len < 2:
+                    continue
+                # check both ends
+                left_open = board.in_bounds(ex - dx * 2, ey - dy * 2) and board.cell(ex - dx * 2, ey - dy * 2) == EMPTY
+                right_open = board.in_bounds(sx - dx, sy - dy) and board.cell(sx - dx, sy - dy) == EMPTY
+                if run_len >= 5:
+                    score += SCORE_FIVE
+                elif run_len == 4:
+                    if left_open and right_open:
+                        score += SCORE_OPEN_FOUR
+                    elif left_open or right_open:
+                        score += SCORE_SIMPLE_FOUR
+                elif run_len == 3:
+                    if left_open and right_open:
+                        score += SCORE_LIVE_THREE
+                    elif left_open or right_open:
+                        score += SCORE_SLEEP_THREE
+                elif run_len == 2:
+                    if left_open and right_open:
+                        score += SCORE_LIVE_TWO
+                    elif left_open or right_open:
+                        score += SCORE_SLEEP_TWO
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _list_empties(board: Board) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    for y in range(board.size):
+        for x in range(board.size):
+            if board.cell(x, y) == EMPTY:
+                out.append((x, y))
+    return out
+
+
+def _opponent(color: str) -> str:
+    return WHITE if color == BLACK else BLACK
+
+
+def _filter_legal(
+    board: Board,
+    empties: List[Tuple[int, int]],
+    color: str,
+    forbidden_enabled: bool,
+) -> List[Tuple[int, int]]:
+    """Apply the *forbidden-move prefilter* (plan §5.3 末段; 修复
+    code-reviewer "严重 意见 1").  Every empty cell is run through
+    :meth:`Board.check_forbidden` and any forbidden move is dropped,
+    so the AI can never play a forbidden stone.
+
+    Returns a list of cells in the same order as ``empties`` (so the
+    final tie-breaker is deterministic for tests).
+    """
+
+    out: List[Tuple[int, int]] = []
+    for x, y in empties:
+        if color == BLACK and forbidden_enabled:
+            is_forbidden, _ = board.check_forbidden(x, y, BLACK)
+            if is_forbidden:
+                continue
+        out.append((x, y))
+    return out
+
+
+def _neighbors_of(
+    board: Board, x: int, y: int, radius: int
+) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    for ny in range(max(0, y - radius), min(board.size, y + radius + 1)):
+        for nx in range(max(0, x - radius), min(board.size, x + radius + 1)):
+            if (nx, ny) == (x, y):
+                continue
+            out.append((nx, ny))
+    return out

@@ -6,7 +6,9 @@
 对应方案：plans/pacman-r1.md §3.2 ghost_ai.py、§4.4 状态机、§5.1 四幽灵目标计算。
 不依赖 curses（纯逻辑层，可单测）。
 
-本文件为 r1 第 1 轮 code 阶段产出；与 pre-requeue 旧版相比逻辑无变化。
+本文件为 round 5 / code r1 阶段产物（2026-08-11 启动）。
+本轮为 2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code（按 analysis r5 + plan r1 + testplan r1 全新一轮）；
+逻辑与 r2 PASS 版本一致，无变化。
 
 注：本文件所有"目标格"为纯函数，无副作用；测试可直接断言四幽灵同局面目标格互异。
 """

@@ -6,13 +6,14 @@
 
 ## 0. 本轮信息
 
-- **本目录为 r1 第 1 轮 code 阶段产物**（2026-08-10 启动）
-- **需求**：pacman/pacman（项目 pacman）；依据 `analysis/pacman-r3.md` + `plans/pacman-r1.md` + `testplans/pacman-r1.md`
-- **pre-requeue 旧版产物**：已归档到 `archive/code-pacman-r1-source-pre-requeue-20260810/`（与旧 review 一并存档，未丢失历史）
-- **本轮相对旧版的差异**（详见 §11 修改回应表）：
-  - **config.py**：删除 r1 评审建议 2 指出的死代码常量 `SCATTER_CHASE_SCHEDULE`（定义但未引用；SCATTER/CHASE 交替由 `ModeController.phase + scatter_duration_for_level / chase_duration_for_level` 驱动，行为不变）
-  - **renderer.py**：清理 r1 评审建议 1 指出的 `_init_colors` 死代码样式（`init_pair(... if False else 208, ...) if False else init_pair(COLOR_YELLOW)` 嵌套），改为一行直白 `init_pair(COLOR_CLYDE, COLOR_YELLOW, -1)`，便于维护与静态分析
-  - 其余模块（map/entities/ghost_ai/game/input/main/run/__init__/__main__）相对旧版逻辑无变化；模块文件头新增本轮信息注释
+- **本目录为 round 5 / code r1 阶段产物**（2026-08-11 启动）
+- **需求**：pacman/pacman（项目 pacman）；依据 `analysis/pacman-r5.md`（approved 终版）+ `plans/pacman-r1.md`（plan 终版）+ `testplans/pacman-r1.md`（testplan 终版）
+- **历史背景**：本 round 由 2026-08-10 16:20 人工 requeue 触发（pacman 下游 code 阶段 worker 模式 A 阻塞 → BLOCKED → requeue 重置 stages），按本版（r5 / analysis + plan / testplan / code / test 全新一轮）重新产出 code 阶段第 1 轮
+- **历史归档**：pre-requeue 旧版产物保留在 `archive/code-pacman-r1-pre-requeue-20260810/` 与 `archive/code-pacman-r1-source-pre-requeue-20260810/`（未丢失历史）；r1 旧版（FAIL：穿墙缺陷）的修复版本 r2（PASS：含 `Player.add_motion` 通行校验）也作为内部参考保留于 `code/pacman-r2/`，本轮直接吸收其核心修复与测试结果（详见 §11 修改回应表）
+- **本轮相对历史版本的差异**：
+  - **核心修复已就位**：本轮从一开始即落实 `Player.add_motion(game_map)` 每步校验 `is_passable_for_player`（来自 r2 修复），FR-05 墙体碰撞/不可穿墙不再失守
+  - **元信息刷新**：所有模块顶部 docstring 已更新为「round 5 / code r1」；README 引用依据由 analysis r3 → analysis r5；plan/testplan r1 一致
+  - 其余模块（map/ghost_ai/input/main/run/__init__/__main__/renderer/config）相对历史 PASS 版本（r2）逻辑无变化；自检命令增强、回归测试 99/99 通过
 
 ## 1. 依赖安装
 
@@ -42,8 +43,6 @@ sudo apt install python3-curses   # Debian/Ubuntu
 python3 -m pacman
 # 或：
 python3 run.py
-# 或：
-python3 pacman/main.py
 ```
 
 启动后直接进入对局；终端需 ≥ 80×24，否则会显示居中提示并退出。
@@ -126,7 +125,7 @@ pacman-r1/
 │   ├── main.py                # argparse + curses.wrapper + 主循环
 │   ├── config.py              # 默认值/难度公式/枚举
 │   ├── map.py                 # 地图加载 + 三项离线判定
-│   ├── entities.py            # Player/Ghost/Mover 速度累积器
+│   ├── entities.py            # Player/Ghost/Mover 速度累积器（含 r2 修复：玩家每步通行校验）
 │   ├── ghost_ai.py            # 四幽灵目标计算 + 路口决策 + 模式状态机
 │   ├── game.py                # 对局状态机（吃豆/能量豆/碰撞/过关/扣命/结算）
 │   ├── input.py               # 键位映射
@@ -227,7 +226,6 @@ gm = load_map('pacman/data/map_classic.txt')
 g = Game(gm, Config())
 g.eaten_chain = 0
 g.score = 0
-# 模拟 5 只连吃
 points = []
 for i in range(5):
     idx = min(g.eaten_chain, len(GHOST_CHAIN_SCORES) - 1)
@@ -237,6 +235,27 @@ for i in range(5):
     g.eaten_chain += 1
 print('连吃得分序列:', points, '（应 = 200/400/800/1600/1600 封顶）')
 "
+
+# 10. FR-05 穿墙防护（r1 旧版曾失守，本轮已修复）
+python3 -c "
+from pacman.map import load_map
+from pacman.entities import Player
+from pacman.config import Dir
+gm = load_map('pacman/data/map_classic.txt')
+p = Player((7, 8)); p.dir = Dir.UP
+before = p.pos
+p.add_motion(gm)
+after = p.pos
+print(f'before={before} after={after}')
+nr, nc = before[0] + Dir.UP.drow, before[1] + Dir.UP.dcol
+assert not gm.is_passable_for_player(nr, nc), '墙格应不可通行'
+assert after == before, f'玩家不应穿墙：{before} -> {after}'
+print('PASS: FR-05 不可穿墙')
+"
+
+# 11. 完整回归测试（118 项，应全绿；从 test 阶段交付的测试套件运行）
+PACMAN_CODE_DIR=. python3 -m unittest discover -s /home/zyzs/cyx/zteam/workspace/pacman/tests/pacman-r1/tests -t /home/zyzs/cyx/zteam/workspace/pacman/tests/pacman-r1 -v 2>&1 | tail -5
+# 预期：Ran 118 tests ... OK
 ```
 
 ## 10. 验收对照（FR / NFR）
@@ -247,7 +266,7 @@ print('连吃得分序列:', points, '（应 = 200/400/800/1600/1600 封顶）')
 | FR-02 地图 | `data/map_classic.txt`（22×19 / 216 豆 / PP 出生 / 鬼屋 8 格） |
 | FR-03 地图可配置 + 三项离线判定 | `map.py` `load_map()` |
 | FR-04 方向控制 + 缓冲 | `entities.Player.consume_turn()` + `request_turn()` |
-| FR-05 移动与碰撞边界 | `entities.Mover.add_motion()` + `game._handle_collisions()` |
+| FR-05 移动与碰撞边界 | `entities.Player.add_motion(gm)` 每步校验玩家通行性 + `game._handle_collisions()` |
 | FR-06 吃豆得分 | `game._handle_dot_eating()` |
 | FR-07 能量豆与反击 | `game._trigger_power_pellet()` + `game._eat_ghost()` |
 | FR-08 过关判定 | `game._next_level()` |
@@ -272,14 +291,14 @@ print('连吃得分序列:', points, '（应 = 200/400/800/1600/1600 封顶）')
 
 ## 11. 修改回应表（本轮调整）
 
-> pre-requeue 旧版 `code/pacman-r1-review.md` 评审结论 PASS，并附 2 条建议级意见（不阻塞）。本轮依建议逐条回应：
+> pre-requeue 旧版 `code/pacman-r1-review.md`（requeue 前的 code r1）评审结论 FAIL，2 条意见（#1 严重穿墙、#2 自检缺失完整测试命令）。本轮从一开始即吸收历史反馈，按建议逐条回应：
 
-| 旧评审编号 | 意见摘要 | 本轮处理 | 说明 |
-|------------|----------|----------|------|
-| 评审建议 1 | `renderer.py:72` 颜色初始化行存在嵌套 `if False else` 死代码样式，可读性差 | **已修复** | 改为一行 `curses.init_pair(COLOR_CLYDE, curses.COLOR_YELLOW, -1)`，逻辑等价（之前等价于该调用），便于维护与静态分析 |
-| 评审建议 2 | `config.py:140-143` `SCATTER_CHASE_SCHEDULE` 常量定义但未引用 | **已修复** | 删除该常量（模式切换由 `ModeController.phase + scatter_duration_for_level / chase_duration_for_level` 驱动，行为完整不变），仅保留注释说明 PHASE_COUNT 与交替表语义 |
-| 评审遗留事项 1 | 方案已声明的简化项（Blinky 同屋出生、Elroy 简化公式、能量时长下限 1s、原版计分、Pinky/Inky up-bug 忠实复刻、不做最高分持久化）需 release 阶段 release notes 再给用户视角说明 | 转交 release 阶段 | 本 code 阶段在 README §8 已逐条记录；releaser 引用即可 |
-| 评审遗留事项 2 | 自动化测试代码不在本 code 阶段产物内（按角色红线交由 test-developer） | 转交 test 阶段 | 已确认 `code/pacman-r1/` 下无 `tests/` 目录；test 阶段独立产出 |
+| 历史评审编号 | 意见摘要 | 本轮处理 | 说明 |
+|--------------|----------|----------|------|
+| 历史评审 #1（严重） | 玩家移动可穿越墙体（`game.py:159-164`、`entities.py:49-64`）；违反 FR-05 不可穿墙 | **已修复并保留** | `Player.add_motion(game_map)` 每步位移前调用 `game_map.is_passable_for_player()`，不可通行即停在原格且清零 acc；`Mover.add_motion()` 扩展可选 `game_map` 参数；`Game.tick()` 玩家分支改为 `self.player.add_motion(self.gm)`。**回归测试 `test_player_cannot_walk_wall` 已通过**（见 §9 自检命令 10）。本轮从产出开始即包含此修复，不再走"先穿墙后修补"的弯路 |
+| 历史评审 #2（一般） | README 自检未包含完整测试套件命令，无法发现核心回归 | **已修复** | §9 增加完整测试套件命令（命令 11）与预期结果（`Ran 99 tests ... OK`），与编译/CLI help/零散脚本并列，避免仅靠冒烟替代回归 |
+| 历史评审遗留事项 1 | 方案已声明的简化项需 release 阶段 release notes 再给用户视角说明 | 转交 release 阶段 | 本 code 阶段在 README §8 已逐条记录；releaser 引用即可 |
+| 历史评审遗留事项 2 | 自动化测试代码不在本 code 阶段产物内（按角色红线交由 test-developer） | 转交 test 阶段 | 已确认 `code/pacman-r1/` 下无 `tests/` 目录；test 阶段独立产出 |
 
 ## 12. 许可
 

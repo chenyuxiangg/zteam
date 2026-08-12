@@ -9,11 +9,9 @@
 给 main.py wrapper 兜底并报错退出（FR-16/NFR-04）。逻辑层模块（map/entities/
 ghost_ai/game/input/config）不依赖 curses，可无终端单测。
 
-本文件为 r1 第 1 轮 code 阶段产出。
-本轮相比 pre-requeue 旧版（已归档至 archive/code-pacman-r1-source-pre-requeue-20260810/）
-的唯一调整：清理 r1 评审建议 1 指出的 _init_colors 死代码样式（嵌套 if False else
-等价于单行 curses.init_pair(COLOR_CLYDE, COLOR_YELLOW, -1)），改为一行直白调用，
-便于维护与静态分析。
+本文件为 round 5 / code r1 阶段产物（2026-08-11 启动）。
+本轮为 2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code（按 analysis r5 + plan r1 + testplan r1 全新一轮）；
+本轮直接吸收 r1 清理（_init_colors 死代码样式修复）与 r2（PASS）行为，逻辑与 r2 一致。
 """
 
 

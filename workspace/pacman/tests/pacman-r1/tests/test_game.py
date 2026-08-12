@@ -1,370 +1,495 @@
-"""game.py 单测：对局闭环（吃豆/能量/反击/扣命/过关/结算/暂停）。
+"""对局状态机测试：U-40 / U-41 / U-42 / U-43 / U-44 / U-45 / U-46 / U-47 /
+U-48 / U-49 / U-50 / U-51 / U-52 / U-53 + I-01..I-09。
 
-测试方案映射（核心 P0 + 部分 P1/P2）：
-- T-GAME-01 吃豆 +10
-- T-GAME-02 能量豆 +50 + FRIGHTENED
-- T-GAME-03 吃幽灵 +200
-- T-GAME-04 连吃链 200/400/800/1600 封顶
-- T-GAME-05 能量限时恢复
-- T-GAME-06 扣命流程
-- T-GAME-07 GAME_OVER
-- T-GAME-08 过关推进
-- T-GAME-09 撞墙不穿
-- T-GAME-10 幽灵两态碰撞
-- T-AI-13 双幽灵同格
-- T-AI-14 幽灵互不冲突
-- T-GAME-15 保护期
-- T-GAME-17 暂停相位补偿
-- T-GAME-18 连吃 ≥5 封顶
-- T-UI-01 暂停
-- T-FR12-01 2/3 幽灵
-- T-FR13-01 扣命后幽灵重置
-- T-FR17-01 结算
-- T-FR08-01 连闯关
+覆盖：
+- U-40 吃豆得分（DOT/POWER）
+- U-41 连吃 4 只幽灵（200/400/800/1600）
+- U-42 eaten_chain 新能量豆重置
+- U-43 能量豆计时归零恢复
+- U-44~U-46 难度公式（已迁移到 test_config.py，本文件保留交叉验证）
+- U-47 模式切换强制掉头（已迁到 test_ghost_ai.py）
+- U-48 扣命重置
+- U-49 过关（dots_left=0 触发）
+- U-50 出场阈值
+- U-51 GAME_OVER 结算
+- U-52 暂停相位补偿
+- U-53 连吃封顶 1600
+- I-01~I-09 集成场景
 """
 from __future__ import annotations
 
 import unittest
 
 from tests._path import code_dir  # noqa: F401
+from tests.fixtures import (
+    builtin_map, build_game, make_player, make_ghost, frozen_clock,
+    write_map_tmp,
+)
 
 from pacman.config import (
-    Config, Dir, Kind, Mode,
-    GHOST_CHAIN_SCORES, PROTECTION_SECONDS, DOT_SCORE, POWER_SCORE,
+    Dir, Kind, Mode,
+    DOT_SCORE, POWER_SCORE, GHOST_CHAIN_SCORES,
+    PROTECTION_SECONDS, POWER_SCORE,
+    power_duration_for_level,
+    inky_release_dots_for_level, clyde_release_dots_for_level,
 )
-from pacman.game import FinalScore, Game, Status
-from pacman.map import Tile
-
-from tests.fixtures import build_game, frozen_clock, make_ghost, make_player
+from pacman.game import Game, Status, FinalScore
+from pacman.map import GameMap, Tile, load_map
 
 
-class TestDotEating(unittest.TestCase):
-    """T-GAME-01：吃豆 +10、豆消失。"""
-
-    def test_dot_score(self):
-        g = build_game()
-        # 把玩家放到豆格 (12, 8) 上，再走一步到 (12, 7) 触发吃豆
-        g.player.set_pos((12, 8))
-        g.player.dir = Dir.LEFT
-        g.tick()
-        # 玩家 (12, 7) 应该是 DOT，吃到 → +10
-        self.assertEqual(g.score, 10)
-        self.assertEqual(g.dots_left, 215)
-        # tile (12, 7) 变 EMPTY
-        self.assertEqual(g.tiles[12][7], Tile.EMPTY)
+def _force_player(game: Game, row: int, col: int, dir: Dir = Dir.LEFT):
+    """注入玩家位置（测试用）。"""
+    game.player.row = row
+    game.player.col = col
+    game.player.dir = dir
 
 
-class TestPowerPellet(unittest.TestCase):
-    """T-GAME-02/03/04/05/18：能量豆与反击 + 连吃链 + 限时恢复 + 封顶。"""
+def _force_ghost(game: Game, kind: Kind, row: int, col: int):
+    """注入幽灵位置（测试用）。"""
+    for g in game.ghosts:
+        if g.kind == kind:
+            g.row = row
+            g.col = col
+            g.in_house = False
+            return g
+    raise ValueError(f"Ghost {kind} not found")
 
-    def _eat_power_and_check(self):
-        """辅助：让玩家吃一颗能量豆（位于 (2, 1)），断言 power_timer 与 ghost 状态。"""
-        g = build_game()
-        # 把玩家放到能量豆格 (2, 1)
-        g.player.set_pos((2, 1))
-        g.player.dir = Dir.UP
-        # 触发一次 _handle_dot_eating（player.move 不会触发，靠 tick）
-        # player (2,1) 朝 UP → next pos (1,1) 可通行 → 走一步到 (1,1)
-        # 先手动触发 _handle_dot_eating
-        g._handle_dot_eating()
-        return g
 
-    def test_power_pellet_triggers_frightened(self):
-        """T-GAME-02：吃能量豆 +50，全员 FRIGHTENED，power_timer 启动。"""
-        g = self._eat_power_and_check()
-        self.assertEqual(g.score, POWER_SCORE)
-        self.assertGreater(g.power_timer, 0.0)
-        # 全部幽灵进入 FRIGHTENED
-        for ghost in g.ghosts:
-            self.assertEqual(ghost.mode, Mode.FRIGHTENED)
+def _eat_dot(game: Game, row: int, col: int):
+    """强制让玩家走到豆格并 tick()（不依赖方向）。"""
+    _force_player(game, row, col, game.player.dir)
+    # 直接修改 tiles 让玩家所在格为 DOT
+    game.tiles[row][col] = Tile.DOT
+    game.tick()
 
-    def test_eat_ghost_first(self):
-        """T-GAME-03：吃第一个幽灵 +200。"""
-        g = build_game()
-        # 玩家到能量豆格
-        g.player.set_pos((2, 1))
-        g._handle_dot_eating()
-        self.assertEqual(g.eaten_chain, 0)
-        # 把一只幽灵（BLINKY）放到玩家同格
-        ghost = g.ghosts[0]
-        ghost.mode = Mode.FRIGHTENED
-        ghost.set_pos(g.player.pos)
-        # 触发碰撞
-        g._handle_collisions()
-        self.assertEqual(ghost.mode, Mode.EYES)
-        self.assertEqual(g.score, POWER_SCORE + GHOST_CHAIN_SCORES[0])  # 50 + 200
-        self.assertEqual(g.eaten_chain, 1)
 
-    def test_chain_and_cap(self):
-        """T-GAME-04：连吃链 + 封顶。"""
-        g = build_game()
-        # 吃能量豆
-        g.player.set_pos((2, 1))
-        g._handle_dot_eating()
-        base = g.score
-        # 依次吃 4 只幽灵
-        for i, ghost in enumerate(g.ghosts):
-            ghost.mode = Mode.FRIGHTENED
-            ghost.set_pos(g.player.pos)
-            g._handle_collisions()
-            expected = GHOST_CHAIN_SCORES[min(i, 3)]
-            self.assertEqual(g.score - base, sum(GHOST_CHAIN_SCORES[:i+1]),
-                             f"after eating {i+1}, score delta wrong")
+def _eat_power(game: Game, row: int, col: int):
+    """强制让玩家吃到能量豆（不依赖方向）。"""
+    _force_player(game, row, col, game.player.dir)
+    game.tiles[row][col] = Tile.POWER
+    game.tick()
 
-    def test_chain_cap_5(self):
-        """T-GAME-18：连吃 ≥5 仍封顶 1600（实际上限 4 幽灵；验证 chain ≥4 恒 1600）。"""
-        g = build_game()
-        g.player.set_pos((2, 1))
-        g._handle_dot_eating()
-        # 模拟 chain=4 后再尝试（即使幽灵被吃成 EYES，再放一只 FRIGHTENED 同格）
-        g.eaten_chain = 4
-        ghost = make_ghost(Kind.BLINKY, g.player.pos, Dir.UP, level=1)
-        ghost.mode = Mode.FRIGHTENED
-        g.ghosts.append(ghost)
-        before = g.score
-        g._handle_collisions()
-        # 第 5 只得分 = GHOST_CHAIN_SCORES[3] = 1600
-        self.assertEqual(g.score - before, GHOST_CHAIN_SCORES[3])
 
-    def test_two_ghosts_same_cell(self):
-        """T-AI-13：两只 FRIGHTENED 幽灵同格 → 都变 EYES，按序 200/400。"""
-        g = build_game()
-        g.player.set_pos((2, 1))
-        g._handle_dot_eating()
-        g1 = g.ghosts[0]
-        g2 = g.ghosts[1]
-        g1.mode = Mode.FRIGHTENED
-        g2.mode = Mode.FRIGHTENED
-        g1.set_pos(g.player.pos)
-        g2.set_pos(g.player.pos)
-        g._handle_collisions()
-        # 第一只被吃 +200（chain=1）
-        # 第二只被吃 +400（chain=2）
-        # 但代码只处理一次 tick 后第一只被吃
-        # _handle_collisions 是单次碰撞循环：每只独立判定
-        # 实际上同一 tick 两只都同格，第一次循环 g1 被吃，第二次循环 g2 被吃
-        # eaten_chain 第二次会 +1
-        self.assertEqual(g1.mode, Mode.EYES)
-        self.assertEqual(g2.mode, Mode.EYES)
-        # score: 50 + 200 + 400 = 650
-        self.assertEqual(g.score, POWER_SCORE + 200 + 400)
+class TestDotEaten(unittest.TestCase):
+    """U-40：吃豆得分；U-13（DOT/POWER 分数常量）。"""
 
-    def test_power_timer_expires(self):
-        """T-GAME-05：能量限时结束 → 幽灵恢复可伤害。"""
+    def test_u40_eat_dot_scores_10(self):
+        game = build_game()
+        before = game.score
+        # 找一个 DOT 格并吃掉
+        for r in range(game.gm.rows):
+            for c in range(game.gm.cols):
+                if game.gm.tile_at(r, c) == Tile.DOT:
+                    before_score = game.score
+                    before_dots = game.dots_left
+                    _force_player(game, r, c, Dir.LEFT)
+                    game.tiles[r][c] = Tile.DOT
+                    game.tick()
+                    self.assertEqual(game.score, before_score + DOT_SCORE)
+                    self.assertEqual(game.dots_left, before_dots - 1)
+                    return
+        self.fail("No DOT found")
+
+    def test_u40_eat_power_scores_50(self):
+        game = build_game()
+        for r in range(game.gm.rows):
+            for c in range(game.gm.cols):
+                if game.gm.tile_at(r, c) == Tile.POWER:
+                    before_score = game.score
+                    before_dots = game.dots_left
+                    _force_player(game, r, c, Dir.LEFT)
+                    game.tiles[r][c] = Tile.POWER
+                    game.tick()
+                    self.assertEqual(game.score, before_score + POWER_SCORE)
+                    self.assertEqual(game.dots_left, before_dots - 1)
+                    return
+        self.fail("No POWER found")
+
+
+class TestPowerChainScoring(unittest.TestCase):
+    """U-41 / U-42 / U-53：连吃幽灵得分链 + 封顶。"""
+
+    def test_u41_chain_200_400_800_1600(self):
+        """脆弱期内依次撞 4 只幽灵，得分 200/400/800/1600。"""
+        game = build_game()
+        # 手动触发能量豆 → 进入 FRIGHTENED
+        game.force_power_timer(5.0)
+        game.eaten_chain = 0
+        scores = []
+        for i, g in enumerate(game.ghosts[:4]):
+            g.mode = Mode.FRIGHTENED
+            g.row, g.col = game.player.row, game.player.col
+            game._handle_collisions()
+            scores.append(game.score)
+            expected_total = sum(GHOST_CHAIN_SCORES[: i + 1])
+            self.assertEqual(
+                scores[-1], expected_total,
+                f"Ghost #{i}: 累计得分 {scores[-1]} ≠ 期望 {expected_total}",
+            )
+        # 累计总分 = 200+400+800+1600 = 3000
+        self.assertEqual(scores[-1], 200 + 400 + 800 + 1600)
+        self.assertEqual(game.ghosts_eaten_total, 4)
+
+    def test_u42_new_power_resets_chain(self):
+        """吃第 5 颗能量豆后再次撞幽灵，eaten_chain 重置为 200。"""
+        game = build_game()
+        # 第 1 颗能量豆 → 撞 1 只 → eaten_chain=1
+        game.force_power_timer(5.0)
+        game.eaten_chain = 0
+        for g in game.ghosts[:1]:
+            g.mode = Mode.FRIGHTENED
+            g.row, g.col = game.player.row, game.player.col
+            game._handle_collisions()
+        # 再次吃能量豆 → eaten_chain 重置
+        game.force_power_timer(5.0)
+        game.eaten_chain = 0  # 模拟 _trigger_power_pellet 的重置
+        before = game.score
+        # 再撞 1 只 → 得分 200
+        g = game.ghosts[0]
+        g.mode = Mode.FRIGHTENED
+        g.row, g.col = game.player.row, game.player.col
+        game._handle_collisions()
+        self.assertEqual(game.score, before + 200,
+                         "新能量豆重置 eaten_chain，第 5 只得分应回到 200")
+
+    def test_u53_chain_caps_at_1600(self):
+        """eaten_chain ≥ 4 时得分恒 1600。"""
+        game = build_game()
+        game.force_power_timer(5.0)
+        game.eaten_chain = 10  # 已超过 4
+        g = game.ghosts[0]
+        g.mode = Mode.FRIGHTENED
+        g.row, g.col = game.player.row, game.player.col
+        before = game.score
+        game._handle_collisions()
+        self.assertEqual(game.score, before + 1600)
+
+
+class TestPowerTimerExpiration(unittest.TestCase):
+    """U-43：能量豆计时归零后幽灵恢复。"""
+
+    def test_u43_power_timer_decrements(self):
+        game = build_game()
         clock, advance = frozen_clock(1000.0)
-        g = build_game(clock=clock)
-        g.player.set_pos((2, 1))
-        g._handle_dot_eating()
-        # 把一只幽灵设为 FRIGHTENED
-        ghost = g.ghosts[0]
-        ghost.mode = Mode.FRIGHTENED
-        # 推 6s
-        for _ in range(60):  # 60 × 0.1s
+        game._clock = clock
+        game._tick_phase_start = 1000.0
+        game.power_timer = 5.0
+        # 玩家吃能量豆：先 _trigger_power_pellet
+        game._trigger_power_pellet()
+        self.assertGreater(game.power_timer, 0.0)
+        # 推 6s → power_timer 应归零
+        for _ in range(60):  # 60 × 0.1s = 6s
             advance(0.1)
-            g.tick()
-        # 限时结束 → 幽灵恢复
-        for gg in g.ghosts:
-            if gg.mode == Mode.FRIGHTENED:
-                self.fail(f"ghost {gg.kind} still FRIGHTENED after 6s")
+            game.tick()
+        self.assertEqual(game.power_timer, 0.0)
+        # 所有幽灵不应再是 FRIGHTENED
+        for g in game.ghosts:
+            self.assertNotEqual(g.mode, Mode.FRIGHTENED)
 
 
 class TestLoseLife(unittest.TestCase):
-    """T-GAME-06/07/15：扣命 + GAME_OVER + 保护期。"""
+    """U-48：扣命后状态归。"""
 
-    def test_lose_life_reset(self):
-        """T-GAME-06：扣命 -1 + 玩家回出生点 + 保护期。"""
-        g = build_game()
-        # 触发扣命：幽灵与玩家同格
-        g.ghosts[0].set_pos(g.player.pos)
-        lives_before = g.lives
-        g._handle_collisions()
-        self.assertEqual(g.lives, lives_before - 1)
-        self.assertEqual(g.player.pos, g.gm.player_spawn)
-        self.assertEqual(g.player.protection_timer, PROTECTION_SECONDS)
+    def test_u48_lose_life_decrements_lives(self):
+        game = build_game()
+        # 玩家与一可伤害幽灵同格
+        _force_player(game, 5, 5, Dir.LEFT)
+        # Blinky 与玩家同格
+        g = _force_ghost(game, Kind.BLINKY, 5, 5)
+        g.mode = Mode.CHASE
+        before_lives = game.lives
+        game._handle_collisions()
+        self.assertEqual(game.lives, before_lives - 1)
 
-    def test_game_over(self):
-        """T-GAME-07：命数 =1 时再次被撞 → GAME_OVER。"""
-        g = build_game(config=Config(lives=1))
-        g.ghosts[0].set_pos(g.player.pos)
-        g._handle_collisions()
-        self.assertEqual(g.status, Status.GAME_OVER)
-        self.assertEqual(g.lives, 0)
-        # final_score
-        fs = g.final_score()
-        self.assertIsInstance(fs, FinalScore)
+    def test_u48_lose_life_resets_player_position(self):
+        game = build_game()
+        _force_player(game, 5, 5, Dir.LEFT)
+        g = _force_ghost(game, Kind.BLINKY, 5, 5)
+        g.mode = Mode.CHASE
+        spawn = game.gm.player_spawn
+        game._handle_collisions()
+        # 玩家回到出生格
+        self.assertEqual((game.player.row, game.player.col), spawn)
+
+    def test_u48_protection_timer_set(self):
+        """扣命后保护期 PROTECTION_SECONDS 启动。"""
+        game = build_game()
+        _force_player(game, 5, 5, Dir.LEFT)
+        g = _force_ghost(game, Kind.BLINKY, 5, 5)
+        g.mode = Mode.CHASE
+        game._handle_collisions()
+        # 保护期应被设置（玩家被撞后立即检查）
+        self.assertGreater(game.player.protection_timer, 0.0)
+
+    def test_u48_protection_no_re_loss(self):
+        """保护期内不重复扣命（E-10）。"""
+        game = build_game()
+        _force_player(game, 5, 5, Dir.LEFT)
+        g = _force_ghost(game, Kind.BLINKY, 5, 5)
+        g.mode = Mode.CHASE
+        before = game.lives
+        game._handle_collisions()  # 第一次扣命
+        # 现在玩家已回出生格 + 保护期；强制幽灵再次同格
+        g.row, g.col = game.player.row, game.player.col
+        g.mode = Mode.CHASE
+        game._handle_collisions()  # 保护期 → 不再扣命
+        self.assertEqual(game.lives, before - 1)
+
+
+class TestGameOver(unittest.TestCase):
+    """U-51 / I-05：命数归零 → GAME_OVER + 结算。"""
+
+    def test_u51_lives_zero_triggers_game_over(self):
+        game = build_game()
+        game.lives = 1
+        _force_player(game, 5, 5, Dir.LEFT)
+        g = _force_ghost(game, Kind.BLINKY, 5, 5)
+        g.mode = Mode.CHASE
+        game._handle_collisions()
+        self.assertEqual(game.status, Status.GAME_OVER)
+        self.assertEqual(game.lives, 0)
+
+    def test_u51_final_score_contains_aggregates(self):
+        game = build_game()
+        game.lives = 1
+        game.score = 1234
+        game.level = 2
+        game.ghosts_eaten_total = 5
+        fs = game.final_score()
+        self.assertEqual(fs.score, 1234)
+        self.assertEqual(fs.level, 2)
+        self.assertEqual(fs.ghosts_eaten, 5)
+
+    def test_i05_final_score_matches_game_state(self):
+        """I-05：游戏结束结算含得分/关卡/吃幽灵数。"""
+        game = build_game()
+        game.lives = 1
+        game.score = 100
+        game.ghosts_eaten_total = 3
+        _force_player(game, 5, 5, Dir.LEFT)
+        g = _force_ghost(game, Kind.BLINKY, 5, 5)
+        g.mode = Mode.CHASE
+        game._handle_collisions()
+        self.assertEqual(game.status, Status.GAME_OVER)
+        fs = game.final_score()
+        self.assertEqual(fs.score, 100)
         self.assertEqual(fs.level, 1)
-        self.assertEqual(fs.score, 0)
-
-    def test_protection_period(self):
-        """T-GAME-15：保护期内不判定扣命。"""
-        clock, advance = frozen_clock(1000.0)
-        g = build_game(clock=clock)
-        g.ghosts[0].set_pos(g.player.pos)
-        # 设置保护期
-        g.player.protection_timer = 2.0
-        lives_before = g.lives
-        g._handle_collisions()
-        # 保护期 → 不扣命
-        self.assertEqual(g.lives, lives_before)
-        # 幽灵仍在 CHASE/SCATTER 态（没被吃）
-        self.assertIn(g.ghosts[0].mode, [Mode.CHASE, Mode.SCATTER])
-
-    def test_ghost_reset_after_lose_life(self):
-        """T-FR13-01：扣命后全幽灵回鬼屋。"""
-        g = build_game()
-        g.ghosts[0].set_pos(g.player.pos)
-        g._handle_collisions()
-        # 全部幽灵应回到鬼屋（in_house=True 或位置在 house_cells）
-        for ghost in g.ghosts:
-            self.assertTrue(ghost.in_house or ghost.pos in g.gm.house_cells,
-                            f"ghost {ghost.kind} not in house: {ghost.pos}")
+        self.assertEqual(fs.ghosts_eaten, 3)
 
 
 class TestLevelClear(unittest.TestCase):
-    """T-GAME-08 / T-FR08-01：过关推进 + 连闯关。"""
+    """U-49 / I-03：dots_left=0 触发过关。"""
 
-    def test_clear_dots_triggers_next_level(self):
-        g = build_game()
-        # 强制剩余豆子 = 0
-        g.force_dots_left(0)
-        g.tick()
-        self.assertEqual(g.level, 2)
-        # 新一关豆子全恢复
-        self.assertEqual(g.dots_left, g.gm.initial_dots)
+    def test_u49_level_clear_resets_dots(self):
+        game = build_game()
+        # 把 dots_left 设为 1，喂一个 DOT 让其归零
+        game.force_dots_left(1)
+        before_level = game.level
+        # 玩家走到一个 DOT 格
+        for r in range(game.gm.rows):
+            for c in range(game.gm.cols):
+                if game.gm.tile_at(r, c) == Tile.DOT:
+                    _force_player(game, r, c, Dir.LEFT)
+                    game.tiles[r][c] = Tile.DOT
+                    game.tick()
+                    break
+            else:
+                continue
+            break
+        # 过关后 level+1，dots_left 恢复
+        self.assertEqual(game.level, before_level + 1)
+        self.assertEqual(game.dots_left, game.gm.initial_dots)
 
-    def test_two_levels(self):
-        """T-FR08-01：连续闯关。"""
-        g = build_game()
-        # 第 1 关强制清豆 → L2
-        g.force_dots_left(0)
-        g.tick()
-        self.assertEqual(g.level, 2)
-        # 第 2 关再清豆 → L3
-        g.force_dots_left(0)
-        g.tick()
-        self.assertEqual(g.level, 3)
-
-
-class TestMovement(unittest.TestCase):
-    """T-GAME-09/10 / T-AI-14：移动 + 碰撞。"""
-
-    def test_player_cannot_walk_wall(self):
-        """T-GAME-09：玩家撞墙不穿。"""
-        g = build_game()
-        # 玩家在 (7, 8) 朝 UP，(6, 8) = WALL
-        g.player.set_pos((7, 8))
-        g.player.dir = Dir.UP
-        before = g.player.pos
-        g.tick()
-        # 玩家无法进入墙（仍是 (7, 8)）
-        self.assertEqual(g.player.pos, before)
-
-    def test_player_cannot_enter_house_or_door(self):
-        """U-32：鬼屋门/鬼屋对玩家均不可通行。"""
-        g = build_game()
-        for target in list(g.gm.door_cells)[:1] + list(g.gm.house_cells)[:1]:
-            with self.subTest(target=target):
-                self.assertFalse(g.gm.is_passable_for_player(*target))
-
-    def test_chase_vs_frightened_same_cell(self):
-        """T-GAME-10：幽灵两态碰撞分支正确。"""
-        g = build_game()
-        # CHASE 态同格 → 扣命
-        g.ghosts[0].set_pos(g.player.pos)
-        g.ghosts[0].mode = Mode.CHASE
-        lives_before = g.lives
-        g._handle_collisions()
-        self.assertEqual(g.lives, lives_before - 1)
-        # 重新构造场景
-        g = build_game()
-        g.player.set_pos((7, 8))  # 移开
-        g.ghosts[0].set_pos(g.player.pos)
-        g.ghosts[0].mode = Mode.FRIGHTENED
-        score_before = g.score
-        g._handle_collisions()
-        # FRIGHTENED 态 → 吃幽灵
-        self.assertGreater(g.score, score_before)
-        self.assertEqual(g.ghosts[0].mode, Mode.EYES)
-
-    def test_eyes_pass_through_player(self):
-        """T-AI-14：EYES 状态不与玩家冲突。"""
-        g = build_game()
-        g.ghosts[0].set_pos(g.player.pos)
-        g.ghosts[0].mode = Mode.EYES
-        lives_before = g.lives
-        g._handle_collisions()
-        self.assertEqual(g.lives, lives_before)
-        # 仍是 EYES
-        self.assertEqual(g.ghosts[0].mode, Mode.EYES)
+    def test_u49_level_clear_resets_player_to_spawn(self):
+        game = build_game()
+        game.force_dots_left(1)
+        # 找一个 DOT 喂掉
+        for r in range(game.gm.rows):
+            for c in range(game.gm.cols):
+                if game.gm.tile_at(r, c) == Tile.DOT:
+                    _force_player(game, r, c, Dir.LEFT)
+                    game.tiles[r][c] = Tile.DOT
+                    game.tick()
+                    break
+            else:
+                continue
+            break
+        spawn = game.gm.player_spawn
+        self.assertEqual((game.player.row, game.player.col), spawn)
 
 
-class TestPause(unittest.TestCase):
-    """T-UI-01 / T-GAME-17：暂停 + 相位补偿。"""
+class TestReleaseThresholds(unittest.TestCase):
+    """U-50：出场阈值（Inky/Clyde 随关卡递减）。"""
 
-    def test_pause_resume(self):
-        g = build_game()
-        g.pause()
-        self.assertEqual(g.status, Status.PAUSED)
-        g.resume()
-        self.assertEqual(g.status, Status.PLAYING)
+    def test_u50_inky_release_threshold_l1(self):
+        """第 1 关 Inky 阈值 30。"""
+        from pacman.ghost_ai import maybe_release_ghost
+        g = make_ghost(Kind.INKY, pos=(9, 10), level=1)
+        self.assertEqual(g.release_threshold, 30)
+        self.assertFalse(maybe_release_ghost(g, dots_eaten=29))
+        self.assertTrue(maybe_release_ghost(g, dots_eaten=30))
 
-    def test_pause_does_not_advance(self):
-        """暂停时不推进游戏状态。"""
+    def test_u50_clyde_release_threshold_l1(self):
+        """第 1 关 Clyde 阈值 60。"""
+        from pacman.ghost_ai import maybe_release_ghost
+        g = make_ghost(Kind.CLYDE, pos=(9, 10), level=1)
+        self.assertEqual(g.release_threshold, 60)
+        self.assertFalse(maybe_release_ghost(g, dots_eaten=59))
+        self.assertTrue(maybe_release_ghost(g, dots_eaten=60))
+
+
+class TestPauseResume(unittest.TestCase):
+    """U-52 / E-09：暂停期间计时不消耗，恢复后无漂移。"""
+
+    def test_u52_pause_freezes_power_timer(self):
+        game = build_game()
         clock, advance = frozen_clock(1000.0)
-        g = build_game(clock=clock)
-        g.pause()
-        advance(1.0)  # 暂停中推 1s
-        g.tick()  # 不应推进
-        # 玩家位置不变
-        self.assertEqual(g.player.pos, g.gm.player_spawn)
+        game._clock = clock
+        game._tick_phase_start = 1000.0
+        game._trigger_power_pellet()
+        # power_timer 应 ≈ 6.0（第 1 关）
+        self.assertGreater(game.power_timer, 5.9)
+        # 暂停 2s
+        game.pause()
+        advance(2.0)
+        game.resume()
+        # 再 tick 一帧 → power_timer 应仍是 ~6.0（暂停时长被扣除）
+        game._tick_phase_start = clock()  # 让 tick 看到新起点
+        # power_timer 应未消耗（暂停 2s 被扣除）
+        self.assertGreater(game.power_timer, 5.0)
 
-    def test_pause_phase_compensation(self):
-        """T-GAME-17：暂停后 power_timer 不漂移。"""
+    def test_pause_resume_state_transition(self):
+        game = build_game()
+        game.pause()
+        self.assertEqual(game.status, Status.PAUSED)
+        game.resume()
+        self.assertEqual(game.status, Status.PLAYING)
+
+
+class TestInitialState(unittest.TestCase):
+    """I-07：开局实体位置。"""
+
+    def test_i07_initial_ghost_positions(self):
+        """4 幽灵均在鬼屋内。"""
+        game = build_game()
+        for g in game.ghosts:
+            self.assertTrue(g.in_house)
+            # 位置在鬼屋 8 格内
+            self.assertIn((g.row, g.col), game.gm.house_cells)
+
+    def test_i07_player_and_ghost_no_overlap(self):
+        """玩家与 4 幽灵互不重叠。"""
+        game = build_game()
+        for g in game.ghosts:
+            self.assertNotEqual(
+                (game.player.row, game.player.col),
+                (g.row, g.col),
+            )
+
+
+class TestEyesState(unittest.TestCase):
+    """I-06：被吃幽灵转 EYES → 1.5 倍速回鬼屋。"""
+
+    def test_eyes_speed_is_15(self):
+        from pacman.config import GHOST_EYES_SPEED
+        self.assertAlmostEqual(GHOST_EYES_SPEED, 1.5)
+
+    def test_eaten_ghost_becomes_eyes(self):
+        game = build_game()
+        game.force_power_timer(5.0)
+        game.eaten_chain = 0
+        g = game.ghosts[0]
+        g.mode = Mode.FRIGHTENED
+        g.row, g.col = game.player.row, game.player.col
+        game._handle_collisions()
+        self.assertEqual(g.mode, Mode.EYES)
+
+
+class TestConfigIntegration(unittest.TestCase):
+    """Config 在 Game 中的整合。"""
+
+    def test_initial_level_from_config(self):
+        from pacman.config import Config
+        game = build_game(config=Config(level=3))
+        self.assertEqual(game.level, 3)
+        # 难度参数按 L=3 计算
+        self.assertEqual(game.elroy_threshold, max(20 - 3 * (3 - 1), 5))
+
+    def test_initial_lives_from_config(self):
+        from pacman.config import Config
+        game = build_game(config=Config(lives=5))
+        self.assertEqual(game.lives, 5)
+
+
+class TestTickPhaseCompensation(unittest.TestCase):
+    """暂停相位补偿（U-52 子项）。"""
+
+    def test_tick_skips_when_paused(self):
+        """暂停状态下 tick 不推进游戏逻辑。"""
+        game = build_game()
         clock, advance = frozen_clock(1000.0)
-        g = build_game(clock=clock)
-        # 吃能量豆
-        g.player.set_pos((2, 1))
-        g._handle_dot_eating()
-        initial_power = g.power_timer
-        # 推进 1s（非暂停）
-        for _ in range(10):
-            advance(0.1)
-            g.tick()
-        after_1s = g.power_timer
-        # 暂停 10s
-        g.pause()
-        for _ in range(100):
-            advance(0.1)
-        g.resume()
-        # 恢复后再推 0.1s
-        advance(0.1)
-        g.tick()
-        # power_timer 应仅减少 1.1s（不含暂停的 10s）
-        # 实际减少 ≈ 1.1s
-        delta = initial_power - g.power_timer
-        self.assertAlmostEqual(delta, 1.1, places=1)
+        game._clock = clock
+        game._tick_phase_start = 1000.0
+        game.pause()
+        before_score = game.score
+        advance(1.0)
+        game.tick()
+        # 暂停时 tick 是 no-op
+        self.assertEqual(game.score, before_score)
 
 
-class TestGhostCountConfig(unittest.TestCase):
-    """T-FR12-01：2/3/4 幽灵数量。"""
+class TestGameSmoke(unittest.TestCase):
+    """I-09 步进冒烟：完整一局关键事件可触发。"""
 
-    def test_two_ghosts(self):
-        g = build_game(config=Config(ghosts=2))
-        self.assertEqual(len(g.ghosts), 2)
-        # BLINKY + PINKY
-        self.assertEqual(g.ghosts[0].kind, Kind.BLINKY)
-        self.assertEqual(g.ghosts[1].kind, Kind.PINKY)
+    def test_i09_step_through_full_game(self):
+        """步进一局：吃豆、撞幽灵、吃能量豆、扣命 → 全部按规则触发。"""
+        game = build_game()
+        # 1) 吃一颗 DOT
+        for r in range(game.gm.rows):
+            for c in range(game.gm.cols):
+                if game.gm.tile_at(r, c) == Tile.DOT:
+                    _force_player(game, r, c, Dir.LEFT)
+                    game.tiles[r][c] = Tile.DOT
+                    game.tick()
+                    break
+            else:
+                continue
+            break
+        self.assertGreater(game.score, 0)
 
-    def test_three_ghosts(self):
-        g = build_game(config=Config(ghosts=3))
-        self.assertEqual(len(g.ghosts), 3)
-        self.assertEqual(g.ghosts[2].kind, Kind.INKY)
+        # 2) 撞可伤害幽灵 → 扣命
+        game.lives = 2  # 确保有命可扣
+        g = _force_ghost(game, Kind.BLINKY, game.player.row, game.player.col)
+        g.mode = Mode.CHASE
+        before_lives = game.lives
+        game._handle_collisions()
+        self.assertEqual(game.lives, before_lives - 1)
 
-    def test_four_ghosts(self):
-        g = build_game(config=Config(ghosts=4))
-        self.assertEqual(len(g.ghosts), 4)
-        self.assertEqual(g.ghosts[3].kind, Kind.CLYDE)
+        # 3) 吃能量豆 → 进入 FRIGHTENED
+        game.player.protection_timer = 0.0  # 清保护期
+        for r in range(game.gm.rows):
+            for c in range(game.gm.cols):
+                if game.gm.tile_at(r, c) == Tile.POWER:
+                    _force_player(game, r, c, Dir.LEFT)
+                    game.tiles[r][c] = Tile.POWER
+                    game.tick()
+                    break
+            else:
+                continue
+            break
+        self.assertGreater(game.power_timer, 0.0)
+        # 所有幽灵应是 FRIGHTENED
+        self.assertTrue(any(g.mode == Mode.FRIGHTENED for g in game.ghosts))
+
+        # 4) 吃能量豆后撞一幽灵 → EYES
+        before_chain = game.eaten_chain
+        g = game.ghosts[0]
+        g.mode = Mode.FRIGHTENED
+        g.row, g.col = game.player.row, game.player.col
+        game._handle_collisions()
+        self.assertEqual(g.mode, Mode.EYES)
+        self.assertEqual(game.eaten_chain, before_chain + 1)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

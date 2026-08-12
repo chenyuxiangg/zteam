@@ -4,11 +4,10 @@
 依赖：仅标准库（dataclass、enum）。
 对应方案：plans/pacman-r1.md §4.2 数据结构、§5.4 难度公式、Q1~Q12 落定见 §8。
 
-本文件为 r1 第 1 轮 code 阶段产出（2026-08-10 00:42 启动）。
-本轮相比 pre-requeue 旧版（已归档至 archive/code-pacman-r1-source-pre-requeue-20260810/）
-的唯一调整：删除 r1 评审建议 2 指出的死代码常量 SCATTER_CHASE_SCHEDULE（未引用）；
-SCATTER/CHASE 交替由 ModeController.phase + scatter_duration_for_level/chase_duration_for_level
-驱动，行为不变。
+本文件为 round 5 / code r1 阶段产物（2026-08-11 启动）。
+本轮为 2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code（按 analysis r5 + plan r1 + testplan r1 全新一轮）；
+本轮直接吸收 r2（PASS）修复（玩家通行校验）并继承 r1 清理（SCATTER_CHASE_SCHEDULE 死代码删除）；
+行为完整不变。
 """
 
 

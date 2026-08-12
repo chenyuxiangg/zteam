@@ -1,5 +1,6 @@
-"""entry: `python -m gomoku` 入口。"""
+"""Allow ``python -m gomoku`` as well as the ``gomoku`` console script."""
 
-from .main import main
+from gomoku.main import main
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    main()

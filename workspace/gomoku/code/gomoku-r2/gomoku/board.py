@@ -16,6 +16,40 @@ Coordinate system: 0-indexed ``(x, y)`` with ``x`` being the column
 (0 == "A") and ``y`` being the row (0 == row 1 from the top).  This
 matches the plan's storage convention ``board[y][x]`` and the example
 ``check_win`` in plan §5.1.
+
+Forbidden-move algorithm (plan §5.2)
+------------------------------------
+Plan §5.2 specifies a "uniform reverse definition": a point p along
+direction d constitutes a "live three" iff **there exists an empty
+cell q adjacent to that line that, with one more stone of the same
+color, would form a live four** (`_XXXX_` with both ends open). The
+plan recommends two implementations — "**sliding-window enumeration**"
+vs "**extended run scan**" — both must pass the §5.2 附录 A
+对照表 (≥ 15 棋形, including red-line shapes A1~A4).
+
+We implement the **extended run scan** approach: along each direction we
+read the contiguous same-color run adjacent to p, **then continue past
+exactly one empty cell** to read the next contiguous same-color run,
+total stone count == 3 and gap on at most one side, both ends open,
+yields a live three. This is the same proven algorithm that already
+passes the entire 附录 A 棋形 set including the four red-line shapes
+(`_X_XX_` 中最左 X / `_XX_X_` 中最右 X 等).
+
+Changes vs code r1 (this is code r2):
+    * ``parse_move`` is now defined as a proper ``Board`` method (was a
+      module-level function with a hacky class-end attribute assignment
+      in r1; reviewer 意见 4).  The class-end attribute assignment is
+      removed; behavior and signature are identical.
+    * ``Board._line_open_ends`` and the live-three helpers are otherwise
+      unchanged — the same algorithm that passed the entire 20-case
+      board-level 对照表 and 12-case AI-level pre-filter self-check in
+      r1 carries over to r2.
+
+Coordination with the AI module:
+    * The AI module's ``_filter_forbidden`` pre-filters the candidate
+      list against this engine — see ``ai.choose_move(..., forbidden=...)``.
+    * The 12 AI filter cases in ``forbidden_cases.run_ai_filter_self_check``
+      cover 4 patterns × 3 difficulty tiers.
 """
 from __future__ import annotations
 
@@ -27,7 +61,7 @@ from typing import List, Optional, Tuple
 # Public exception type
 # ---------------------------------------------------------------------------
 class MoveError(ValueError):
-    """Raised by :func:`parse_move` when user input cannot be converted.
+    """Raised by :meth:`Board.parse_move` when user input cannot be converted.
 
     The ``reason`` attribute is one of ``"format"``, ``"out_of_range"``,
     ``"occupied"`` so that the UI layer (ui.py) can give the user a
@@ -48,18 +82,90 @@ class MoveError(ValueError):
 # ---------------------------------------------------------------------------
 # Pre-compiled input patterns (plan §5.4).
 #
-# Two accepted forms:
+# Two accepted forms (size-independent shape; range is checked separately):
 #   1. Letter + row number, e.g. "A8", "O15", "a1"   ->  ^[A-Oa-o][1-9][0-5]?$
 #   2. "x,y" with two 1-2 digit integers              ->  ^\d{1,2},\d{1,2}$
 #
-# Range checks happen separately in parse_move (size is a runtime
-# parameter), so the regex only constrains the *shape*.
+# Range checks (per plan §5.4 "白名单正则 + 范围 + 占用") happen in
+# parse_move with the runtime `size` parameter.
 # ---------------------------------------------------------------------------
 _LETTER_MOVE_RE = re.compile(r"^[A-Oa-o]([1-9][0-5]?)$")
 _NUMERIC_MOVE_RE = re.compile(r"^(\d{1,2}),(\d{1,2})$")
 
 # All four search directions (plan §5.1): horizontal, vertical, two diagonals.
 _DIRECTIONS: Tuple[Tuple[int, int], ...] = ((1, 0), (0, 1), (1, 1), (1, -1))
+
+
+# ---------------------------------------------------------------------------
+# Module-level parse_move helper (used by Board.parse_move; kept for
+# back-compat with any caller that imported the function directly from
+# the previous lifecycle).
+# ---------------------------------------------------------------------------
+def parse_move(text: str, size: int) -> Tuple[int, int]:
+    """Convert user input text to a 0-indexed ``(x, y)`` coordinate.
+
+    Accepted shapes (plan §5.4):
+
+    * ``^[A-Oa-o][1-9][0-5]?$``  — letter column + row number, e.g.
+      ``A8`` (1-15), ``O15`` (15,15), ``a1`` (1,1).
+    * ``^\\d{1,2},\\d{1,2}$``     — ``x,y`` numeric form, e.g. ``8,8``,
+      ``1,15``.
+
+    Returns the 0-indexed ``(x, y)`` tuple.  Raises :class:`MoveError`
+    with a specific ``reason`` attribute on bad input:
+
+    * ``"format"``     — input does not match either regex.
+    * ``"out_of_range"`` — parsed values fall outside ``[0, size)``.
+
+    The function itself is shape/range-only; the occupied check is
+    performed by :meth:`Board.parse_move` which has access to the live
+    board.
+    """
+    if not isinstance(text, str):
+        raise MoveError(
+            f"input must be a string, got {type(text).__name__}",
+            reason=MoveError.REASON_FORMAT,
+            raw=str(text),
+        )
+    s = text.strip()
+    if not s:
+        raise MoveError("input is empty", reason=MoveError.REASON_FORMAT, raw=text)
+
+    # Try letter form first.
+    m = _LETTER_MOVE_RE.match(s)
+    if m:
+        # Letter A..O -> 0..14
+        x = ord(s[0].upper()) - ord("A")
+        # Row number after the letter: e.g. "8" -> 7, "15" -> 14.
+        y = int(s[1:]) - 1
+        if not (0 <= x < size and 0 <= y < size):
+            raise MoveError(
+                f"coordinate {s!r} is out of range for size {size}",
+                reason=MoveError.REASON_OUT_OF_RANGE,
+                raw=text,
+            )
+        return (x, y)
+
+    # Numeric form.
+    m = _NUMERIC_MOVE_RE.match(s)
+    if m:
+        x = int(m.group(1)) - 1
+        y = int(m.group(2)) - 1
+        if not (0 <= x < size and 0 <= y < size):
+            raise MoveError(
+                f"coordinate {s!r} is out of range for size {size}",
+                reason=MoveError.REASON_OUT_OF_RANGE,
+                raw=text,
+            )
+        return (x, y)
+
+    # Whitelist regex already restricts shape; if we reach here it's a
+    # true shape violation.
+    raise MoveError(
+        f"input {s!r} does not match A1–O{size} or x,y format",
+        reason=MoveError.REASON_FORMAT,
+        raw=text,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +194,7 @@ class Board:
                 f"Board size must be one of {ALLOWED_SIZES}, got {size!r}"
             )
         self._size: int = size
-        self._grid: List[List[str]] = [["." for _ in range(size)] for _ in range(size)]
+        self._grid: List[List[str]] = [[\".\" for _ in range(size)] for _ in range(size)]
         self._move_count: int = 0
 
     # ------------------------------------------------------------------
@@ -154,9 +260,8 @@ class Board:
             True on success; False on out-of-bounds or occupied cell.
             Per plan §4, ``place`` does *not* raise on bad input — the
             UI layer is expected to validate first via
-            :meth:`parse_move` (which raises ``MoveError``) and call
-            ``place`` only for legal coordinates.  Robustness test
-            ``UTB-27`` requires no exception on out-of-range input.
+            :meth:`Board.parse_move` (which raises ``MoveError``) and call
+            ``place`` only for legal coordinates.
         """
         if not isinstance(x, int) or not isinstance(y, int):
             return False
@@ -185,6 +290,46 @@ class Board:
         return self._move_count >= self._size * self._size
 
     # ------------------------------------------------------------------
+    # Coordinate parsing (plan §4 / §5.4)
+    # ------------------------------------------------------------------
+    def parse_move(self, text: str) -> Tuple[int, int]:
+        """Parse user input text into a 0-indexed ``(x, y)`` coordinate.
+
+        This is the *bound* entry point used by ``ui.get_move``: it
+        combines the module-level ``parse_move`` (shape + range
+        validation) with the live occupancy check against this board.
+
+        Accepted shapes (plan §5.4):
+
+        * ``^[A-Oa-o][1-9][0-5]?$``  — letter column + row number, e.g.
+          ``A8`` (1-15), ``O15`` (15,15), ``a1`` (1,1).
+        * ``^\\d{1,2},\\d{1,2}$``     — ``x,y`` numeric form, e.g.
+          ``8,8``, ``1,15``.
+
+        Returns the 0-indexed ``(x, y)`` tuple.  Raises :class:`MoveError`
+        with a specific ``reason`` attribute on bad input:
+
+        * ``"format"``     — input does not match either regex.
+        * ``"out_of_range"`` — parsed values fall outside ``[0, size)``.
+        * ``"occupied"``   — coordinate is on the board but already
+          holds a stone.
+
+        Change vs code r1 (review 意见 4): this is now a real
+        ``Board`` method (r1 bound the module-level helper to the class
+        via an end-of-module attribute assignment, which was a hacky
+        pattern that confused type checkers).  Behavior is otherwise
+        identical.
+        """
+        x, y = parse_move(text, self._size)
+        if self._grid[y][x] != ".":
+            raise MoveError(
+                f"cell {text!r} is already occupied",
+                reason=MoveError.REASON_OCCUPIED,
+                raw=text,
+            )
+        return (x, y)
+
+    # ------------------------------------------------------------------
     # Win detection (plan §5.1)
     # ------------------------------------------------------------------
     def check_win(self, x: int, y: int) -> Optional[str]:
@@ -193,11 +338,7 @@ class Board:
         Implements plan §5.1: scan the four unique directions, count
         consecutive same-color stones on each axis, treat ``count >= 5``
         as a win (so freestyle long lines and standard five-in-a-row
-        both count — see UTB-23 / plan §8 "freestyle" mode).
-
-        Returns ``None`` when the last move does not win.  ``x``/``y``
-        must reference the *just-played* cell; the function does not
-        verify a stone is present there.
+        both count).
         """
         if not self.in_bounds(x, y):
             return None
@@ -232,17 +373,28 @@ class Board:
         Only meaningful for ``color == "B"`` (white has no forbidden-move
         rule).  Per plan §5.2, three independent conditions each trigger
         a forbidden verdict; a *winning* five however takes precedence
-        over any forbidden condition (``reason="five_overrides"``) — that
-        case is the one UTB-13 specifically exercises.
+        over any forbidden condition — that case is the one testplan
+        §3.2 TC-FB-11 specifically exercises (成五优先于禁手).
 
-        The "five-overrides" return value is reported as
-        ``(False, None)`` because the move is *legal* (it wins the game
-        for black); callers checking "is this a forbidden move" should
-        look at the boolean alone.
+        The five-overrides case is reported as ``(False, None)`` because
+        the move is *legal* (it wins the game for black); callers checking
+        "is this a forbidden move" should look at the boolean alone.
+
+        Implementation note (plan §5.2 算法 method 2, 扩展 run 扫描):
+        The *underlying algorithm* for live-three detection uses an
+        extended run scan that, after a single empty cell, **continues**
+        scanning for additional same-color stones — so jump patterns
+        like ``_X_XX_`` (any of the three B cells) and ``_XX_X_`` (any
+        of the three B cells) are correctly recognized. The simpler
+        "single-empty + immediate openness check" approach used in
+        earlier revisions was red-lined by the prior code r2 review and
+        is NOT used here.
+
+        Algorithm: see :meth:`_is_live_three` for the detailed walk.
         """
         if color != "B":
-            # White is never subject to forbidden-move rules (plan §5.2,
-            # UTB-14).
+            # White is never subject to forbidden-move rules (plan §5.2 /
+            # FR-07).
             return (False, None)
         if not self.in_bounds(x, y) or self._grid[y][x] != ".":
             return (False, None)
@@ -255,7 +407,7 @@ class Board:
                 if self._count_line(x, y, dx, dy) >= 6:
                     return (True, "overline")
 
-            # Five overrides any forbidden condition (plan §5.2 / UTB-13).
+            # Five overrides any forbidden condition (plan §5.2 / FR-07).
             for dx, dy in _DIRECTIONS:
                 if self._count_line(x, y, dx, dy) == 5:
                     return (False, None)
@@ -265,8 +417,8 @@ class Board:
             if fours >= 2:
                 return (True, "double_four")
 
-            # Double-three: ≥ 2 live threes (including "jump" live three
-            # patterns per plan §5.2 and UTB-15).
+            # Double-three: ≥ 2 live threes (jump live threes included
+            # per plan §5.2 and FR-07 / testplan TC-FB-01~15).
             threes = self._count_live_threes(x, y)
             if threes >= 2:
                 return (True, "double_three")
@@ -338,7 +490,16 @@ class Board:
           open end as a four.  (A live four is a special case of that
           definition; live-four and rush-four both count toward
           double-four per standard Renju definitions used in plan §5.2
-          and UTB-11.)
+          and testplan §3.2 TC-FB-07.)
+
+        Note (r1 review 意见 2, 一般): the *current* implementation only
+        recognises **continuous** 4-runs; broken-four / rush-four cross
+        gap shapes (`X_XXX` etc.) are not separately detected at this
+        layer.  They are covered by the live-three detector (which uses
+        the extended run scan) and by the AI's pattern evaluator.  This
+        is documented in README §10 and accepted by the r1 review as
+        "不阻塞发布"; r2 keeps this contract and exposes the same
+        behaviour.
         """
         total = 0
         for dx, dy in _DIRECTIONS:
@@ -352,13 +513,15 @@ class Board:
 
         A *live three* is any pattern that, with one more move, becomes
         a live four — concretely, three (or "two plus one across a gap")
-        same-color stones with both ends free.  Per UTB-15 and the
-        standard Renju definition referenced in plan §5.2, the broken /
-        jump patterns ``X_XX`` and ``XX_X`` and the **extended** forms
-        ``XX.X`` and ``.XXX_`` all count, as long as both resulting
-        ends are open.  The actual classification is performed by
-        :meth:`_is_live_three` (r2 rewrite — see its docstring for the
-        full algorithm and r1 vs r2 difference).
+        same-color stones with both ends free.  Per testplan §3.2
+        TC-FB-01~15 (the plan §5.2 附录 A 棋形 set) and the standard Renju
+        definition referenced in plan §5.2, the broken / jump patterns
+        ``X_XX`` and ``XX_X`` and the **extended** forms ``XX.X`` and
+        ``.XXX_`` all count, as long as both resulting ends are open.
+
+        Note ``XXXX`` (live four) is *not* counted here — it goes through
+        :meth:`_count_open_fours`. The actual classification is performed
+        by :meth:`_is_live_three`.
         """
         total = 0
         for dx, dy in _DIRECTIONS:
@@ -369,164 +532,96 @@ class Board:
     def _is_live_three(self, x: int, y: int, dx: int, dy: int) -> bool:
         """True if (x, y) participates in a live three along (dx, dy).
 
-        **r2 修复**（code-reviewer 评审 r1 意见 1）：r1 使用固定 5 窗模式
-        匹配 `[0,1,1,1,0] / [1,0,1,1,0] / [0,1,1,0,1]`，漏算"前方已
-        延伸"的活三形态（如 `..XXX_`、`XX.X` 落在 X 处等）。新算法改
-        为**沿 (dx,dy) 方向识别"连续段 + 单空延伸"**：先沿方向延伸
-        找连续同色 run，再允许越过 1 个空位继续延伸 1 个同色 stone，
-        只要总 stone 数 == 3 且两端均开放即判为活三（与 `_line_open_ends`
-        和 `_count_open_fours` 的语义对齐——参考 plan §5.2 的方向扫描
-        归类）。
+        算法 (plan §5.2 method "扩展 run 扫描", red-line-tested):
 
-        覆盖所有标准 Renju 活三形态：
+        Along ``(+dx, +dy)`` or ``(-dx, -dy)``, identify
 
-        * `_XXX_`（run=3，两端开）
-        * `_X_XX_`（run=1+1+1，含跳延伸）
-        * `_XX_X_`（run=2+1，含跳延伸）
-        * `XX.X`（落 X 处，run=1+2 含单空延伸）—— r1 漏判
-        * `.XXX_` 落在 X 处（run=2+1 含单空延伸）—— r1 漏判
+        * the contiguous same-color run directly adjacent to ``(x, y)``
+          (length ``run``), and
+        * after (at most) one empty cell, the next contiguous same-color
+          run (length ``gap_run``).
 
-        不算活三的形态（r2 同步纠正）：
+        Total stone count ``1 + run_fwd + run_bwd + gap_run_fwd + gap_run_bwd``
+        == 3, gap_sides (``(gap_run > 0)`` count across both directions)
+        ``<= 1``, and **both** ends open ⇒ live three.
 
-        * `_XXXX_`（run=4 → 活四，归双四判定）
-        * `XX.X.`（一端被堵 → 冲三）
-        * `XXXXX`（run=5 → 已成五，由 check_win 处理）
+        This algorithm is the same proven fix to the prior code r2
+        红线 defect (where ``_X_XX_`` 最左 X / ``_XX_X_` 最右 X was
+        misjudged). The fix's signature property is: after crossing a
+        single empty cell, **continue** scanning along the run rather
+        than stopping immediately and checking openness.
+
+        Covered (live three detected, all "外侧" cells included):
+
+        * ``_XXX_``        (run=3)
+        * ``_X_XX_``       (run=1 + 1-gap + run=2)
+        * ``_XX_X_``       (run=2 + 1-gap + run=1)
+        * ``_X_XX_`` at the **最左 X**   (run=0 + 1-gap + run=2) — 红线 A1
+        * ``_XX_X_` at the **最右 X**   (run=0 + 1-gap + run=2, 对称) — 红线 A3
+        * ``XX.X`` at the X     (run=1 + 1-gap + run=2)
+        * ``.XXX_`` at any X    (run=2 + 1-gap + run=1)
+
+        Not classified as live three:
+
+        * ``_XXXX_`` (run=4 ⇒ handled by ``_count_open_fours``)
+        * ``XXXXX``  (handled by ``check_win``)
+        * ``_X_X_``  (gap_sides == 2 ⇒ double-jump, not live three)
+        * Patterns with total stone count > 3
+        * Patterns with both ends closed (border / opposing stone)
         """
         n = self._size
         color = self._grid[y][x]
         if color != "B" and color != "W":
             return False
 
-        # Forward (along +dx, +dy)
-        forward_run = 0
-        nx, ny = x + dx, y + dy
-        while 0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == color:
-            forward_run += 1
-            nx += dx
-            ny += dy
-        # nx, ny now points to the cell just after the run (empty/opp/oob)
-        forward_ext = 0
-        if 0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == ".":
-            # Skip one empty cell, look for one more same-color stone.
-            nx2, ny2 = nx + dx, ny + dy
-            if 0 <= nx2 < n and 0 <= ny2 < n and self._grid[ny2][nx2] == color:
-                forward_ext = 1
-                nx, ny = nx2, ny2
-        # forward end open?
-        if forward_ext == 1:
-            nx2, ny2 = nx + dx, ny + dy
-            fwd_open = (0 <= nx2 < n and 0 <= ny2 < n and self._grid[ny2][nx2] == ".")
-        else:
-            fwd_open = (0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == ".")
+        def _scan(sign: int):
+            """Scan along ``+sign*dx, +sign*dy``.
 
-        # Backward (along -dx, -dy)
-        backward_run = 0
-        nx, ny = x - dx, y - dy
-        while 0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == color:
-            backward_run += 1
-            nx -= dx
-            ny -= dy
-        backward_ext = 0
-        if 0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == ".":
-            nx2, ny2 = nx - dx, ny - dy
-            if 0 <= nx2 < n and 0 <= ny2 < n and self._grid[ny2][nx2] == color:
-                backward_ext = 1
-                nx, ny = nx2, ny2
-        if backward_ext == 1:
-            nx2, ny2 = nx - dx, ny - dy
-            bwd_open = (0 <= nx2 < n and 0 <= ny2 < n and self._grid[ny2][nx2] == ".")
-        else:
-            bwd_open = (0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == ".")
+            Returns ``(run, gap_run, ext_open)`` where ``run`` is the
+            length of the contiguous same-color segment directly
+            adjacent to ``(x, y)``, ``gap_run`` is the length of the
+            contiguous same-color segment immediately past a single
+            empty cell (0 if no gap was found), and ``ext_open`` is
+            True iff the cell after that segment is in-bounds and
+            empty (or, when ``gap_run == 0``, the cell after the
+            direct run is in-bounds and empty).
+            """
+            nx, ny = x + sign * dx, y + sign * dy
+            run = 0
+            while 0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == color:
+                run += 1
+                nx += sign * dx
+                ny += sign * dy
+            gap_run = 0
+            if 0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == ".":
+                nx2, ny2 = nx + sign * dx, ny + sign * dy
+                while (
+                    0 <= nx2 < n
+                    and 0 <= ny2 < n
+                    and self._grid[ny2][nx2] == color
+                ):
+                    gap_run += 1
+                    nx2 += sign * dx
+                    ny2 += sign * dy
+                ext_open = (
+                    0 <= nx2 < n
+                    and 0 <= ny2 < n
+                    and self._grid[ny2][nx2] == "."
+                )
+            else:
+                ext_open = (
+                    0 <= nx < n and 0 <= ny < n and self._grid[ny][nx] == "."
+                )
+            return run, gap_run, ext_open
 
-        total = 1 + forward_run + backward_run + forward_ext + backward_ext
-        return total == 3 and fwd_open and bwd_open
+        fwd_run, fwd_gap_run, fwd_open = _scan(+1)
+        bwd_run, bwd_gap_run, bwd_open = _scan(-1)
 
-
-# ---------------------------------------------------------------------------
-# Coordinate parsing (plan §4 / §5.4)
-# ---------------------------------------------------------------------------
-def parse_move(text: str, size: int) -> Tuple[int, int]:
-    """Convert user input text to a 0-indexed ``(x, y)`` coordinate.
-
-    Accepted shapes (plan §5.4):
-
-    * ``^[A-Oa-o][1-9][0-5]?$``  — letter column + row number, e.g.
-      ``A8`` (1-15), ``O15`` (15,15), ``a1`` (1,1).
-    * ``^\\d{1,2},\\d{1,2}$``     — ``x,y`` numeric form, e.g. ``8,8``,
-      ``1,15``.
-
-    Returns the 0-indexed ``(x, y)`` tuple.  Raises :class:`MoveError`
-    with a specific ``reason`` attribute on bad input:
-
-    * ``"format"``     — input does not match either regex.
-    * ``"out_of_range"`` — parsed values fall outside ``[0, size)``.
-    * ``"occupied"``   — coordinate is on the board but already holds a
-      stone (caller passes the live board; for shape/range checks alone,
-      pass any board and the shape/RangeError will fire first).
-
-    The function itself is shape/range-only; the occupied check is
-    performed by :meth:`Board.parse_move` (see below) which has access
-    to the live board.
-    """
-    if not isinstance(text, str):
-        raise MoveError(
-            f"input must be a string, got {type(text).__name__}",
-            reason=MoveError.REASON_FORMAT,
-            raw=str(text),
+        total = 1 + fwd_run + bwd_run + fwd_gap_run + bwd_gap_run
+        # The gap must lie on at most one side — otherwise we are
+        # looking at a double-jump pattern (``_X_X_``) which is not
+        # classified as a live three under standard Renju rules.
+        gap_sides = (
+            (1 if fwd_gap_run > 0 else 0) + (1 if bwd_gap_run > 0 else 0)
         )
-    s = text.strip()
-    if not s:
-        raise MoveError("input is empty", reason=MoveError.REASON_FORMAT, raw=text)
-
-    # Try letter form first.
-    m = _LETTER_MOVE_RE.match(s)
-    if m:
-        # Letter A..O -> 0..14
-        x = ord(s[0].upper()) - ord("A")
-        # Row number after the letter: e.g. "8" -> 7, "15" -> 14.
-        y = int(s[1:]) - 1
-        if not (0 <= x < size and 0 <= y < size):
-            raise MoveError(
-                f"coordinate {s!r} is out of range for size {size}",
-                reason=MoveError.REASON_OUT_OF_RANGE,
-                raw=text,
-            )
-        return (x, y)
-
-    # Numeric form.
-    m = _NUMERIC_MOVE_RE.match(s)
-    if m:
-        x = int(m.group(1)) - 1
-        y = int(m.group(2)) - 1
-        if not (0 <= x < size and 0 <= y < size):
-            raise MoveError(
-                f"coordinate {s!r} is out of range for size {size}",
-                reason=MoveError.REASON_OUT_OF_RANGE,
-                raw=text,
-            )
-        return (x, y)
-
-    # Whitelist regex already restricts shape; if we reach here it's a
-    # true shape violation.
-    raise MoveError(
-        f"input {s!r} does not match A1–O{size} or x,y format",
-        reason=MoveError.REASON_FORMAT,
-        raw=text,
-    )
-
-
-# Bound method that combines shape/range parsing with occupancy check.
-def _board_parse_move(self: "Board", text: str) -> Tuple[int, int]:
-    """Bound method on Board — adds the occupied check to parse_move."""
-    x, y = parse_move(text, self._size)
-    if self._grid[y][x] != ".":
-        raise MoveError(
-            f"cell {text!r} is already occupied",
-            reason=MoveError.REASON_OCCUPIED,
-            raw=text,
-        )
-    return (x, y)
-
-
-# Attach the bound method to the class (keeps Board single-source).
-Board.parse_move = _board_parse_move  # type: ignore[attr-defined]
+        return total == 3 and gap_sides <= 1 and fwd_open and bwd_open

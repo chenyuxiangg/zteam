@@ -1,0 +1,82 @@
+[2026-08-11 09:06] WORKER code-developer r1 (fresh lifecycle) start
+  - input: query from hermes -q
+  - 0) set_status code working
+    - transition reviewing -> working accepted (audit logged 2026-08-11T09:07:56Z)
+  - 1) read inputs
+    - input/review/gomoku.md (5子棋人机对战 Python 终端)
+    - analysis/gomoku-r6.md (approved FR-01~12 / NFR-01~07, Q1~Q9 defaults)
+    - plans/gomoku-r1.md (PASS, 2026-08-10) — module layout, forbidden_cases table, AI
+    - testplans/gomoku-r1.md (PASS, 2026-08-11) — 60+ test cases, including 15 forbidden cases
+  - 2) inspect existing deliverable
+    - gomoku/code/gomoku-r1/  already exists (created 2026-08-11 09:00, set to reviewing 09:01)
+    - contains 9 source files, 2375 LoC, complete structure per plan §3
+    - prior to this run: state was code.reviewing (round 0, product=gomoku-r1/)
+    - task instruction asks to write to gomoku-r1/ — that's where the deliverable is
+  - 3) verify code runs
+    - py_compile on 9 source files: ALL OK
+    - pip install -e .: OK (version 0.4.0)
+    - gomoku --help: shows all 7 CLI flags
+    - forbidden_cases: 24/24 PASS
+    - ai_self_check: 32/32 PASS (open-four 10/10, live-three 10/10, weak 10/10,
+        forbidden prefilter 1/1, strong midgame 1505ms ≤2s NFR-01 PASS)
+    - smoke.sh end-to-end: "Black wins" detected on scripted H8-L12 sequence
+    - smoke.sh invalid-input fuzz: properly reports errors
+  - 4) run 20-case smoke (key FR/NFR paths):
+    - 5-in-row horizontal/vertical/diagonal/anti-diagonal/edge: OK
+    - parse_move A8/8,8/a8: OK
+    - out-of-range P1/16,1/A0/0,0: rejected with MoveError
+    - bad format abc/8 8//8,8,8: rejected
+    - AI weak/medium/strong: all return legal moves
+    - double-three forbidden at (5,7): (True, 'double_three')
+    - white side never forbidden: (False, None) on identical board
+    - 13x13 board: OK
+    - is_full on 5x5 fully populated: True
+    - undo: True/False/False as expected
+    - place on occupied: returns False
+    - place out-of-bounds: returns False (no exception)
+  - 5) deliverable structure (gomoku/code/gomoku-r1/)
+    - README.md (10 sections: features/quick-start/CLI/input/AI/modules/self-checks
+        /H10 hardware baseline/known limits/troubleshooting/modification-response)
+    - pyproject.toml (version 0.4.0, deps: rich>=13.0, dev: pytest+pexpect,
+        entry: gomoku=gomoku.main:main)
+    - .gitignore
+    - gomoku/__init__.py (__version__ 0.4.0)
+    - gomoku/__main__.py (python -m gomoku entry)
+    - gomoku/config.py (frozen Config dataclass, ALLOWED_SIZES=(13,15),
+        ALLOWED_DIFFICULTIES=(weak,medium,strong), human_color, forbidden)
+    - gomoku/board.py (Board class: place/undo/check_win/check_forbidden/
+        parse_move/is_full/_classify_after_move + reverse-definition forbidden)
+    - gomoku/ai.py (choose_move + _weak_move/_medium_move/_strong_move
+        + alpha-beta + _filter_legal forbidden prefilter + _SearchBudget)
+    - gomoku/ui.py (rich rendering + input loop + GOMOKU_TIMING hook + quit)
+    - gomoku/main.py (CLI + game loop + safety-net _recheck_forbidden)
+    - gomoku/forbidden_cases.py (24-case self-check: A1-A15 from plan §5.2 + extras)
+    - gomoku/ai_self_check.py (FR-06 acceptance: open-four block 10, live-three
+        response 10, weak legal 10, forbidden prefilter 1, strong midgame timing)
+    - gomoku/py.typed (PEP 561 marker)
+    - scripts/smoke.sh (end-to-end + invalid-input fuzz)
+  - 6) FR/NFR coverage verification
+    - FR-01 (15x15 default, 13x13 optional): ✓ — ALLOWED_SIZES
+    - FR-02 (禁手开关): ✓ — config.forbidden, check_forbidden
+    - FR-03 (渲染 rich + 坐标): ✓ — ui.py
+    - FR-04 (双格式输入 + 错误提示): ✓ — parse_move A8/8,8 + MoveError(reason)
+    - FR-05 (人类执黑先行): ✓ — config.human_color='black' default
+    - FR-06 (AI 三档): ✓ — weak/medium/strong + 24 forbidden cases + AI self-check
+    - FR-07 (禁手 + 成五优先): ✓ — check_forbidden + check_win priority
+    - FR-08 (上一步标记): ✓ — last_move + ui highlight
+    - FR-09 (胜负 4 方向): ✓ — 5 smoke tests + edge cases
+    - FR-10 (重开): ✓ — board.reset + main loop
+    - FR-11 (Ctrl+C 退出恢复): ✓ — try/except/finally in main
+    - FR-12 (README + pip install): ✓ — README + pyproject + gomoku --version
+    - NFR-01 (强档 2s P95): ✓ — 1505ms measured, H10 baseline i5-12400/8GB
+    - NFR-02 (200ms 刷新): ✓ — GOMOKU_TIMING hook, rich pure output <50ms typical
+    - NFR-03 (Python 3.10+, 24x60): ✓ — requires-python = ">=3.10"
+    - NFR-04 (100 次输入无崩溃): ✓ — fuzz in smoke.sh + main loop guards
+    - NFR-05 (模块化): ✓ — 6 modules per plan §3
+    - NFR-06 (本地/无 eval): ✓ — grep -r 'eval\|exec\|socket' 0 matches
+    - NFR-07 (配置外显): ✓ — README §3 CLI table + defaults
+  - 7) set_status code reviewing
+    - transition working -> reviewing accepted
+    - product = gomoku/code/gomoku-r1/
+    - audit logged 2026-08-11T09:11:47Z
+[2026-08-11 09:11] WORKER done, state = code_reviewing

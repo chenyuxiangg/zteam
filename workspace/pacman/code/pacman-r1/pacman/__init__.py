@@ -13,7 +13,7 @@
 依赖方向（单向）：main → config/map/game/input/renderer；game → entities → ghost_ai；
 game/map/entities/ghost_ai 不 import curses（纯逻辑层，可无终端单测）。
 
-r1 第 1 轮 code 阶段产出（2026-08-10）。
+round 5 / code r1 阶段产物（2026-08-11；2026-08-10 16:20 人工 requeue 后重跑的第 1 轮 code，按 analysis r5 + plan r1 + testplan r1 全新一轮；直接吸收 r2 PASS 修复与 r1 清理，行为完整）。
 """
 
 __version__ = "0.1.0"

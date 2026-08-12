@@ -1,0 +1,2 @@
+[console_scripts]
+gomoku = gomoku.main:main

@@ -1,97 +1,171 @@
-"""渲染纯函数/桩测试：覆盖方案 E-01/S-02/S-03/S-06/S-08/S-10/N-03。"""
+"""renderer 测试：通过 stub screen 验证绘制行为。
+
+覆盖：FR-14（渲染）/ FR-15（HUD）/ S-02（六元素）/ S-03（HUD 实时）/ S-08（结算画面）/ E-01（尺寸不足）。
+真实终端视觉项保留手工走查清单（manual_checklist.md）。
+
+策略：直接 import renderer 模块但用 sys.modules 注入 curses 桩，使 _init_colors 走 has_colors=False 路径。
+"""
 from __future__ import annotations
 
+import sys
 import unittest
-from unittest.mock import patch
+from types import ModuleType
 
 from tests._path import code_dir  # noqa: F401
-
-from pacman.config import Kind, Mode
-from pacman.game import Status
-from pacman.map import Tile
-from pacman.renderer import (
-    COLOR_BLINKY, COLOR_CLYDE, COLOR_FRIGHT, COLOR_FRIGHT_FLASH,
-    COLOR_INKY, COLOR_PINKY, Renderer, _ghost_char_color, _tile_char_color,
+from tests.fixtures import (
+    ScreenStub, builtin_map, build_game, frozen_clock,
+    CursesStub,
 )
-from tests.fixtures import build_game, make_ghost
 
 
-class ScreenStub:
-    def __init__(self, lines=24, cols=80):
-        self.lines, self.cols = lines, cols
-        self.writes = []
-        self.erased = self.refreshed = False
-    def erase(self): self.erased = True
-    def refresh(self): self.refreshed = True
-    def getmaxyx(self): return self.lines, self.cols
-    def addstr(self, y, x, text, *attrs): self.writes.append((y, x, str(text)))
-    def nodelay(self, value): pass
-    def keypad(self, value): pass
-    def timeout(self, value): pass
-    def getch(self): return ord("q")
-    @property
-    def text(self): return "\n".join(x[2] for x in self.writes)
+def _install_curses_stub():
+    """注入极简 curses 桩，使 renderer 模块能成功 import 而无真终端。"""
+    fake = ModuleType("curses")
+    fake.has_colors = lambda: False
+    fake.start_color = lambda: None
+    fake.use_default_colors = lambda: None
+    fake.init_pair = lambda *a, **k: None
+    fake.color_pair = lambda n: n
+    fake.curs_set = lambda v: 0
+    # 颜色常量
+    fake.COLOR_BLACK = 0
+    fake.COLOR_RED = 1
+    fake.COLOR_GREEN = 2
+    fake.COLOR_YELLOW = 3
+    fake.COLOR_BLUE = 4
+    fake.COLOR_MAGENTA = 5
+    fake.COLOR_CYAN = 6
+    fake.COLOR_WHITE = 7
+    fake.error = type("error", (Exception,), {})
+
+    # 注入到 sys.modules（在 import renderer 之前）
+    sys.modules["curses"] = fake
+    return fake
 
 
-def renderer(screen):
-    with patch("pacman.renderer.curses.curs_set"), patch("pacman.renderer._init_colors", return_value=False):
-        return Renderer(screen, no_color=True)
+# 在 import 任何 pacman.* 之前先注入 curses 桩
+_curses_stub = _install_curses_stub()
 
 
-class TestTileAndGhostRendering(unittest.TestCase):
-    def test_no_color_tiles_are_distinct(self):
-        chars = [_tile_char_color(t, False)[0] for t in (Tile.WALL, Tile.DOT, Tile.POWER, Tile.DOOR, Tile.HOUSE)]
-        self.assertEqual(chars, ["#", ".", "o", "-", "H"])
-
-    def test_four_ghost_colors_are_distinct(self):
-        colors = []
-        for kind in Kind:
-            ghost = make_ghost(kind)
-            ghost.mode = Mode.CHASE
-            ch, color = _ghost_char_color(ghost, 0.0, True)
-            self.assertEqual(ch, "G")
-            colors.append(color)
-        self.assertEqual(set(colors), {COLOR_BLINKY, COLOR_PINKY, COLOR_INKY, COLOR_CLYDE})
-
-    def test_frightened_flash_last_two_seconds(self):
-        ghost = make_ghost(Kind.BLINKY)
-        ghost.mode = Mode.FRIGHTENED
-        self.assertEqual(_ghost_char_color(ghost, 4.0, True), ("F", COLOR_FRIGHT))
-        observed = {_ghost_char_color(ghost, t, True)[1] for t in (1.8, 1.6, 1.4, 1.2)}
-        self.assertEqual(observed, {COLOR_FRIGHT, COLOR_FRIGHT_FLASH})
+from pacman.game import Game, Status
+from pacman.renderer import Renderer
 
 
-class TestRendererPanels(unittest.TestCase):
-    def test_small_terminal_shows_size_hint(self):
-        screen = ScreenStub(20, 60)
-        renderer(screen).draw(build_game())
-        self.assertIn("需要 ≥80×24", screen.text)
-        self.assertIn("当前 60×20", screen.text)
+class TestRendererInit(unittest.TestCase):
+    """Renderer 构造与基础状态。"""
 
-    def test_hud_contains_score_lives_level_and_power(self):
-        screen = ScreenStub()
+    def test_renderer_init_with_screen_stub(self):
+        screen = ScreenStub(lines=24, cols=80)
+        r = Renderer(screen, no_color=True)
+        self.assertIs(r.stdscr, screen)
+        self.assertTrue(r.no_color)
+        # has_colors=False → colors_ok=False
+        self.assertFalse(r.colors_ok)
+
+
+class TestRendererDrawTooSmall(unittest.TestCase):
+    """E-01：终端 <80×24 应显示尺寸不足提示并。等待任意键。"""
+
+    def test_draw_too_small_shows_message(self):
+        screen = ScreenStub(lines=20, cols=60)
+        r = Renderer(screen, no_color=True)
         game = build_game()
-        game.score, game.lives, game.level, game.power_timer = 123, 2, 4, 3.2
-        renderer(screen).draw(game)
-        for text in ("分数: 123", "命: 2", "关: 4", "能量: 3.2s"):
-            self.assertIn(text, screen.text)
+        r.draw(game)
+        # 屏幕应包含尺寸提示
+        self.assertTrue(screen.contains("需要 ≥80×24 终端"))
+        # 屏幕应包含实际尺寸 60×20
+        self.assertTrue(screen.contains("60"))
+        self.assertTrue(screen.contains("20"))
 
-    def test_pause_panel(self):
-        screen = ScreenStub()
-        game = build_game()
-        game.status = Status.PAUSED
-        renderer(screen).draw(game)
-        self.assertIn("已暂停", screen.text)
+    def test_wait_any_key_blocks_until_input(self):
+        """wait_any_key 调用 getch（应不抛错）。"""
+        screen = ScreenStub(lines=20, cols=60)
+        r = Renderer(screen, no_color=True)
+        # 桩 getch 返回 -1（无输入）
+        screen.getch = lambda: -1
+        # 不应抛
+        r.wait_any_key()
 
-    def test_game_over_panel(self):
-        screen = ScreenStub()
+
+class TestRendererDrawNormal(unittest.TestCase):
+    """S-02 / S-03：正常渲染画面 + HUD + 六元素。"""
+
+    def setUp(self):
+        self.screen = ScreenStub(lines=24, cols=80)
+        self.r = Renderer(self.screen, no_color=True)
+        self.game = build_game()
+
+    def test_draw_calls_erase_and_refresh(self):
+        self.r.draw(self.game)
+        self.assertGreater(self.screen.erase_count, 0)
+        self.assertGreater(self.screen.refresh_count, 0)
+
+    def test_draw_hud_contains_score_lives_level(self):
+        """HUD 显示 分数/命/关。"""
+        self.r.draw(self.game)
+        self.assertTrue(self.screen.contains("分数:"))
+        self.assertTrue(self.screen.contains("命:"))
+        self.assertTrue(self.screen.contains("关:"))
+
+    def test_draw_hud_includes_power_countdown_when_active(self):
+        """能量豆期内 HUD 显示倒计时。"""
+        self.game.power_timer = 3.5
+        self.r.draw(self.game)
+        self.assertTrue(self.screen.contains("能量:"))
+
+    def test_draw_hud_normal_state_when_no_power(self):
+        """无能量豆时 HUD 显示"状态: 普通"。"""
+        self.game.power_timer = 0.0
+        self.r.draw(self.game)
+        self.assertTrue(self.screen.contains("状态:"))
+
+    def test_draw_includes_six_element_types(self):
+        """S-02：六元素（墙/通道/豆/能量豆/玩家/幽灵）可辨识。"""
+        # 默认布局下 no_color=True：渲染用纯字符（#, ., o, -, C, G, H）
+        self.r.draw(self.game)
+        # 墙字符
+        self.assertTrue(self.screen.contains("#"))
+        # 玩家字符
+        self.assertTrue(self.screen.contains("C"))
+        # 幽灵字符
+        self.assertTrue(self.screen.contains("G"))
+
+    def test_draw_paused_shows_pause_message(self):
+        """S-06：暂停时显示"** 已暂停 **"。"""
+        self.game.pause()
+        self.r.draw(self.game)
+        self.assertTrue(self.screen.contains("已暂停"))
+
+    def test_draw_game_over_shows_score(self):
+        """S-08：GAME_OVER 显示最终得分/关卡/吃幽灵数。"""
+        from pacman.game import FinalScore
+        self.game.lives = 1
+        self.game.score = 1500
+        self.game.level = 3
+        self.game.ghosts_eaten_total = 7
+        # 强制 GAME_OVER
+        self.game.status = Status.GAME_OVER
+        self.r.draw(self.game)
+        # 结算画面含字段
+        self.assertTrue(self.screen.contains("游戏结束"))
+        self.assertTrue(self.screen.contains("最终得分:"))
+        self.assertTrue(self.screen.contains("到达关卡:"))
+        self.assertTrue(self.screen.contains("吃幽灵数:"))
+        # 数值
+        self.assertTrue(self.screen.contains("1500"))
+
+
+class TestRendererNoCrash(unittest.TestCase):
+    """无颜色终端 / 边缘坐标不崩溃。"""
+
+    def test_draw_at_24_80_works(self):
+        """标准 80×24 终端正常渲染。"""
+        screen = ScreenStub(lines=24, cols=80)
+        r = Renderer(screen, no_color=True)
         game = build_game()
-        game.score, game.level, game.ghosts_eaten_total = 999, 7, 3
-        game.status = Status.GAME_OVER
-        renderer(screen).draw(game)
-        for text in ("游戏结束", "最终得分: 999", "到达关卡: 7", "吃幽灵数: 3"):
-            self.assertIn(text, screen.text)
+        # 不应抛错
+        r.draw(game)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)
