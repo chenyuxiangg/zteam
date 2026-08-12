@@ -176,8 +176,9 @@ def abs_artifact(project: str, rid: str) -> str:
     return os.path.join(project_dir(project), "artifacts", rid + ".md")
 
 
-def worker_log_name(project: str, rid: str, n: int) -> str:
-    return f"worker-{rid}-r{n}.log"
+def worker_log_name(project: str, rid: str, n: int, role: str = None) -> str:
+    """worker 日志名（含角色，排查不再混写）：worker-{rid}-r{n}-{role}.log"""
+    return f"worker-{rid}-r{n}" + (f"-{role}" if role else "") + ".log"
 
 STALE_AFTER_MIN = int(os.environ.get("STALE_AFTER_MIN", "20"))   # 中间态超时（分钟）
 MAX_FAILURES = int(os.environ.get("MAX_FAILURES", "2"))          # 连续失败上限
@@ -894,7 +895,7 @@ def spawn_worker(role: str, key: str, round_n: int, query: str) -> int:
     role = _ROLE_ALIAS.get(role, role)
     model, provider = ROLE_MODELS.get(role, (ANALYST_MODEL, ANALYST_PROVIDER))
     os.makedirs(LOG_DIR, exist_ok=True)
-    logf = open(os.path.join(project_log_dir(project), worker_log_name(project, rid, round_n)), "ab")
+    logf = open(os.path.join(project_log_dir(project), worker_log_name(project, rid, round_n, role)), "ab")
     cmd = ["hermes", "chat", "-q", query, "-m", model, "-Q"]
     if provider:
         cmd += ["--provider", provider]
@@ -1556,6 +1557,31 @@ def cmd_rollback(rid: str, reason: str = "manual") -> int:
     return 0
 
 
+def cmd_record_product(rid: str, stage: str, product: str) -> int:
+    """人工补记产物路径（合规替代直接改 status.json）：record_product {key} {stage} {产物路径}。
+    仅补记 product（校验文件存在），不迁移状态——适用于评审已 PASS 但 product 漏记的场景。"""
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        stages = e.get("stages") or {}
+        s = stages.get(stage)
+        if not s:
+            print(f"阶段 {stage} 不存在（可选：req/plan/testplan/code/test/quality/security/release）", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        if not os.path.exists(full):
+            print(f"产物不存在: {full}", file=sys.stderr)
+            return 1
+        s["product"] = norm_product(product)
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"RECORD_PRODUCT {rid} {stage} product={s['product']} (manual)")
+    return 0
+
+
 def _stage_order() -> list:
     """阶段链顺序（含需求阶段）：req → plan → testplan → code → test → quality → security → release。"""
     return ["req"] + [s["name"] for s in STAGES] + [g["name"] for g in GATES] + [RELEASE["name"]]
@@ -1954,6 +1980,8 @@ def main(argv) -> int:
             return cmd_rollback(*rest)
         if cmd == "requeue":
             return cmd_requeue(rest[0])
+        if cmd == "record_product":
+            return cmd_record_product(rest[0], rest[1], rest[2])
         if cmd == "resume":
             return cmd_resume(rest[0], rest[1], rest[2])
         if cmd == "list":

@@ -163,3 +163,12 @@ tail workspace/logs/pipeline.log                  # 最新审计行符合预期�
 1. **先分层**：问题在上半部（调度/脚本）还是下半部（worker/模型/API）？`SPAWN` 审计行是分界线；
 2. **先诊断后动手**：`diagnose` 的 D 编号就是定位索引，别靠猜；
 3. **产物不会丢**：status.json 可以重建，analysis/review/artifacts 的轮次文件是永不覆盖的——最坏情况是重跑一轮，不是数据丢失。
+
+### S12 所有 cron job 突然消失/被暂停（流水线静默停摆）
+
+| 优先级 | 可能原因 | 检查 | 修复 |
+|---|---|---|---|
+| 1 | **其他会话/进程 pause 了 job**（并发会话操作 cron 时可能误暂停全部） | `hermes cron list` 看 `[paused]`；`python3 -c "import json; print([j['name'] for j in json.load(open('$HOME/.hermes/cron/jobs.json'))['jobs'] if not j.get('enabled', True)])"` | **已自动化**：systemd timer `hermes-cron-guard` 每 5 分钟检查并自动 resume + 写 `workspace/logs/alarms.txt`（CRON_GUARD 记录）；也可手动 `hermes cron resume <job_id/name>` 逐个恢复 |
+| 2 | jobs.json 损坏/格式异常 | `hermes cron list` 报错；对比 `jobs.json` 的 `jobs` 数组 | 重跑 `bash install.sh` 幂等重建 |
+
+> 守护部署：`~/.config/systemd/user/hermes-cron-guard.{service,timer}`（timer 每 5 分钟），脚本在工作区 `scripts/hermes-cron-guard.sh`；查看运行：`systemctl --user list-timers hermes-cron-guard.timer`。
