@@ -147,6 +147,8 @@ def next_action(e: dict):
         if s == f"{stg['name']}_reviewing":
             return (stg["reviewer"], stg["name"], "review")
         if s == f"{stg['name']}_done":
+            if stg["name"] == "test":
+                return None  # v2 截断：UT（需求级测试）完成 → 等迭代集成（it），不再进需求级质量/安全/发布
             nxt = stage_after(stg["name"])
             if nxt is RELEASE:
                 return (RELEASE["role"], RELEASE["name"], "release")
@@ -206,6 +208,10 @@ TEST_PROVIDER = os.environ.get("TEST_PROVIDER", "minimax-cn")  # MiniMax（中�
 QUALITY_REVIEWER_MODEL = os.environ.get("QUALITY_REVIEWER_MODEL", "deepseek-v4-pro")
 SECURITY_REVIEWER_MODEL = os.environ.get("SECURITY_REVIEWER_MODEL", "deepseek-v4-pro")
 RELEASER_MODEL = os.environ.get("RELEASER_MODEL", "deepseek-v4-flash")
+IT_DESIGNER_MODEL = os.environ.get("IT_DESIGNER_MODEL", "deepseek-v4-flash")
+IT_REVIEWER_MODEL = os.environ.get("IT_REVIEWER_MODEL", "deepseek-v4-pro")
+ST_TESTER_MODEL = os.environ.get("ST_TESTER_MODEL", "deepseek-v4-flash")
+ST_REVIEWER_MODEL = os.environ.get("ST_REVIEWER_MODEL", "deepseek-v4-pro")
 
 # ---- 阶段流水线定义（需求 approved 后按序推进）----
 # 成对阶段（产出者 + 评审者）；kind: file=md 文档产物 / dir=文件集产物（代码/测试目录）
@@ -238,6 +244,10 @@ ROLE_MODELS = {
     "quality-reviewer": (QUALITY_REVIEWER_MODEL, ANALYST_PROVIDER),
     "security-reviewer": (SECURITY_REVIEWER_MODEL, ANALYST_PROVIDER),
     "releaser": (RELEASER_MODEL, ANALYST_PROVIDER),
+    "it-designer": (IT_DESIGNER_MODEL, ANALYST_PROVIDER),
+    "it-reviewer": (IT_REVIEWER_MODEL, ANALYST_PROVIDER),
+    "st-tester": (ST_TESTER_MODEL, ANALYST_PROVIDER),
+    "st-reviewer": (ST_REVIEWER_MODEL, ANALYST_PROVIDER),
 }
 # 角色 → 角色文件（worker 指令阅读文件）
 ROLE_FILES = {
@@ -254,6 +264,10 @@ ROLE_FILES = {
     "quality-reviewer": "roles/quality-reviewer.md",
     "security-reviewer": "roles/security-reviewer.md",
     "releaser": "roles/releaser.md",
+    "it-designer": "roles/it-designer.md",
+    "it-reviewer": "roles/it-reviewer.md",
+    "st-tester": "roles/st-tester.md",
+    "st-reviewer": "roles/st-reviewer.md",
 }
 # 角色 → 中文名（worker 指令措辞）
 ROLE_CN = {
@@ -264,6 +278,8 @@ ROLE_CN = {
     "test-developer": "测试开发者", "test-reviewer": "测试评审者",
     "quality-reviewer": "质量评审者", "security-reviewer": "安全红线评审者",
     "releaser": "发布者",
+    "it-designer": "集成测试设计执行者", "it-reviewer": "集成测试评审者",
+    "st-tester": "系统测试执行者", "st-reviewer": "系统测试评审者",
 }
 # 所有中间态（stale 恢复/回滚适用）
 def _mid_states() -> set:
@@ -401,16 +417,35 @@ def versions_path(project: str) -> str:
 
 def ensure_versions(project: str) -> dict:
     """项目版本清单：不存在则初始化（v1.0.0 planning + current）。
-    结构：{"versions": [{"name","status","iterations","reqs","released_at"}], "current": "v1.0.0"}"""
+    结构：{"versions": [{"name","status","iterations":[{"n","status","reqs","it_product","it_reviews"}],
+                          "reqs","st_product","released_at"}], "current": "v1.0.0"}
+    版本状态：planning → in_dev → st_pending → st_passed → quality_pending → released
+    迭代状态：pending → it_pending → it_passed"""
     p = versions_path(project)
     if os.path.exists(p):
         try:
             with open(p, encoding="utf-8") as f:
-                return json.load(f)
+                vd = json.load(f)
+            # 旧格式迁移：迭代列表 [1,2] → 对象 [{n:1, status:pending, ...}]（迁移后立即落盘，防只内存迁移）
+            migrated = False
+            for v in vd.get("versions", []):
+                its = v.get("iterations")
+                if its and isinstance(its[0], int):
+                    v["iterations"] = [{"n": i, "status": "pending", "reqs": [], "it_product": None, "it_reviews": []} for i in its]
+                    migrated = True
+                for it in v.get("iterations", []):
+                    it.setdefault("reqs", [])
+                    it.setdefault("it_product", None)
+                    it.setdefault("it_reviews", [])
+                v.setdefault("st_product", None)
+            if migrated:
+                write_versions(project, vd)
+            return vd
         except (json.JSONDecodeError, IOError):
             pass
     vd = {"versions": [{"name": "v1.0.0", "status": "planning",
-                        "iterations": [1], "reqs": [], "released_at": None}],
+                        "iterations": [{"n": 1, "status": "pending", "reqs": [], "it_product": None, "it_reviews": []}],
+                        "reqs": [], "st_product": None, "released_at": None}],
           "current": "v1.0.0"}
     write_versions(project, vd)
     return vd
@@ -471,6 +506,146 @@ def advance_versions(project: str, st: dict) -> None:
             log(f"VERSION {project}/{v['name']} -> released (all reqs done)")
     if changed:
         write_versions(project, vd)
+
+
+def _it_inputs(project: str, reqs: list, st: dict) -> str:
+    """迭代 it 的输入清单：迭代内各需求的代码/测试产物路径。"""
+    lines = []
+    for r in reqs:
+        e = st.get(f"{project}/{r}") or {}
+        stages = e.get("stages") or {}
+        code_p = (stages.get("code") or {}).get("product")
+        test_p = (stages.get("test") or {}).get("product")
+        lines.append(f"- {r}：代码={code_p or '?'}，UT={test_p or '?'}，状态={e.get('status', '?')}")
+    return "\n".join(lines)
+
+
+def _schedule_it_st(project: str, vd: dict, st: dict, alarms: list) -> None:
+    """迭代/版本级测试调度（v2 第 4 期）：
+    - 迭代内全部需求 test_done/released → it 阶段（spawn it-designer，产物 {项目}/it/iter-{N}/）
+    - 全部迭代 it_passed → 版本 st 阶段（spawn st-tester，产物 {项目}/st/v{版本}/）
+    认领记在迭代/版本对象（it_claimed/st_claimed）防重复 spawn。"""
+    for v in vd.get("versions", []):
+        if v.get("status") == "released":
+            continue
+        iters = v.get("iterations") or []
+        # ---- 迭代 IT ----
+        for it in iters:
+            if it.get("status") != "pending" or it.get("it_claimed"):
+                continue
+            reqs = it.get("reqs") or []
+            if not reqs:
+                continue
+            if all(st.get(f"{project}/{r}", {}).get("status") in ("test_done", "released") for r in reqs):
+                it["it_claimed"] = True
+                it["status"] = "it_pending"
+                out = f"{project}/it/iter-{it['n']}/"
+                query = (
+                    f"你是本流水线的【集成测试设计执行者】。严格遵循 roles/it-designer.md "
+                    f"为项目 {project} 版本 {v['name']} 的迭代 {it['n']} 执行集成测试（IT）。\n"
+                    f"启动时（第 0 步）：运行 python3 scripts/statectl.py set_status {project}/__it{it['n']} test working（幂等，标记集成测试执行中）；\n"
+                    f"迭代内需求（UT 均已通过）：\n{_it_inputs(project, reqs, st)}\n"
+                    f"任务：1. 按 roles/it-designer.md 在 {out} 目录内产出集成测试（用例+报告+结论 PASS/FAIL）；\n"
+                    f"2. 运行 python3 scripts/statectl.py release_it {project} {v['name']} {it['n']} {out} 完成状态更新；\n"
+                    f"3. 完成后无需汇报。"
+                )
+                pid = spawn_worker("it-designer", f"{project}/__it{it['n']}", 1, query)
+                log(f"SPAWN-IT {project}/{v['name']} iter-{it['n']} worker=it-designer pid={pid}")
+                alarms.append(f"迭代 {v['name']}/iter-{it['n']} 进入集成测试（it-designer pid={pid}）")
+        # ---- 版本 ST ----
+        if v.get("status") == "st_pending" and not v.get("st_claimed"):
+            v["st_claimed"] = True
+            out = f"{project}/st/{v['name']}/"
+            query = (
+                f"你是本流水线的【系统测试执行者】。严格遵循 roles/st-tester.md "
+                f"为项目 {project} 版本 {v['name']} 执行系统测试（ST，全部迭代 IT 已通过）。\n"
+                f"启动时（第 0 步）：运行 python3 scripts/statectl.py set_status {project}/__st{''.join(v['name'].split('.'))} test working（幂等）；\n"
+                f"迭代集成测试产物：\n" + "\n".join(
+                    f"- iter-{it['n']}：{it.get('it_product') or '?'}" for it in iters)
+                + f"\n任务：1. 按 roles/st-tester.md 在 {out} 目录内产出系统测试（用例+报告+结论 PASS/FAIL）；\n"
+                f"2. 运行 python3 scripts/statectl.py release_st {project} {v['name']} {out} 完成状态更新；\n3. 完成后无需汇报。"
+            )
+            pid = spawn_worker("st-tester", f"{project}/__st{v['name']}", 1, query)
+            log(f"SPAWN-ST {project}/{v['name']} worker=st-tester pid={pid}")
+            alarms.append(f"版本 {v['name']} 进入系统测试（st-tester pid={pid}）")
+    write_versions(project, vd)  # 调度改动（迭代/版本状态/claim）落盘
+
+
+def _advance_v2(project: str, vd: dict, st: dict, alarms: list) -> None:
+    """v2 版本/迭代状态机推进：迭代 it_passed 累计 → 版本 st_pending；版本 st_passed → 标记待门禁。"""
+    for v in vd.get("versions", []):
+        if v.get("status") in ("released", "st_passed", "quality_pending"):
+            continue
+        iters = v.get("iterations") or []
+        if not iters or not any(it.get("reqs") for it in iters):
+            continue
+        all_it = all(it.get("status") == "it_passed" for it in iters if it.get("reqs"))
+        if all_it and v.get("status") in ("planning", "in_dev"):
+            v["status"] = "st_pending"
+            v["st_claimed"] = False
+            log(f"VERSION {project}/{v['name']} -> st_pending (all iterations IT passed)")
+            write_versions(project, vd)  # 状态推进落盘
+
+
+def release_it(project: str, version: str, iter_n: str, product: str, conclusion: str) -> int:
+    """迭代集成测试评审：release_it {project} {version} {iter} {产物} PASS|FAIL。
+    PASS → 迭代 it_passed；FAIL → 迭代回 it_pending（重做）。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion not in ("PASS", "FAIL"):
+        print(f"release_it: conclusion 必须为 PASS 或 FAIL，收到 {conclusion!r}", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        it = next((x for x in v.get("iterations", []) if str(x.get("n")) == str(iter_n)), None)
+        if not it:
+            print(f"迭代 {iter_n} 不存在", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        if not os.path.exists(full):
+            print(f"产物不存在: {full}", file=sys.stderr)
+            return 1
+        it["it_product"] = norm_product(product)
+        it["it_reviews"] = it.get("it_reviews", []) + [norm_product(product)]
+        if conclusion == "PASS":
+            it["status"] = "it_passed"
+        else:
+            it["status"] = "it_pending"
+            it["it_claimed"] = False  # 打回重做
+        write_versions(project, vd)
+        log(f"RELEASE_IT {project}/{version} iter-{iter_n} {conclusion} product={it['it_product']}")
+    return 0
+
+
+def release_st(project: str, version: str, product: str, conclusion: str) -> int:
+    """版本系统测试评审：release_st {project} {version} {产物} PASS|FAIL。
+    PASS → 版本 st_passed（下一步门禁/release 第 4b 期）；FAIL → 版本回 st_pending 重做。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion not in ("PASS", "FAIL"):
+        print(f"release_st: conclusion 必须为 PASS 或 FAIL，收到 {conclusion!r}", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        if not os.path.exists(full):
+            print(f"产物不存在: {full}", file=sys.stderr)
+            return 1
+        v["st_product"] = norm_product(product)
+        if conclusion == "PASS":
+            v["status"] = "st_passed"
+        else:
+            v["status"] = "st_pending"
+            v["st_claimed"] = False  # 重做
+        write_versions(project, vd)
+        log(f"RELEASE_ST {project}/{version} {conclusion} product={v['st_product']}")
+    return 0
 
 
 def cmd_versions(project: str = None) -> int:
@@ -1067,6 +1242,7 @@ def spawn_worker(role: str, key: str, round_n: int, query: str) -> int:
     role = _ROLE_ALIAS.get(role, role)
     model, provider = ROLE_MODELS.get(role, (ANALYST_MODEL, ANALYST_PROVIDER))
     os.makedirs(LOG_DIR, exist_ok=True)
+    os.makedirs(project_log_dir(project), exist_ok=True)  # 项目日志目录（it/st 迭代级 spawn 时可能尚未建）
     logf = open(os.path.join(project_log_dir(project), worker_log_name(project, rid, round_n, role)), "ab")
     cmd = ["hermes", "chat", "-q", query, "-m", model, "-Q"]
     if provider:
@@ -1203,6 +1379,9 @@ def _tick_common() -> int:
             _apply_deps(pst, proj)  # 依赖调度：waiting 挂起 / 依赖满足转 pending
             alarms += stale_recovery(pst)
             alarms += guard_recovery(pst)  # 巡检：worker 漏设状态/卡死的自动补正
+            vd = read_versions(proj)
+            _advance_v2(proj, vd, pst, alarms)  # 版本/迭代状态机推进
+            _schedule_it_st(proj, vd, pst, alarms)  # 迭代 IT / 版本 ST 调度
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
             if found:
                 rid, e, act = found
@@ -2274,6 +2453,10 @@ def main(argv) -> int:
             return cmd_versions(rest[0] if rest else None)
         if cmd == "assign":
             return cmd_assign(rest[0], rest[1] if len(rest) > 1 else "")
+        if cmd == "release_it":
+            return release_it(rest[0], rest[1], rest[2], rest[3], rest[4])
+        if cmd == "release_st":
+            return release_st(rest[0], rest[1], rest[2], rest[3])
         if cmd == "list":
             return cmd_list()
         if cmd == "get":
