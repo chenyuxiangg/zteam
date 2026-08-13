@@ -237,6 +237,8 @@ RELEASE = {"name": "release", "role": "releaser", "dir": "release", "kind": "dir
 ROLE_MODELS = {
     "req-analyst": (ANALYST_MODEL, ANALYST_PROVIDER),
     "pm": (ANALYST_MODEL, ANALYST_PROVIDER),  # v2 PM（需求导入细化，麦肯锡+联网）
+    "se": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),  # v2 SE（架构设计，全量需求）
+    "te": (TESTPLAN_DESIGNER_MODEL, ANALYST_PROVIDER),  # v2 TE（整体测试方案）
     "req-reviewer": (REVIEWER_MODEL, REVIEWER_PROVIDER),
     "dev-plan-designer": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
     "dev-plan-reviewer": (PLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
@@ -258,6 +260,8 @@ ROLE_MODELS = {
 ROLE_FILES = {
     "req-analyst": "roles/req-analyst.md",
     "pm": "roles/pm.md",  # v2 PM
+    "se": "roles/se.md",  # v2 SE（架构师）
+    "te": "roles/te.md",  # v2 TE（测试方案）
     "req-reviewer": "roles/req-reviewer.md",
     "dev-plan-designer": "roles/dev-plan-designer.md",
     "dev-plan-reviewer": "roles/dev-plan-reviewer.md",
@@ -279,6 +283,8 @@ ROLE_FILES = {
 ROLE_CN = {
     "req-analyst": "需求分析师", "req-reviewer": "需求评审师",
     "pm": "PM（需求导入与细化）",
+    "se": "SE（架构设计）",
+    "te": "TE（整体测试方案）",
     "dev-plan-designer": "开发方案设计者", "dev-plan-reviewer": "开发方案评审者",
     "test-plan-designer": "测试方案设计者", "test-plan-reviewer": "测试方案评审者",
     "code-developer": "代码开发者", "code-reviewer": "代码评审者",
@@ -819,6 +825,34 @@ def cmd_module(project: str, action: str, rest: list) -> int:
             write_status(st)
             log(f"MODULE_DISPATCH {project}/{rest[0]} <- {rest[1]}")
             return 0
+        if action == "iter":
+            if len(rest) < 2:
+                print("module iter <name> <迭代号列表:1,2,3>", file=sys.stderr)
+                return 1
+            m = next((x for x in mods if x["name"] == rest[0]), None)
+            if not m:
+                print(f"模块 {rest[0]} 不存在", file=sys.stderr)
+                return 1
+            nums = []
+            for x in rest[1].split(","):
+                try:
+                    nums.append(int(x.strip()))
+                except ValueError:
+                    pass
+            nums = sorted(set(nums))
+            if not nums:
+                print("迭代号无效", file=sys.stderr)
+                return 1
+            existing = {it["n"] for it in m.get("iterations", [])}
+            for n in nums:
+                if n not in existing:
+                    m.setdefault("iterations", []).append(
+                        {"n": n, "status": "design_pending", "dev_product": None,
+                         "ut_product": None, "it_product": None, "it_report": None, "it_reviews": []})
+            m["iterations"].sort(key=lambda x: x["n"])
+            write_modules(project, md)
+            log(f"MODULE_ITER {project}/{rest[0]} -> {nums}")
+            return 0
         print(f"未知 module 动作: {action}（add/rm/dep/dispatch/list）", file=sys.stderr)
         return 1
 
@@ -910,6 +944,152 @@ def open_issues(project: str) -> list:
         if "状态：open" in content or "状态：fixed" in content:
             out.append(f[:-3])
     return out
+
+
+def release_arch(project: str, version: str, product: str, conclusion: str) -> int:
+    """架构阶段状态命令（v2）：
+    SE 产出完成：release_arch {project} {version} {产物目录} DONE → arch_reviewing（等 PM 评审）
+    PM 评审：    release_arch {project} {version} {评审意见} PASS|FAIL → PASS: testplan（TE 启动）/ FAIL: arch 重做"""
+    conclusion = conclusion.strip().upper()
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if conclusion == "DONE":
+            if v.get("status") != "arch":
+                print(f"版本状态非 arch（当前 {v.get('status')}）", file=sys.stderr)
+                return 1
+            full = os.path.join(WORKSPACE_DIR, norm_product(product))
+            if not os.path.exists(full):
+                print(f"架构产物不存在: {full}", file=sys.stderr)
+                return 1
+            v["architecture"] = norm_product(product)
+            v["status"] = "arch_reviewing"
+            v["arch_claimed"] = False
+            write_versions(project, vd)
+            log(f"ARCH_DONE {project}/{version} product={v['architecture']}")
+            return 0
+        if conclusion not in ("PASS", "FAIL"):
+            print("conclusion 必须为 DONE/PASS/FAIL", file=sys.stderr)
+            return 1
+        if v.get("status") != "arch_reviewing":
+            print(f"评审仅对 arch_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        v["arch_reviews"] = v.get("arch_reviews", []) + [norm_product(product)]
+        if conclusion == "PASS":
+            v["status"] = "testplan"  # TE 测试方案阶段
+            v["test_plan_claimed"] = False
+        else:
+            v["status"] = "arch"  # 重做
+            v["arch_claimed"] = False
+        write_versions(project, vd)
+        log(f"ARCH_REVIEW {project}/{version} {conclusion} by=PM")
+    return 0
+
+
+def release_testplan_v2(project: str, version: str, product: str, conclusion: str) -> int:
+    """整体测试方案状态命令（v2）：
+    TE 产出完成：release_testplan_v2 {project} {version} {产物} DONE → testplan_reviewing（等 SE 评审）
+    SE 评审：    release_testplan_v2 {project} {version} {评审意见} PASS|FAIL → PASS: in_dev（模块迭代）/ FAIL: testplan 重做"""
+    conclusion = conclusion.strip().upper()
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if conclusion == "DONE":
+            if v.get("status") != "testplan":
+                print(f"版本状态非 testplan（当前 {v.get('status')}）", file=sys.stderr)
+                return 1
+            full = os.path.join(WORKSPACE_DIR, norm_product(product))
+            if not os.path.exists(full):
+                print(f"测试方案产物不存在: {full}", file=sys.stderr)
+                return 1
+            v["test_plan"] = norm_product(product)
+            v["status"] = "testplan_reviewing"
+            v["test_plan_claimed"] = False
+            write_versions(project, vd)
+            log(f"TESTPLAN_DONE {project}/{version} product={v['test_plan']}")
+            return 0
+        if conclusion not in ("PASS", "FAIL"):
+            print("conclusion 必须为 DONE/PASS/FAIL", file=sys.stderr)
+            return 1
+        if v.get("status") != "testplan_reviewing":
+            print(f"评审仅对 testplan_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        v["test_plan_reviews"] = v.get("test_plan_reviews", []) + [norm_product(product)]
+        if conclusion == "PASS":
+            v["status"] = "in_dev"  # 模块迭代开发
+        else:
+            v["status"] = "testplan"
+            v["test_plan_claimed"] = False
+        write_versions(project, vd)
+        log(f"TESTPLAN_REVIEW {project}/{version} {conclusion} by=SE")
+    return 0
+
+
+def _arch_inputs(project: str, reqs: list, st: dict) -> str:
+    """SE 架构输入清单：版本下全部需求规格。"""
+    lines = []
+    for r in reqs:
+        e = st.get(f"{project}/{r}") or {}
+        lines.append(f"- {r}：规格={e.get('analysis') or '?'}（状态={e.get('status', '?')}）")
+    return "\n".join(lines)
+
+
+def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
+    """版本级前置阶段调度（v2 M3）：
+    planning + 规格全 approved → SE 架构（arch）；arch_reviewing 等 PM；testplan 等 TE；testplan_reviewing 等 SE → in_dev"""
+    for v in vd.get("versions", []):
+        status = v.get("status")
+        if status == "released":
+            continue
+        reqs = v.get("reqs") or []
+        if not reqs:
+            continue
+        if status == "planning":
+            if not all(st.get(f"{project}/{r}", {}).get("status") == "approved" for r in reqs):
+                continue
+            if not v.get("arch_claimed"):
+                v["arch_claimed"] = True
+                v["status"] = "arch"
+                out = f"{project}/arch/{v['name']}/"
+                query = (
+                    f"你是本流水线的【SE（架构设计）】。严格遵循 roles/se.md 为项目 {project} 版本 {v['name']} "
+                    f"执行架构设计（全量需求规格一次性）。\n"
+                    f"版本需求规格（全部已获用户评审通过）：\n{_arch_inputs(project, reqs, st)}\n"
+                    f"任务：1. 阅读全部规格，输出架构设计到 {out}（架构/技术选型/模块间依赖/接口/构建/发布/配置）；\n"
+                    f"2. 设计功能模块组织并落盘（按需执行，幂等）：\n"
+                    f"   python3 scripts/statectl.py module {project} add <模块名> <基础平台|中间件|上层应用> [desc]\n"
+                    f"   python3 scripts/statectl.py module {project} dep <模块名> <依赖模块,逗号分隔>\n"
+                    f"   python3 scripts/statectl.py module {project} dispatch <模块名> <req_id,逗号分隔>\n"
+                    f"   python3 scripts/statectl.py module {project} iter <模块名> <迭代号,逗号分隔>（SE 排迭代计划）\n"
+                    f"3. 输出功能模块分工表到 {out}功能模块分工表.md（模块/职责/需求/依赖/迭代计划）；\n"
+                    f"4. 运行 python3 scripts/statectl.py release_arch {project} {v['name']} {out} DONE 完成状态更新；\n"
+                    f"5. 完成后无需汇报。"
+                )
+                pid = spawn_worker("se", f"{project}/__arch{v['name']}", 1, query)
+                log(f"SPAWN-SE {project}/{v['name']} worker=se pid={pid}")
+                alarms.append(f"版本 {v['name']} 进入架构设计（SE pid={pid}）")
+        elif status == "testplan":
+            if not v.get("test_plan_claimed"):
+                v["test_plan_claimed"] = True
+                out = f"{project}/testplans/{v['name']}/"
+                query = (
+                    f"你是本流水线的【TE（整体测试方案）】。严格遵循 roles/te.md 为项目 {project} 版本 {v['name']} "
+                    f"制定整体测试方案。\n"
+                    f"输入：架构设计 {v.get('architecture')}；需求规格见分工表模块需求。\n"
+                    f"任务：1. 输出整体测试方案到 {out}（IT 方案/ST 方案/测试套件框架设计，模板可参考主流测试套 pytest）；\n"
+                    f"2. 运行 python3 scripts/statectl.py release_testplan_v2 {project} {v['name']} {out} DONE 完成状态更新；\n"
+                    f"3. 完成后无需汇报。"
+                )
+                pid = spawn_worker("te", f"{project}/__tp{v['name']}", 1, query)
+                log(f"SPAWN-TE {project}/{v['name']} worker=te pid={pid}")
+                alarms.append(f"版本 {v['name']} 进入测试方案设计（TE pid={pid}）")
+    write_versions(project, vd)
 
 
 def cmd_versions(project: str = None) -> int:
@@ -1646,6 +1826,7 @@ def _tick_common() -> int:
             vd = read_versions(proj)
             _advance_v2(proj, vd, pst, alarms)  # 版本/迭代状态机推进
             _schedule_it_st(proj, vd, pst, alarms)  # 迭代 IT / 版本 ST 调度
+            _schedule_arch_te(proj, vd, pst, alarms)  # v2 版本级前置：SE 架构 / TE 测试方案
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
             if found:
                 rid, e, act = found
@@ -2761,6 +2942,10 @@ def main(argv) -> int:
             return release_it(rest[0], rest[1], rest[2], rest[3], rest[4])
         if cmd == "release_st":
             return release_st(rest[0], rest[1], rest[2], rest[3])
+        if cmd == "release_arch":
+            return release_arch(rest[0], rest[1], rest[2], rest[3])
+        if cmd == "release_testplan_v2":
+            return release_testplan_v2(rest[0], rest[1], rest[2], rest[3])
         if cmd == "list":
             return cmd_list()
         if cmd == "get":
