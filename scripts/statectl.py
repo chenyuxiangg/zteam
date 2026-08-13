@@ -239,6 +239,9 @@ ROLE_MODELS = {
     "pm": (ANALYST_MODEL, ANALYST_PROVIDER),  # v2 PM（需求导入细化，麦肯锡+联网）
     "se": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),  # v2 SE（架构设计，全量需求）
     "te": (TESTPLAN_DESIGNER_MODEL, ANALYST_PROVIDER),  # v2 TE（整体测试方案）
+    "mde": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),  # v2 MDE（模块设计，代码检视）
+    "fo": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),  # v2 FO（TDD 开发）
+    "mto": (TEST_DEVELOPER_MODEL, TEST_PROVIDER),  # v2 MTO（模块 IT）
     "req-reviewer": (REVIEWER_MODEL, REVIEWER_PROVIDER),
     "dev-plan-designer": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
     "dev-plan-reviewer": (PLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
@@ -262,6 +265,9 @@ ROLE_FILES = {
     "pm": "roles/pm.md",  # v2 PM
     "se": "roles/se.md",  # v2 SE（架构师）
     "te": "roles/te.md",  # v2 TE（测试方案）
+    "mde": "roles/mde.md",  # v2 MDE（模块设计）
+    "fo": "roles/fo.md",  # v2 FO（TDD 开发）
+    "mto": "roles/mto.md",  # v2 MTO（模块 IT）
     "req-reviewer": "roles/req-reviewer.md",
     "dev-plan-designer": "roles/dev-plan-designer.md",
     "dev-plan-reviewer": "roles/dev-plan-reviewer.md",
@@ -285,6 +291,9 @@ ROLE_CN = {
     "pm": "PM（需求导入与细化）",
     "se": "SE（架构设计）",
     "te": "TE（整体测试方案）",
+    "mde": "MDE（模块设计）",
+    "fo": "FO（开发者，TDD）",
+    "mto": "MTO（模块测试者，IT）",
     "dev-plan-designer": "开发方案设计者", "dev-plan-reviewer": "开发方案评审者",
     "test-plan-designer": "测试方案设计者", "test-plan-reviewer": "测试方案评审者",
     "code-developer": "代码开发者", "code-reviewer": "代码评审者",
@@ -1092,6 +1101,234 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
     write_versions(project, vd)
 
 
+def _get_mod_iter(project: str, module: str, iter_n: str):
+    """取模块迭代对象（含模块）。"""
+    md = read_modules(project)
+    m = next((x for x in md.get("modules", []) if x["name"] == module), None)
+    if not m:
+        print(f"模块 {module} 不存在", file=sys.stderr)
+        return None, None
+    it = next((x for x in m.get("iterations", []) if str(x.get("n")) == str(iter_n)), None)
+    if not it:
+        print(f"迭代 {iter_n} 不存在（模块 {module}）", file=sys.stderr)
+        return None, None
+    return m, it
+
+
+def release_module(project: str, module: str, iter_n: str, action: str, product: str, conclusion: str = "") -> int:
+    """模块迭代状态命令（v2 M4）：release_module {project} {module} {iter} {action} {产物} [结论]
+    action/结论 语义：
+      design DONE(MDE 产出→design_reviewing) ｜ design PASS|FAIL(SE 评审→dev_working/design_working)
+      code   DONE(FO 产出→dev_reviewing 检视门禁)
+      review PASS|FAIL(MDE/SE 检视→it_working / dev_working+唤醒 FO)
+      case   PASS|FAIL(TE 评 MTO 用例，不迁移)
+      it     DONE(MTO 报告，open_issues 空→it_passed，有 open 等闭环)"""
+    conclusion = conclusion.strip().upper()
+    with acquire_lock() as _:
+        m, it = _get_mod_iter(project, module, iter_n)
+        if not m:
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product)) if product else None
+        if product and not os.path.exists(full):
+            print(f"产物不存在: {full}", file=sys.stderr)
+            return 1
+        status = it.get("status")
+        if action == "design":
+            if conclusion == "DONE":
+                if status != "design_working":
+                    print(f"design DONE 需 design_working（当前 {status}）", file=sys.stderr)
+                    return 1
+                m["design"]["product"] = norm_product(product)
+                m["design"]["reviews"] = m["design"].get("reviews", [])
+                it["status"] = "design_reviewing"
+                it["claimed"] = False
+            elif conclusion in ("PASS", "FAIL"):
+                if status != "design_reviewing":
+                    print(f"design 评审需 design_reviewing（当前 {status}）", file=sys.stderr)
+                    return 1
+                m["design"]["reviews"].append(norm_product(product))
+                it["status"] = "dev_working" if conclusion == "PASS" else "design_working"
+                it["claimed"] = False
+            else:
+                print("design 结论必须为 DONE/PASS/FAIL", file=sys.stderr)
+                return 1
+        elif action == "code":
+            if conclusion != "DONE" or status != "dev_working":
+                print(f"code DONE 需 dev_working（当前 {status}）", file=sys.stderr)
+                return 1
+            it["dev_product"] = norm_product(product)
+            it["status"] = "dev_reviewing"
+            it["claimed"] = False
+        elif action == "review":
+            if conclusion not in ("PASS", "FAIL") or status != "dev_reviewing":
+                print(f"review 需 dev_reviewing + PASS/FAIL（当前 {status}）", file=sys.stderr)
+                return 1
+            it.setdefault("reviews", []).append(norm_product(product))
+            if conclusion == "PASS":
+                it["status"] = "it_working"
+                it["claimed"] = False
+                it["failures"] = int(it.get("failures", 0)) + int(it.get("retry_count", 0))
+                it["retry_count"] = 0
+            else:
+                it["status"] = "dev_working"  # 打回修复
+                it["claimed"] = False
+                it["retry_count"] = int(it.get("retry_count", 0)) + 1
+                it["review_feedback"] = norm_product(product)
+                if int(it.get("retry_count", 0)) >= 3:
+                    it["status"] = "blocked"
+                    with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                        f.write(f"[BLOCKED] 模块 {project}/{module} 迭代 {iter_n} 检视第 {it['retry_count']} 次仍 FAIL，已停止，请人工介入。\n")
+        elif action == "case":
+            if conclusion not in ("PASS", "FAIL"):
+                print("case 结论必须为 PASS/FAIL", file=sys.stderr)
+                return 1
+            it.setdefault("case_reviews", []).append(norm_product(product))
+            it["case_passed"] = conclusion == "PASS"
+        elif action == "it":
+            if conclusion != "DONE" or status != "it_working":
+                print(f"it DONE 需 it_working（当前 {status}）", file=sys.stderr)
+                return 1
+            it["it_report"] = norm_product(product)
+            it["it_product"] = norm_product(product)
+            it["claimed"] = False
+            # 门禁：open 问题单须清空
+            opens = open_issues(project)
+            if opens:
+                it["status"] = "it_working"  # 等问题单闭环
+                it["waiting_issues"] = opens
+                print(f"模块 IT 完成但存在未闭环问题单 {opens}，等待修复后自动收口", file=sys.stderr)
+            else:
+                it["status"] = "it_passed"
+        else:
+            print(f"未知 action: {action}（design/code/review/case/it）", file=sys.stderr)
+            return 1
+        # 写回（_get_mod_iter 读了独立 dict，需重新读+改+写）
+        md = read_modules(project)
+        mm = next(x for x in md["modules"] if x["name"] == module)
+        ii = next(x for x in mm["iterations"] if str(x.get("n")) == str(iter_n))
+        mm["design"] = m["design"]
+        for k, val in it.items():
+            ii[k] = val
+        write_modules(project, md)
+        log(f"MODULE_{action.upper()} {project}/{module} iter-{iter_n} {conclusion} -> {it.get('status')}")
+    return 0
+
+
+def _module_passed(md: dict, module: str) -> bool:
+    """模块是否已通过（任一迭代 it_passed，供依赖判定）。"""
+    m = next((x for x in md.get("modules", []) if x["name"] == module), None)
+    if not m:
+        return True  # 依赖模块不存在（已下线）→ 不阻塞
+    return any(it.get("status") == "it_passed" for it in m.get("iterations", []))
+
+
+def _module_stale_recovery(project: str, md: dict, alarms: list) -> None:
+    """模块级 stale 兜底：迭代 claimed 但 worker 进程死亡 → 清 claimed 重调度。"""
+    for m in md.get("modules", []):
+        for it in m.get("iterations", []):
+            if it.get("claimed") and not pid_alive(it.get("claimed_pid")):
+                it["claimed"] = False
+                it["failures"] = int(it.get("failures", 0)) + 1
+                log(f"MODULE_STALE {project}/{m['name']} iter-{it['n']} worker 死亡，重置调度 (failures={it['failures']})")
+                alarms.append(f"模块 {m['name']} 迭代 {it['n']} worker 死亡已重置")
+                if int(it.get("failures", 0)) >= 3:
+                    it["status"] = "blocked"
+                    with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                        f.write(f"[BLOCKED] 模块 {project}/{m['name']} 迭代 {it['n']} 连续失败 3 次，已停止。\n")
+
+
+def _module_inputs(project: str, m: dict, st: dict) -> str:
+    """模块需求规格清单（MDE 输入）。"""
+    lines = []
+    for r in m.get("reqs", []):
+        e = st.get(f"{project}/{r}") or {}
+        lines.append(f"- {r}：规格={e.get('analysis') or '?'}")
+    return "\n".join(lines)
+
+
+def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: list) -> None:
+    """模块迭代链调度（v2 M4）：版本 in_dev → 按迭代计划推进模块（依赖串行/无依赖并行，模块跨迭代）。
+    design_pending→MDE；design_reviewing→等 SE；dev_working→FO；dev_reviewing→等检视；
+    it_working→MTO（用例 TE 评审→测试代码→IT）；检视 FAIL 打回时直接唤醒 FO。"""
+    for v in vd.get("versions", []):
+        if v.get("status") != "in_dev":
+            continue
+        for m in md.get("modules", []):
+            if not m.get("alive", True):
+                continue
+            if not _module_passed(md, m["name"]) and m.get("iterations"):
+                # 自身 previous 迭代未完成时不调度（跨迭代串行）——在迭代循环内判
+                pass
+            for it in sorted(m.get("iterations", []), key=lambda x: x["n"]):
+                status = it.get("status")
+                # 同模块前序迭代串行
+                prev = [x for x in m["iterations"] if x["n"] < it["n"]]
+                if prev and any(x.get("status") != "it_passed" for x in prev):
+                    continue
+                if status == "blocked":
+                    continue
+                if it.get("claimed"):
+                    continue
+                # 模块依赖（迭代级）：依赖模块已通过
+                if not all(_module_passed(md, d) for d in m.get("depends_on", [])):
+                    continue
+                if status == "design_pending":
+                    it["claimed"] = True
+                    it["claimed_pid"] = 0
+                    it["status"] = "design_working"
+                    out = f"{project}/design/{m['name']}/"
+                    query = (
+                        f"你是本流水线的【MDE（模块设计）】。严格遵循 roles/mde.md 为模块 {m['name']} "
+                        f"（版本 {v['name']} 迭代 {it['n']}）设计功能模块。\n"
+                        f"架构设计：{v.get('architecture')}\n模块需求规格：\n{_module_inputs(project, m, st)}\n"
+                        f"任务：1. 输出功能模块设计文档到 {out}（数据结构/接口/实现细节/DFx/可测试性/UT 框架）；\n"
+                        f"2. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} DONE；\n"
+                        f"3. 完成后无需汇报。"
+                    )
+                    pid = spawn_worker("mde", f"{project}/__mde-{m['name']}-it{it['n']}", 1, query)
+                    it["claimed_pid"] = pid
+                    log(f"SPAWN-MDE {project}/{m['name']} iter-{it['n']} pid={pid}")
+                    alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入设计（MDE pid={pid}）")
+                elif status == "dev_working":
+                    out = f"{project}/code/{m['name']}/iter-{it['n']}/"
+                    fb = f"\n检视反馈（请先阅读并修复）：{it.get('review_feedback')}\n" if it.get("review_feedback") else ""
+                    query = (
+                        f"你是本流水线的【FO（开发者，TDD）】。严格遵循 roles/fo.md 为模块 {m['name']} "
+                        f"（版本 {v['name']} 迭代 {it['n']}）TDD 开发。\n"
+                        f"模块设计：{m['design'].get('product')}\n{fb}"
+                        f"任务：1. 先写测试再实现（TDD），输出代码与 UT 用例到 {out}；\n"
+                        f"2. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} code {out} DONE；\n"
+                        f"3. 完成后无需汇报。"
+                    )
+                    it["claimed"] = True
+                    it["claimed_pid"] = 0
+                    pid = spawn_worker("fo", f"{project}/__fo-{m['name']}-it{it['n']}", 1, query)
+                    it["claimed_pid"] = pid
+                    log(f"SPAWN-FO {project}/{m['name']} iter-{it['n']} pid={pid}")
+                    alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入开发（FO pid={pid}）")
+                elif status == "it_working":
+                    if not it.get("case_passed"):
+                        # MTO 用例阶段（TE 评审通过才能写测试代码——脚本侧由 case 命令门禁）
+                        out = f"{project}/it/{m['name']}/iter-{it['n']}/"
+                        query = (
+                            f"你是本流水线的【MTO（模块测试者，IT）】。严格遵循 roles/mto.md 为模块 {m['name']} "
+                            f"（版本 {v['name']} 迭代 {it['n']}）执行模块集成测试（IT）。\n"
+                            f"整体测试方案：{v.get('test_plan')}\n模块设计：{m['design'].get('product')}\n"
+                            f"任务：1. 先写测试用例文档到 {out}测试用例.md；\n"
+                            f"2. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} case {out}测试用例.md PASS（用例经 TE 评审通过；若 TE 未通过会打回，需按意见修改后重新提交）；\n"
+                            f"3. 用例评审通过后写测试代码并执行模块 IT，输出模块测试报告到 {out}；发现缺陷提问题单（issue open）；\n"
+                            f"4. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} it {out} DONE；\n"
+                            f"5. 完成后无需汇报。"
+                        )
+                        it["claimed"] = True
+                        it["claimed_pid"] = 0
+                        pid = spawn_worker("mto", f"{project}/__mto-{m['name']}-it{it['n']}", 1, query)
+                        it["claimed_pid"] = pid
+                        log(f"SPAWN-MTO {project}/{m['name']} iter-{it['n']} pid={pid}")
+                        alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入 IT（MTO pid={pid}）")
+    write_modules(project, md)
+
+
 def cmd_versions(project: str = None) -> int:
     """版本聚合视图：statectl versions [project]（无参 = 全部项目）。"""
     projects = [project] if project else [p for p in sorted(os.listdir(WORKSPACE_DIR))
@@ -1827,6 +2064,9 @@ def _tick_common() -> int:
             _advance_v2(proj, vd, pst, alarms)  # 版本/迭代状态机推进
             _schedule_it_st(proj, vd, pst, alarms)  # 迭代 IT / 版本 ST 调度
             _schedule_arch_te(proj, vd, pst, alarms)  # v2 版本级前置：SE 架构 / TE 测试方案
+            md = read_modules(proj)
+            _module_stale_recovery(proj, md, alarms)  # 模块 worker 死亡兜底
+            _schedule_module_iter(proj, vd, md, pst, alarms)  # v2 模块迭代链（MDE→FO→MTO）
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
             if found:
                 rid, e, act = found
@@ -2946,6 +3186,8 @@ def main(argv) -> int:
             return release_arch(rest[0], rest[1], rest[2], rest[3])
         if cmd == "release_testplan_v2":
             return release_testplan_v2(rest[0], rest[1], rest[2], rest[3])
+        if cmd == "release_module":
+            return release_module(rest[0], rest[1], rest[2], rest[3], rest[4], rest[5] if len(rest) > 5 else "")
         if cmd == "list":
             return cmd_list()
         if cmd == "get":
