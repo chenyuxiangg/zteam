@@ -321,7 +321,7 @@ MID_STATES = _mid_states()
 # 所有合法状态
 def _all_states() -> set:
     s = {"pending", "analyzing", "analyzed", "reviewing", "needs_fix", "approved", "blocked", "released",
-         "awaiting_user_confirm", "dispatched"}
+         "awaiting_user_confirm", "dispatched", "removed"}
     for stg in STAGES:
         s |= {f"{stg['name']}_designing", f"{stg['name']}_reviewing", f"{stg['name']}_done"}
     for g in GATES:
@@ -1523,6 +1523,64 @@ def release_st_case(project: str, version: str, product: str, conclusion: str) -
         v["st_case_passed"] = conclusion == "PASS"
         write_versions(project, vd)
         log(f"ST_CASE {project}/{version} {conclusion} by=TE")
+    return 0
+
+
+def cmd_change_request(rid: str, action: str, desc: str) -> int:
+    """变更三分场景（P1-02）：change_request {req_id} modify|remove <描述>
+    - modify：需求回 analyzing（重细化规格）→ 用户评审 → 重新分发/重跑（原草稿与旧规格留档）
+    - remove：忽略该需求（removed 状态；从版本/模块 reqs 移除；依赖它的需求自动解锁）
+    版本冻结：released 版本下的需求变更被拒绝（需开新版本承载）。"""
+    action = action.strip().lower()
+    if action not in ("modify", "remove"):
+        print("change_request 动作必须为 modify/remove", file=sys.stderr)
+        return 1
+    if action == "modify" and not desc.strip():
+        print("modify 需要变更描述: change_request {req_id} modify <描述>", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        project, rid_short = split_key(rid)
+        vd = read_versions(project)
+        ver = e.get("version")
+        v = next((x for x in vd["versions"] if x["name"] == ver), None)
+        if v and v.get("status") == "released":
+            print(f"版本 {ver} 已 released（冻结），变更需开新版本承载（assign {rid} version=新版本 后处理）", file=sys.stderr)
+            return 1
+        if action == "modify":
+            if e.get("status") not in ("approved", "dispatched", "released"):
+                print(f"modify 仅对 approved/dispatched/released 需求有效（当前 {e.get('status')}）", file=sys.stderr)
+                return 1
+            e["status"] = "analyzing"  # 重细化（规格重做）
+            e["change_log"] = e.get("change_log", []) + [{"t": now_iso(), "action": "modify", "desc": desc.strip()}]
+            e["updated_at"] = now_iso()
+            write_status(st)
+            log(f"CHANGE_MODIFY {rid} -> analyzing（{desc.strip()[:60]}）")
+        else:  # remove
+            if e.get("status") == "removed":
+                print(f"{rid} 已是 removed", file=sys.stderr)
+                return 1
+            e["status"] = "removed"
+            e["change_log"] = e.get("change_log", []) + [{"t": now_iso(), "action": "remove", "desc": desc.strip() or "删除需求"}]
+            e["updated_at"] = now_iso()
+            # 从版本/模块 reqs 移除
+            if v and rid_short in v.get("reqs", []):
+                v["reqs"] = [r for r in v["reqs"] if r != rid_short]
+            md = read_modules(project)
+            changed = False
+            for m in md.get("modules", []):
+                if rid_short in m.get("reqs", []):
+                    m["reqs"] = [r for r in m["reqs"] if r != rid_short]
+                    changed = True
+            if changed:
+                write_modules(project, md)
+            write_versions(project, vd)
+            write_status(st)
+            log(f"CHANGE_REMOVE {rid} -> removed（从版本/模块移除，依赖自动解锁）")
     return 0
 
 
@@ -3372,6 +3430,8 @@ def main(argv) -> int:
             return cmd_confirm(rest[0])
         if cmd == "reject":
             return cmd_reject(rest[0], " ".join(rest[1:]))
+        if cmd == "change_request":
+            return cmd_change_request(rest[0], rest[1], " ".join(rest[2:]))
         if cmd == "versions":
             return cmd_versions(rest[0] if rest else None)
         if cmd == "assign":
