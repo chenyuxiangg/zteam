@@ -133,12 +133,12 @@ def next_action(e: dict):
     if s == "approved":
         return None  # v2：规格锁定 → 等 SE 架构设计（版本级），不再直接进需求级方案
     if s in ("pending", "needs_fix"):
-        return ("req-analyst", "req", "design")
+        return ("pm", "req", "design")  # v2：PM 细化
     if s == "analyzing":
         # 执行中（含已认领）或评审 FAIL 打回待重做（无 claim）——动作一致，认领与否由 claim 的 claimed_by 校验把关
-        return ("req-analyst", "req", "design")
+        return ("pm", "req", "design")
     if s == "analyzed":
-        return ("req-reviewer", "req", "review")
+        return ("pm", "req", "design")  # reject 重细化后 PM 继续
     if s == "reviewing":
         # 评审中（已认领）——build_worker_query 在 claim 后调用需要此映射
         return ("req-reviewer", "req", "review")
@@ -236,6 +236,7 @@ RELEASE = {"name": "release", "role": "releaser", "dir": "release", "kind": "dir
 # 角色 → (模型, provider) 映射（含需求阶段两个角色）
 ROLE_MODELS = {
     "req-analyst": (ANALYST_MODEL, ANALYST_PROVIDER),
+    "pm": (ANALYST_MODEL, ANALYST_PROVIDER),  # v2 PM（需求导入细化，麦肯锡+联网）
     "req-reviewer": (REVIEWER_MODEL, REVIEWER_PROVIDER),
     "dev-plan-designer": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
     "dev-plan-reviewer": (PLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
@@ -256,6 +257,7 @@ ROLE_MODELS = {
 # 角色 → 角色文件（worker 指令阅读文件）
 ROLE_FILES = {
     "req-analyst": "roles/req-analyst.md",
+    "pm": "roles/pm.md",  # v2 PM
     "req-reviewer": "roles/req-reviewer.md",
     "dev-plan-designer": "roles/dev-plan-designer.md",
     "dev-plan-reviewer": "roles/dev-plan-reviewer.md",
@@ -276,6 +278,7 @@ ROLE_FILES = {
 # 角色 → 中文名（worker 指令措辞）
 ROLE_CN = {
     "req-analyst": "需求分析师", "req-reviewer": "需求评审师",
+    "pm": "PM（需求导入与细化）",
     "dev-plan-designer": "开发方案设计者", "dev-plan-reviewer": "开发方案评审者",
     "test-plan-designer": "测试方案设计者", "test-plan-reviewer": "测试方案评审者",
     "code-developer": "代码开发者", "code-reviewer": "代码评审者",
@@ -2438,6 +2441,7 @@ def cmd_get(rid: str) -> int:
 # ---------------- 通知（结果推送，no_agent cron 用） ----------------
 
 NOTIFY_MARKER = os.path.join(LOG_DIR, ".notify_marker")
+CONFIRM_REMINDED = os.path.join(LOG_DIR, ".confirm_reminded")  # 已提醒用户评审的规格 key 集
 PAUSE_FILE = os.path.join(WORKSPACE_DIR, ".pause")  # 手动暂停标记：touch = 流水线整体停止调度（halt）
 
 
@@ -2467,12 +2471,45 @@ def cmd_unhalt() -> int:
     return 0
 
 
+def _spec_summary(e: dict) -> str:
+    """规格摘要（用户评审推送用）：规格文件头部 + 需求原文头部。"""
+    parts = []
+    try:
+        if e.get("analysis"):
+            full = os.path.join(WORKSPACE_DIR, norm_product(e["analysis"]))
+            if os.path.exists(full):
+                head = " ".join(open(full, encoding="utf-8").read().splitlines()[:8])[:200]
+                parts.append(f"规格：{head}")
+    except Exception:
+        pass
+    return " | ".join(parts) if parts else "（规格文件缺失）"
+
+
 def cmd_notify() -> int:
-    """输出自上次以来新归档的 approved 需求（Telegram 友好格式）；无新增则静默（空 stdout）。
+    """输出自上次以来新归档的 approved 需求 + 待用户评审的规格（Telegram 友好格式）；无新增则静默。
     首次运行只初始化标记，不输出（避免把历史归档全部推一遍）。"""
     with acquire_lock() as _:
         st = read_status()
         now = now_iso()
+        out_lines = []
+        # 段 1：规格待用户评审（独立于归档 marker；提醒一次，状态变化后清除）
+        reminded = set()
+        if os.path.exists(CONFIRM_REMINDED):
+            try:
+                reminded = set(json.load(open(CONFIRM_REMINDED, encoding="utf-8")))
+            except Exception:
+                reminded = set()
+        pending_confirm = [k for k, e in sorted(st.items()) if e.get("status") == "awaiting_user_confirm"]
+        new_confirm = [k for k in pending_confirm if k not in reminded]
+        if new_confirm:
+            out_lines.append("🧾 规格待你评审（你是需求规格的唯一拍板人）：")
+            for k in new_confirm:
+                out_lines.append(f"  {k}：{_spec_summary(st[k])}")
+                out_lines.append(f"    回复 confirm {k.split('/')[-1]} 或 reject {k.split('/')[-1]} <理由>")
+            reminded |= set(new_confirm)
+        reminded = {k for k in reminded if st.get(k, {}).get("status") == "awaiting_user_confirm"}
+        json.dump(sorted(reminded), open(CONFIRM_REMINDED, "w", encoding="utf-8"))
+        # 段 2：新归档 approved/released（原逻辑）
         marker = ""
         if os.path.exists(NOTIFY_MARKER):
             with open(NOTIFY_MARKER, encoding="utf-8") as f:
@@ -2480,6 +2517,8 @@ def cmd_notify() -> int:
         if not marker:
             with open(NOTIFY_MARKER, "w", encoding="utf-8") as f:
                 f.write(now)
+            if out_lines:
+                print("\n".join(out_lines))
             return 0
         new_items = []
         for key, e in sorted(st.items()):
@@ -2490,22 +2529,18 @@ def cmd_notify() -> int:
                 continue
             new_items.append((key, e))
         if new_items:
-            lines = [f"📋 流水线结果（新增 {len(new_items)} 项）"]
+            out_lines.append(f"📋 流水线结果（新增 {len(new_items)} 项）")
             for key, e in new_items:
                 project, rid = split_key(key)
                 if e.get("status") == "released":
-                    forced = " 🚀 已发布" if not e.get("forced") else " ⚠️强制发布（需人工复核）"
-                    lines.append(f"🚀 {key} — 完整交付（{rel_artifact(project, rid)}）")
+                    out_lines.append(f"🚀 {key} — 完整交付（{rel_artifact(project, rid)}）")
                 else:
                     forced = " ⚠️强制归档（需人工复核）" if e.get("forced") else ""
-                    lines.append(f"✅ {key} — 第 {e.get('round', '?')} 轮评审通过{forced}（{rel_artifact(project, rid)}）")
-            out = "\n".join(lines)
-        else:
-            out = ""
+                    out_lines.append(f"✅ {key} — 第 {e.get('round', '?')} 轮评审通过{forced}（{rel_artifact(project, rid)}）")
         with open(NOTIFY_MARKER, "w", encoding="utf-8") as f:
             f.write(now)
-    if out:
-        print(out)
+    if out_lines:
+        print("\n".join(out_lines))
     return 0
 
 
