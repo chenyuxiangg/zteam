@@ -128,6 +128,10 @@ def next_action(e: dict):
     s = e.get("status")
     if s == "waiting":
         return None  # 依赖/迭代前置未满足，等待调度（不 spawn 不烧 token）
+    if s in ("awaiting_user_confirm", "dispatched"):
+        return None  # v2：等用户评审规格 / 已分发等模块开发（人工/架构师环节）
+    if s == "approved":
+        return None  # v2：规格锁定 → 等 SE 架构设计（版本级），不再直接进需求级方案
     if s in ("pending", "needs_fix"):
         return ("req-analyst", "req", "design")
     if s == "analyzing":
@@ -292,7 +296,8 @@ def _mid_states() -> set:
 MID_STATES = _mid_states()
 # 所有合法状态
 def _all_states() -> set:
-    s = {"pending", "analyzing", "analyzed", "reviewing", "needs_fix", "approved", "blocked", "released"}
+    s = {"pending", "analyzing", "analyzed", "reviewing", "needs_fix", "approved", "blocked", "released",
+         "awaiting_user_confirm", "dispatched"}
     for stg in STAGES:
         s |= {f"{stg['name']}_designing", f"{stg['name']}_reviewing", f"{stg['name']}_done"}
     for g in GATES:
@@ -438,6 +443,12 @@ def ensure_versions(project: str) -> dict:
                     it.setdefault("it_product", None)
                     it.setdefault("it_reviews", [])
                 v.setdefault("st_product", None)
+                # v2 模块中心扩展字段
+                v.setdefault("architecture", None)   # 架构设计产物（SE，PM 评审）
+                v.setdefault("module_plan", None)    # 功能模块分工表（SE，PM 评审；含迭代计划）
+                v.setdefault("test_plan", None)      # 整体测试方案（TE，SE 评审）
+                v.setdefault("qa_report", None)      # QA 评审结论
+                v.setdefault("release_pkg", None)    # release 包
             if migrated:
                 write_versions(project, vd)
             return vd
@@ -646,6 +657,256 @@ def release_st(project: str, version: str, product: str, conclusion: str) -> int
         write_versions(project, vd)
         log(f"RELEASE_ST {project}/{version} {conclusion} product={v['st_product']}")
     return 0
+
+
+def cmd_confirm(rid: str) -> int:
+    """用户确认需求规格：confirm {req_id} → awaiting_user_confirm → approved（规格锁定）。
+    用户是规格唯一拍板人；脚本校验规格产物真实存在。"""
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        if e.get("status") != "awaiting_user_confirm":
+            print(f"confirm 仅对 awaiting_user_confirm 状态有效（当前 {e.get('status')}）", file=sys.stderr)
+            return 1
+        if not e.get("analysis") or not os.path.exists(os.path.join(WORKSPACE_DIR, norm_product(e["analysis"]))):
+            print(f"规格产物不存在或未登记: {e.get('analysis')}", file=sys.stderr)
+            return 1
+        e["status"] = "approved"
+        e["approved_at"] = now_iso()
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"USER_CONFIRM {rid} -> approved (规格锁定)")
+    return 0
+
+
+def cmd_reject(rid: str, reason: str) -> int:
+    """用户驳回需求规格：reject {req_id} <理由> → 回到 analyzing（PM 带理由重细化）。"""
+    if not reason.strip():
+        print("reject 需要理由: reject {req_id} <理由>", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        if e.get("status") != "awaiting_user_confirm":
+            print(f"reject 仅对 awaiting_user_confirm 状态有效（当前 {e.get('status')}）", file=sys.stderr)
+            return 1
+        e["status"] = "analyzing"
+        e["reject_reason"] = reason.strip()
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"USER_REJECT {rid} -> analyzing (reason={reason.strip()[:80]})")
+    return 0
+
+
+# ---------------- 模块管理（v2 模块中心：SE 抉择组织形态） ----------------
+
+MODULES_FILE = "modules.json"
+MODULE_TYPES = ("基础平台", "中间件", "上层应用")
+
+
+def modules_path(project: str) -> str:
+    return os.path.join(project_dir(project), MODULES_FILE)
+
+
+def ensure_modules(project: str) -> dict:
+    p = modules_path(project)
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    md = {"modules": []}
+    write_modules(project, md)
+    return md
+
+
+def read_modules(project: str) -> dict:
+    return ensure_modules(project)
+
+
+def write_modules(project: str, md: dict) -> None:
+    os.makedirs(project_dir(project), exist_ok=True)
+    tmp = modules_path(project) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(md, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, modules_path(project))
+
+
+def cmd_module(project: str, action: str, rest: list) -> int:
+    """模块管理（SE 使用）：module {project} add <name> <类型> [desc] / rm <name> /
+    dep <name> <dep1,dep2> / dispatch <name> <req_id1,req_id2> / list"""
+    action = action.lower()
+    with acquire_lock() as _:
+        md = read_modules(project)
+        mods = md.setdefault("modules", [])
+        if action == "list":
+            for m in mods:
+                print(f"  {m['name']} [{m.get('type','?')}] alive={m.get('alive', True)} "
+                      f"deps={m.get('depends_on', [])} reqs={len(m.get('reqs', []))}")
+            return 0
+        if action == "add":
+            if len(rest) < 2:
+                print("module add <name> <类型(基础平台/中间件/上层应用)> [desc]", file=sys.stderr)
+                return 1
+            name, mtype = rest[0], rest[1]
+            if mtype not in MODULE_TYPES:
+                print(f"类型必须为 {'/'.join(MODULE_TYPES)}", file=sys.stderr)
+                return 1
+            if any(m["name"] == name for m in mods):
+                print(f"模块 {name} 已存在", file=sys.stderr)
+                return 1
+            mods.append({"name": name, "type": mtype, "desc": " ".join(rest[2:]) or "",
+                         "depends_on": [], "reqs": [], "design": {"product": None, "reviews": []},
+                         "iterations": [], "alive": True})
+            write_modules(project, md)
+            log(f"MODULE_ADD {project}/{name} type={mtype}")
+            return 0
+        if action == "rm":
+            if not rest:
+                print("module rm <name>", file=sys.stderr)
+                return 1
+            m = next((x for x in mods if x["name"] == rest[0]), None)
+            if not m:
+                print(f"模块 {rest[0]} 不存在", file=sys.stderr)
+                return 1
+            m["alive"] = False  # 下线（保留历史，需求需重新分发）
+            write_modules(project, md)
+            log(f"MODULE_RM {project}/{rest[0]} (下线)")
+            return 0
+        if action == "dep":
+            if len(rest) < 2:
+                print("module dep <name> <dep1,dep2>", file=sys.stderr)
+                return 1
+            m = next((x for x in mods if x["name"] == rest[0]), None)
+            if not m:
+                print(f"模块 {rest[0]} 不存在", file=sys.stderr)
+                return 1
+            m["depends_on"] = [x.strip() for x in rest[1].split(",") if x.strip()]
+            write_modules(project, md)
+            log(f"MODULE_DEP {project}/{rest[0]} -> {m['depends_on']}")
+            return 0
+        if action == "dispatch":
+            if len(rest) < 2:
+                print("module dispatch <name> <req_id1,req_id2>", file=sys.stderr)
+                return 1
+            m = next((x for x in mods if x["name"] == rest[0]), None)
+            if not m:
+                print(f"模块 {rest[0]} 不存在", file=sys.stderr)
+                return 1
+            st = read_status()
+            for rid in [x.strip() for x in rest[1].split(",") if x.strip()]:
+                key = f"{project}/{rid}"
+                if key not in st:
+                    print(f"需求 {key} 不存在", file=sys.stderr)
+                    continue
+                if rid not in m.setdefault("reqs", []):
+                    m["reqs"].append(rid)
+                if st[key].get("status") == "approved":
+                    st[key]["status"] = "dispatched"
+                    st[key]["module"] = rest[0]
+                    st[key]["updated_at"] = now_iso()
+            write_modules(project, md)
+            write_status(st)
+            log(f"MODULE_DISPATCH {project}/{rest[0]} <- {rest[1]}")
+            return 0
+        print(f"未知 module 动作: {action}（add/rm/dep/dispatch/list）", file=sys.stderr)
+        return 1
+
+
+# ---------------- 问题单（v2：提单人复测闭环） ----------------
+
+
+def issues_dir(project: str) -> str:
+    d = os.path.join(project_dir(project), "issues")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _issue_path(project: str, iid: str) -> str:
+    return os.path.join(issues_dir(project), f"{iid}.md")
+
+
+def cmd_issue(project: str, action: str, rest: list) -> int:
+    """问题单（MTO/STO 提单，FO 修复，提单人复测关闭）：
+    issue {project} open <iid> <严重级> <描述...> / fix <iid> / close <iid> / list [open]"""
+    action = action.lower()
+    if action == "list":
+        filt = rest[0].lower() if rest else ""
+        for f in sorted(os.listdir(issues_dir(project))):
+            if not f.endswith(".md"):
+                continue
+            content = open(os.path.join(issues_dir(project), f), encoding="utf-8").read()
+            status = "open"
+            if "状态：closed" in content:
+                status = "closed"
+            elif "状态：fixed" in content:
+                status = "fixed"
+            if filt and status != filt:
+                continue
+            first = content.splitlines()[1] if len(content.splitlines()) > 1 else ""
+            print(f"  {f[:-3]:20s} [{status}] {first.strip()}")
+        return 0
+    if not rest:
+        print(f"issue {action} 参数不足", file=sys.stderr)
+        return 1
+    iid = rest[0]
+    p = _issue_path(project, iid)
+    if action == "open":
+        if len(rest) < 2:
+            print("issue open <iid> <严重级> <描述>", file=sys.stderr)
+            return 1
+        if os.path.exists(p):
+            print(f"问题单 {iid} 已存在", file=sys.stderr)
+            return 1
+        content = (f"# 问题单 {iid}\n\n状态：open\n严重级：{rest[1]}\n"
+                   f"提单人：{os.environ.get('ISSUE_REPORTER', '?')}\n时间：{now_iso()}\n\n描述：{' '.join(rest[2:]) or ''}\n\n"
+                   f"## 修复记录\n\n## 复测记录\n")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+        log(f"ISSUE_OPEN {project}/{iid} sev={rest[1]}")
+        return 0
+    if not os.path.exists(p):
+        print(f"问题单 {iid} 不存在", file=sys.stderr)
+        return 1
+    content = open(p, encoding="utf-8").read()
+    if action == "fix":
+        if "状态：open" not in content:
+            print(f"问题单 {iid} 非 open 状态", file=sys.stderr)
+            return 1
+        content = content.replace("状态：open", "状态：fixed", 1)
+        content += f"- {now_iso()} FO 修复完成\n"
+    elif action == "close":
+        if "状态：fixed" not in content:
+            print(f"问题单 {iid} 非 fixed 状态（需 FO 先修复）", file=sys.stderr)
+            return 1
+        content = content.replace("状态：fixed", "状态：closed", 1)
+        content += f"- {now_iso()} 提单人复测通过，关闭\n"
+    else:
+        print(f"未知 issue 动作: {action}（open/fix/close/list）", file=sys.stderr)
+        return 1
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(content)
+    log(f"ISSUE_{action.upper()} {project}/{iid}")
+    return 0
+
+
+def open_issues(project: str) -> list:
+    """项目当前 open/fixed 问题单（门禁条件：>0 时模块/版本不进下一阶段）。"""
+    out = []
+    for f in sorted(os.listdir(issues_dir(project))):
+        if not f.endswith(".md"):
+            continue
+        content = open(os.path.join(issues_dir(project), f), encoding="utf-8").read()
+        if "状态：open" in content or "状态：fixed" in content:
+            out.append(f[:-3])
+    return out
 
 
 def cmd_versions(project: str = None) -> int:
@@ -931,7 +1192,7 @@ def set_stage_state(st: dict, rid: str, stage: str, state: str, product: str = N
             if e.get("status") not in ("reviewing",):
                 e["status"] = "analyzed"
         elif state == "done":
-            e["status"] = "approved"
+            e["status"] = "awaiting_user_confirm"  # v2：规格细化完成 → 用户评审（唯一拍板人）
     elif stage == RELEASE["name"]:
         e["status"] = "released" if state == "done" else "releasing"
     elif any(g["name"] == stage for g in GATES):
@@ -1639,14 +1900,14 @@ def release_analyze(rid: str, product: str) -> int:
             write_status(st)
             print(f"release_analyze: 产物 {product} 不存在，已回滚", file=sys.stderr)
             return 1
-        e["status"] = "analyzed"
+        e["status"] = "awaiting_user_confirm"  # v2：分析产出 → 用户评审（唯一拍板人）
         e["analysis"] = product
         e["round"] = int(e.get("round", 0))  # round 在评审时递增
         clear_claim(e)
         e["updated_at"] = now_iso()
         write_status(st)
         log(f"ANALYZE {rid} round={e['round']} file={product}")
-        log(f"STATE  {rid} analyzing->analyzed")
+        log(f"STATE  {rid} analyzing->awaiting_user_confirm")
     return 0
 
 
@@ -2449,6 +2710,14 @@ def main(argv) -> int:
             return cmd_unhalt()
         if cmd == "resume":
             return cmd_resume(rest[0], rest[1], rest[2])
+        if cmd == "module":
+            return cmd_module(rest[0], rest[1], rest[2:])
+        if cmd == "issue":
+            return cmd_issue(rest[0], rest[1], rest[2:])
+        if cmd == "confirm":
+            return cmd_confirm(rest[0])
+        if cmd == "reject":
+            return cmd_reject(rest[0], " ".join(rest[1:]))
         if cmd == "versions":
             return cmd_versions(rest[0] if rest else None)
         if cmd == "assign":
