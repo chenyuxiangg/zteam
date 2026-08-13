@@ -242,6 +242,8 @@ ROLE_MODELS = {
     "mde": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),  # v2 MDE（模块设计，代码检视）
     "fo": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),  # v2 FO（TDD 开发）
     "mto": (TEST_DEVELOPER_MODEL, TEST_PROVIDER),  # v2 MTO（模块 IT）
+    "sto": (ST_TESTER_MODEL, ANALYST_PROVIDER),  # v2 STO（版本系统测试）
+    "qa": (QUALITY_REVIEWER_MODEL, ANALYST_PROVIDER),  # v2 QA（质量专员，发布）
     "req-reviewer": (REVIEWER_MODEL, REVIEWER_PROVIDER),
     "dev-plan-designer": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),
     "dev-plan-reviewer": (PLAN_REVIEWER_MODEL, ANALYST_PROVIDER),
@@ -268,6 +270,8 @@ ROLE_FILES = {
     "mde": "roles/mde.md",  # v2 MDE（模块设计）
     "fo": "roles/fo.md",  # v2 FO（TDD 开发）
     "mto": "roles/mto.md",  # v2 MTO（模块 IT）
+    "sto": "roles/sto.md",  # v2 STO（系统测试）
+    "qa": "roles/qa.md",  # v2 QA（质量专员）
     "req-reviewer": "roles/req-reviewer.md",
     "dev-plan-designer": "roles/dev-plan-designer.md",
     "dev-plan-reviewer": "roles/dev-plan-reviewer.md",
@@ -294,6 +298,8 @@ ROLE_CN = {
     "mde": "MDE（模块设计）",
     "fo": "FO（开发者，TDD）",
     "mto": "MTO（模块测试者，IT）",
+    "sto": "STO（系统测试者，ST）",
+    "qa": "QA（质量专员）",
     "dev-plan-designer": "开发方案设计者", "dev-plan-reviewer": "开发方案评审者",
     "test-plan-designer": "测试方案设计者", "test-plan-reviewer": "测试方案评审者",
     "code-developer": "代码开发者", "code-reviewer": "代码评审者",
@@ -1062,6 +1068,11 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
         if status == "planning":
             if not all(st.get(f"{project}/{r}", {}).get("status") == "approved" for r in reqs):
                 continue
+            # 版本串行：其他版本活跃（arch~qa_reviewing）时不启动架构
+            ACTIVE = ("arch", "arch_reviewing", "testplan", "testplan_reviewing",
+                      "in_dev", "st", "st_done", "qa", "qa_reviewing")
+            if any(x.get("status") in ACTIVE for x in vd.get("versions", [])):
+                continue
             if not v.get("arch_claimed"):
                 v["arch_claimed"] = True
                 v["status"] = "arch"
@@ -1327,6 +1338,192 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                         log(f"SPAWN-MTO {project}/{m['name']} iter-{it['n']} pid={pid}")
                         alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入 IT（MTO pid={pid}）")
     write_modules(project, md)
+
+
+def release_st_v2(project: str, version: str, product: str, conclusion: str) -> int:
+    """版本 ST 状态命令（v2 M5）：STO 产出完成 → release_st_v2 {p} {v} {报告目录} DONE
+    → 校验 open_issues 空 → st_done（有 open 等问题单闭环）。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion != "DONE":
+        print("release_st_v2 仅支持 DONE（STO 完成标记）", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if v.get("status") != "st":
+            print(f"版本状态非 st（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        if not os.path.exists(full):
+            print(f"ST 报告不存在: {full}", file=sys.stderr)
+            return 1
+        v["st_product"] = norm_product(product)
+        v["st_claimed"] = False
+        opens = open_issues(project)
+        if opens:
+            v["status"] = "st"  # 等问题单闭环
+            v["waiting_issues"] = opens
+            print(f"ST 完成但存在未闭环问题单 {opens}，等待闭环后自动收口", file=sys.stderr)
+        else:
+            v["status"] = "st_done"
+        write_versions(project, vd)
+        log(f"ST_DONE {project}/{version} product={v['st_product']}")
+    return 0
+
+
+def release_qa(project: str, version: str, product: str, conclusion: str) -> int:
+    """QA 发布状态命令（v2 M5）：QA 产出 → release_qa {p} {v} {发布目录} DONE
+    → qa_reviewing（等用户指南用户评审）；用户确认 → confirm_guide → released。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion != "DONE":
+        print("release_qa 仅支持 DONE（QA 完成标记）", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if v.get("status") != "qa":
+            print(f"版本状态非 qa（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        if not os.path.exists(full):
+            print(f"发布包不存在: {full}", file=sys.stderr)
+            return 1
+        v["release_pkg"] = norm_product(product)
+        v["qa_claimed"] = False
+        v["status"] = "qa_reviewing"  # 用户指南等用户评审
+        write_versions(project, vd)
+        log(f"QA_DONE {project}/{version} pkg={v['release_pkg']}")
+    return 0
+
+
+def confirm_guide(project: str, version: str) -> int:
+    """用户确认用户指南（发布前最后一关）→ released（版本串行解除）。"""
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if v.get("status") != "qa_reviewing":
+            print(f"confirm_guide 仅对 qa_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        v["status"] = "released"
+        v["released_at"] = now_iso()
+        write_versions(project, vd)
+        # 需求收口：版本下 dispatched 需求 → released
+        st = read_status()
+        changed = False
+        for r in v.get("reqs", []):
+            e = st.get(f"{project}/{r}")
+            if e and e.get("status") == "dispatched":
+                e["status"] = "released"
+                e["updated_at"] = now_iso()
+                changed = True
+        if changed:
+            write_status(st)
+        log(f"VERSION_RELEASED {project}/{version}（用户确认用户指南）")
+    return 0
+
+
+def reject_guide(project: str, version: str, reason: str) -> int:
+    """用户驳回用户指南 → 版本回 qa（QA 修订）。"""
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if v.get("status") != "qa_reviewing":
+            print(f"reject_guide 仅对 qa_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        v["status"] = "qa"
+        v["qa_claimed"] = False
+        v["guide_reject_reason"] = reason.strip()
+        write_versions(project, vd)
+        log(f"GUIDE_REJECT {project}/{version} reason={reason.strip()[:80]}")
+    return 0
+
+
+def _schedule_st_qa(project: str, vd: dict, md: dict, st: dict, alarms: list) -> None:
+    """版本 ST / QA 调度（v2 M5）：in_dev + 全部模块迭代 it_passed → st（STO）→ st_done → qa（QA）→ qa_reviewing（等用户）。"""
+    for v in vd.get("versions", []):
+        status = v.get("status")
+        if status in ("released", "st", "qa", "qa_reviewing"):
+            continue
+        if status == "in_dev":
+            mods = [m for m in md.get("modules", []) if m.get("alive", True) and m.get("iterations")]
+            if mods and all(
+                    all(it.get("status") == "it_passed" for it in m.get("iterations", []))
+                    for m in mods):
+                if not v.get("st_claimed"):
+                    v["st_claimed"] = True
+                    v["status"] = "st"
+                    out = f"{project}/st/{v['name']}/"
+                    its = "\n".join(
+                        f"- {m['name']} iter-{it['n']}：{it.get('it_report') or '?'}"
+                        for m in mods for it in m.get("iterations", []))
+                    query = (
+                        f"你是本流水线的【STO（系统测试者，ST）】。严格遵循 roles/sto.md 为项目 {project} 版本 {v['name']} "
+                        f"执行版本系统测试（ST）。\n"
+                        f"整体测试方案：{v.get('test_plan')}\n模块 IT 产物：\n{its}\n"
+                        f"任务：1. 先写测试用例文档到 {out}测试用例.md，提交 TE 评审（release_module case 风格：python3 scripts/statectl.py release_st_case {project} {v['name']} {out}测试用例.md PASS）；\n"
+                        f"2. 用例评审通过后写测试代码并执行 ST（端到端主链路/回归），输出集成测试报告到 {out}；缺陷提问题单（issue open）；\n"
+                        f"3. 运行 python3 scripts/statectl.py release_st_v2 {project} {v['name']} {out} DONE；\n"
+                        f"4. 完成后无需汇报。"
+                    )
+                    pid = spawn_worker("sto", f"{project}/__sto{v['name']}", 1, query)
+                    v["st_claimed_pid"] = pid
+                    log(f"SPAWN-STO {project}/{v['name']} pid={pid}")
+                    alarms.append(f"版本 {v['name']} 进入系统测试（STO pid={pid}）")
+        elif status == "st_done":
+            if not v.get("qa_claimed"):
+                v["qa_claimed"] = True
+                v["status"] = "qa"
+                out = f"{project}/release/{v['name']}/"
+                query = (
+                    f"你是本流水线的【QA（质量专员）】。严格遵循 roles/qa.md 为项目 {project} 版本 {v['name']} 执行发布评审。\n"
+                    f"输入：架构设计 {v.get('architecture')}；ST 报告 {v.get('st_product')}；模块设计见模块目录。\n"
+                    f"任务：1. 评审测试报告（功能实现率/功能测试通过率/覆盖率）+ 检查安全红线；\n"
+                    f"2. 编写用户指南到 {out}用户指南.md；\n"
+                    f"3. 按构建规则制作 release 发布包到 {out}（含发布说明/SHA256SUMS/可用性自检）；\n"
+                    f"4. 运行 python3 scripts/statectl.py release_qa {project} {v['name']} {out} DONE（进入用户指南用户评审）；\n"
+                    f"5. 完成后无需汇报。"
+                )
+                pid = spawn_worker("qa", f"{project}/__qa{v['name']}", 1, query)
+                v["qa_claimed_pid"] = pid
+                log(f"SPAWN-QA {project}/{v['name']} pid={pid}")
+                alarms.append(f"版本 {v['name']} 进入发布评审（QA pid={pid}）")
+    write_versions(project, vd)
+
+
+def release_st_case(project: str, version: str, product: str, conclusion: str) -> int:
+    """ST 用例 TE 评审（v2 M5）：release_st_case {p} {v} {用例} PASS|FAIL
+    （用例评审通过后才可写 ST 测试代码——铁律）。"""
+    conclusion = conclusion.strip().upper()
+    if conclusion not in ("PASS", "FAIL"):
+        print("conclusion 必须为 PASS/FAIL", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        if not os.path.exists(full):
+            print(f"用例不存在: {full}", file=sys.stderr)
+            return 1
+        v.setdefault("st_case_reviews", []).append(norm_product(product))
+        v["st_case_passed"] = conclusion == "PASS"
+        write_versions(project, vd)
+        log(f"ST_CASE {project}/{version} {conclusion} by=TE")
+    return 0
 
 
 def cmd_versions(project: str = None) -> int:
@@ -2067,6 +2264,7 @@ def _tick_common() -> int:
             md = read_modules(proj)
             _module_stale_recovery(proj, md, alarms)  # 模块 worker 死亡兜底
             _schedule_module_iter(proj, vd, md, pst, alarms)  # v2 模块迭代链（MDE→FO→MTO）
+            _schedule_st_qa(proj, vd, md, pst, alarms)  # v2 版本 ST（STO）/ QA 发布
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
             if found:
                 rid, e, act = found
@@ -3188,6 +3386,16 @@ def main(argv) -> int:
             return release_testplan_v2(rest[0], rest[1], rest[2], rest[3])
         if cmd == "release_module":
             return release_module(rest[0], rest[1], rest[2], rest[3], rest[4], rest[5] if len(rest) > 5 else "")
+        if cmd == "release_st_v2":
+            return release_st_v2(rest[0], rest[1], rest[2], rest[3])
+        if cmd == "release_st_case":
+            return release_st_case(rest[0], rest[1], rest[2], rest[3])
+        if cmd == "release_qa":
+            return release_qa(rest[0], rest[1], rest[2], rest[3])
+        if cmd == "confirm_guide":
+            return confirm_guide(rest[0], rest[1])
+        if cmd == "reject_guide":
+            return reject_guide(rest[0], rest[1], " ".join(rest[2:]))
         if cmd == "list":
             return cmd_list()
         if cmd == "get":
