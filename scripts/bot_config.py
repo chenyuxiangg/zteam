@@ -69,9 +69,10 @@ def cmd_install() -> int:
     platforms = data.setdefault("platforms", {})
     telegram = platforms.setdefault("telegram", {})
     overrides = telegram.setdefault("channel_overrides", {})
-    overrides[chat_id] = {"system_prompt": prompt}
+    # P2-02：zbot 模型固定 deepseek-v4-flash（不随全局 default=MiniMax-M3）
+    overrides[chat_id] = {"system_prompt": prompt, "model": "deepseek-v4-flash", "provider": "deepseek"}
     _save_gw(data)
-    print(f"[bot-config] zbot 职责已注入 gateway.json（chat_id={chat_id}，{len(prompt)} 字符）")
+    print(f"[bot-config] zbot 职责已注入 gateway.json（chat_id={chat_id}，{len(prompt)} 字符，model=deepseek-v4-flash）")
     print(f"[bot-config] 重启 gateway 生效: systemctl --user restart hermes-gateway")
     return 0
 
