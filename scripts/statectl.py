@@ -1104,6 +1104,7 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                 continue
             if not v.get("arch_claimed"):
                 v["arch_claimed"] = True
+                v["arch_claimed_pid"] = 0
                 v["status"] = "arch"
                 out = f"{project}/arch/{v['name']}/"
                 query = (
@@ -1121,6 +1122,7 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"5. 完成后无需汇报。"
                 )
                 pid = spawn_worker("se", f"{project}/__arch{v['name']}", 1, query)
+                v["arch_claimed_pid"] = pid
                 log(f"SPAWN-SE {project}/{v['name']} worker=se pid={pid}")
                 alarms.append(f"版本 {v['name']} 进入架构设计（SE pid={pid}）")
         elif status == "arch_reviewing":
@@ -1160,6 +1162,8 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
         elif status == "testplan":
             if not v.get("test_plan_claimed"):
                 v["test_plan_claimed"] = True
+                v["test_plan_claimed_pid"] = 0
+                v["status"] = "testplan"
                 out = f"{project}/testplans/{v['name']}/"
                 query = (
                     f"你是本流水线的【TE（整体测试方案）】。严格遵循 roles/te.md 为项目 {project} 版本 {v['name']} "
@@ -1257,7 +1261,16 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
                 print("case 结论必须为 PASS/FAIL", file=sys.stderr)
                 return 1
             it.setdefault("case_reviews", []).append(norm_product(product))
-            it["case_passed"] = conclusion == "PASS"
+            if conclusion == "PASS":
+                it["case_passed"] = True
+                it["case_retry_count"] = 0
+            else:
+                it["case_passed"] = False
+                it["case_retry_count"] = int(it.get("case_retry_count", 0)) + 1
+                if int(it.get("case_retry_count", 0)) >= 3:
+                    it["status"] = "blocked"
+                    with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                        f.write(f"[BLOCKED] 模块 {project}/{module} 迭代 {iter_n} 测试用例 TE 评审第 {it['case_retry_count']} 次仍 FAIL，已停止，请人工介入。\n")
         elif action == "it":
             if conclusion != "DONE" or status != "it_working":
                 print(f"it DONE 需 it_working（当前 {status}）", file=sys.stderr)
@@ -1297,9 +1310,10 @@ def _module_passed(md: dict, module: str) -> bool:
 
 
 def _module_stale_recovery(project: str, md: dict, alarms: list) -> None:
-    """模块级 stale 兜底：迭代 claimed 但 worker 进程死亡 → 清 claimed 重调度。"""
+    """模块级 stale 兜底：迭代 claimed（含评审 claim）但 worker 进程死亡 → 清 claim 重调度。"""
     for m in md.get("modules", []):
         for it in m.get("iterations", []):
+            # 主 claim（design/dev/it worker）
             if it.get("claimed") and not pid_alive(it.get("claimed_pid")):
                 it["claimed"] = False
                 it["failures"] = int(it.get("failures", 0)) + 1
@@ -1309,6 +1323,36 @@ def _module_stale_recovery(project: str, md: dict, alarms: list) -> None:
                     it["status"] = "blocked"
                     with open(ALARM_FILE, "a", encoding="utf-8") as f:
                         f.write(f"[BLOCKED] 模块 {project}/{m['name']} 迭代 {it['n']} 连续失败 3 次，已停止。\n")
+            # 评审 claim（design_reviewing SE 评审 / dev_reviewing MDE 检视）
+            for rclaim, rpid in (("design_review_claimed", "design_review_claimed_pid"),
+                                 ("review_claimed", "review_claimed_pid")):
+                if it.get(rclaim) and not pid_alive(it.get(rpid)):
+                    it[rclaim] = False
+                    log(f"MODULE_REV_STALE {project}/{m['name']} iter-{it['n']} {rclaim} 评审 worker 死亡，重置")
+                    alarms.append(f"模块 {m['name']} 迭代 {it['n']} 评审 worker 死亡已重置（{rclaim}）")
+
+
+def _version_stale_recovery(project: str, vd: dict, alarms: list) -> None:
+    """版本级 stale 兜底：版本 claim（SE/TE/STO/QA/评审 worker）进程死亡 → 清 claim 重调度。"""
+    for v in vd.get("versions", []):
+        if v.get("status") == "released":
+            continue
+        claims = (("arch_claimed", "arch_claimed_pid", "SE 架构"),
+                  ("arch_review_claimed", "arch_review_claimed_pid", "PM 架构评审"),
+                  ("test_plan_claimed", "test_plan_claimed_pid", "TE 测试方案"),
+                  ("testplan_review_claimed", "testplan_review_claimed_pid", "SE 方案评审"),
+                  ("st_claimed", "st_claimed_pid", "STO 系统测试"),
+                  ("qa_claimed", "qa_claimed_pid", "QA 发布"))
+        for cfield, pfield, label in claims:
+            if v.get(cfield) and not pid_alive(v.get(pfield)):
+                v[cfield] = False
+                v["failures"] = int(v.get("failures", 0)) + 1
+                log(f"VERSION_STALE {project}/{v['name']} {label} worker 死亡，重置 (failures={v.get('failures')})")
+                alarms.append(f"版本 {v['name']} {label} worker 死亡已重置")
+                if int(v.get("failures", 0)) >= 3:
+                    v["status"] = "blocked"
+                    with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                        f.write(f"[BLOCKED] 版本 {project}/{v['name']} 连续失败 3 次，已停止。\n")
 
 
 def _module_inputs(project: str, m: dict, st: dict) -> str:
@@ -1318,6 +1362,47 @@ def _module_inputs(project: str, m: dict, st: dict) -> str:
         e = st.get(f"{project}/{r}") or {}
         lines.append(f"- {r}：规格={e.get('analysis') or '?'}")
     return "\n".join(lines)
+
+
+def _issue_stale_watch(project: str, alarms: list) -> None:
+    """问题单长期 open 告警：open 超 24h（按文件 mtime）→ alarms.txt 留痕（每 24h 一次）。"""
+    idir = os.path.join(project_dir(project), "issues")
+    if not os.path.isdir(idir):
+        return
+    now = time.time()
+    for fname in sorted(os.listdir(idir)):
+        if not fname.endswith(".md"):
+            continue
+        fp = os.path.join(idir, fname)
+        try:
+            content = open(fp, encoding="utf-8").read()
+        except Exception:
+            continue
+        if "状态：open" not in content:
+            continue
+        age = now - os.path.getmtime(fp)
+        if age > 24 * 3600:
+            with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                f.write(f"[ISSUE_STALE] {project}/{fname[:-3]} open 超过 24h（{int(age // 3600)}h），请确认修复进度。\n")
+            log(f"ISSUE_STALE {project}/{fname[:-3]} age={int(age // 3600)}h")
+            alarms.append(f"问题单 {fname[:-3]} open 超 24h 未闭环")
+
+
+def _dep_cycle(md: dict, module: str) -> list:
+    """检测模块依赖环：从 module 出发 DFS，返回环路径（空 = 无环）。"""
+    path = []
+
+    def dfs(cur, stack):
+        if cur in stack:
+            i = stack.index(cur)
+            return stack[i:] + [cur]
+        for d in (next((x for x in md.get("modules", []) if x["name"] == cur), {}) or {}).get("depends_on", []):
+            r = dfs(d, stack + [cur])
+            if r:
+                return r
+        return []
+
+    return dfs(module, [module])
 
 
 def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: list) -> None:
@@ -1333,6 +1418,13 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
             if not _module_passed(md, m["name"]) and m.get("iterations"):
                 # 自身 previous 迭代未完成时不调度（跨迭代串行）——在迭代循环内判
                 pass
+            # 依赖环检测（死锁防御）
+            cyc = _dep_cycle(md, m["name"])
+            if cyc:
+                with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"[DEP_CYCLE] 项目 {project} 模块依赖成环: {' → '.join(cyc)}，请人工修正 module dep。\n")
+                alarms.append(f"模块依赖成环: {' → '.join(cyc)}")
+                continue
             for it in sorted(m.get("iterations", []), key=lambda x: x["n"]):
                 status = it.get("status")
                 # 同模块前序迭代串行
@@ -2430,6 +2522,8 @@ def _tick_common() -> int:
             _schedule_arch_te(proj, vd, pst, alarms)  # v2 版本级前置：SE 架构 / TE 测试方案
             md = read_modules(proj)
             _module_stale_recovery(proj, md, alarms)  # 模块 worker 死亡兜底
+            _version_stale_recovery(proj, vd, alarms)  # 版本 worker 死亡兜底
+            _issue_stale_watch(proj, alarms)  # 问题单长期 open 告警
             _schedule_module_iter(proj, vd, md, pst, alarms)  # v2 模块迭代链（MDE→FO→MTO）
             _schedule_st_qa(proj, vd, md, pst, alarms)  # v2 版本 ST（STO）/ QA 发布
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
