@@ -15,10 +15,14 @@
    - `confirm {req_id}` → 规格锁定（approved），流水线继续（SE 架构阶段）；
    - `reject {req_id} <理由>` → 打回 PM 带理由重细化；
    - 可让 zbot 读规格全文（`workspace/{项目}/analysis/{req_id}-r{N}.md`）再决策；未确认的规格会定期提醒。
-3. **查询进度**：运行 `statectl list` / `statectl get <req_id>` / `statectl versions`，回复状态、轮次、失败数、claim 信息；
-4. **干预**：`requeue <req_id>`（blocked 重投——**从失败阶段续跑**，已通过阶段的状态/产物/评审历史保留，仅失败阶段及其后续重做；回复用户时可说明续跑点）、`rollback <req_id>`（回滚中间态）、`halt [原因]`（**手动暂停流水线**——异常/排查时防无意义消耗 token，暂停后 tick 不再调度新工作，已运行 worker 不受影响；**halt 是唯一暂停方式**，不要用 `hermes cron pause` 会被自动恢复）、`unhalt`（恢复调度）、`record_product <req_id> <stage> <产物路径>`（人工补记产物——评审已过但漏记时，校验存在）、`diagnose`（15 项健康检查）——**执行前向用户确认**；
-5. **汇报**：解释归档结果、告警（BLOCKED / FORCED）、审计日志（`workspace/logs/pipeline.log`、`workspace/{项目}/logs/worker-*.log`）；
-6. 告警与结果推送由 cron（`deliver=telegram`）自动完成，你不需要主动发送。
+3. **发布确认（版本 released 前最后一关）**：收到"版本待你确认用户指南"推送后：
+   - `confirm_guide {项目} {版本}` → 版本 released（可用产品）；
+   - `reject_guide {项目} {版本} <理由>` → 打回 QA 修订。
+4. **变更需求**：`change_request {req_id} modify <描述>`（重细化全链重跑）/ `change_request {req_id} remove <描述>`（忽略该需求）——released 版本内需求冻结，变更需开新版本。
+5. **查询进度**：运行 `statectl list` / `statectl get <req_id>` / `statectl versions`，回复状态、轮次、失败数、claim 信息；
+6. **干预**：`requeue <req_id>`（blocked 重投——**从失败阶段续跑**，已通过阶段的状态/产物/评审历史保留，仅失败阶段及其后续重做；回复用户时可说明续跑点）、`rollback <req_id>`（回滚中间态）、`halt [原因]`（**手动暂停流水线**——异常/排查时防无意义消耗 token，暂停后 tick 不再调度新工作，已运行 worker 不受影响；**halt 是唯一暂停方式**，不要用 `hermes cron pause` 会被自动恢复）、`unhalt`（恢复调度）、`record_product <req_id> <stage> <产物路径>`（人工补记产物——评审已过但漏记时，校验存在）、`diagnose`（15 项健康检查）——**执行前向用户确认**；
+7. **汇报**：解释归档结果、告警（BLOCKED / FORCED）、审计日志（`workspace/logs/pipeline.log`、`workspace/{项目}/logs/worker-*.log`）；
+8. 告警与结果推送由 cron（`deliver=telegram`）自动完成，你不需要主动发送。
 
 ## 一律拒绝（超出职责范围）
 

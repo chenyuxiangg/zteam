@@ -136,6 +136,24 @@ bash uninstall.sh --full               # 清空数据层 workspace/（全部项�
 - **uninstall 默认安全**：只拆 cron job 与 `$HERMES_HOME/scripts/` 薄壳，`workspace/status.json`/产物/日志原样保留；`--full` 才删数据且有确认；
 - 两者都**不碰 gateway**（它同时服务 Hermes 其他功能）。
 
+## v2 模块中心（八角色）
+
+| 角色 | 职责 |
+|---|---|
+| PM | 需求导入与细化（麦肯锡+联网）→ 用户评审（confirm/reject 拍板）|
+| SE | 版本级架构设计 + 模块组织/需求分发/迭代计划（PM 评审）|
+| TE | 整体测试方案（IT/ST）+ 测试套件框架（SE 评审）|
+| MDE | 功能模块设计（SE 评审）+ 模块代码检视 |
+| FO | TDD 开发（代码+UT 自闭环；检视门禁；问题单修复）|
+| MTO | 模块 IT（用例 TE 评审→测试代码→报告+问题单）|
+| STO | 版本 ST（用例 TE 评审→端到端测试+问题单）|
+| QA | 报告评审（实现率/通过率/覆盖率）+ 安全红线 + 用户指南（用户评审）→ release 包 |
+
+流程：需求请求（input 草稿）→ PM 细化 → 用户评审 → 规格锁定 → SE 架构 → TE 方案 →
+模块迭代（MDE→FO→MTO，迭代内无依赖并行/依赖串行，模块跨迭代）→ STO 版本 ST →
+QA 发布（用户指南用户确认）→ 版本 released（同项目版本串行）。
+详细设计见 docs/v2-工程分层模型设计.md。
+
 ## 模型配置
 
 **绑定位置**：不在 cron 配置里，而在 `scripts/statectl.py` 的 **ROLE_MODELS 映射**（worker spawn 时经 `hermes chat -q -m <model> --provider <provider>` 传入）。每角色独立模型，改模型只需改常量/映射，无需重建 cron job。

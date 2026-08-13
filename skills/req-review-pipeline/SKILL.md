@@ -125,3 +125,15 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 
 - 状态机自测（零 token）：`register` → `claim <id> analyst` → 写产物 → `release_analyze` → `claim <id> reviewer` → `release_review <id> <file> FAIL` → 检查 `needs_fix`/`approved`/强制归档分支与 `workspace/artifacts/` 生成。
 - 端到端冒烟：放真实需求进 `workspace/<项目名>/input/`，手动跑 `python3 scripts/statectl.py worker_tick` → 轮询 `get` 到 `approved`，核对 `workspace/logs/pipeline.log` 与 `workspace/<项目>/artifacts/`。
+
+## v2 模块中心命令（PM/SE/TE/MDE/FO/MTO/STO/QA 八角色）
+
+- 规格评审（用户拍板）：`confirm {req_id}` / `reject {req_id} <理由>`（zbot 推送🧾待评审）
+- 模块管理（SE）：`module {项目} add|rm|dep|dispatch|iter <...>`
+- 问题单：`issue {项目} open|fix|close|list <...>`（提单人复测关闭；open>0 卡模块/版本门禁）
+- 版本前置：`release_arch {p} {v} {产物} DONE|PASS|FAIL`（SE 产出/PM 评审）、`release_testplan_v2 ...`（TE 产出/SE 评审）
+- 模块迭代：`release_module {p} {模块} {迭代} design|code|review|case|it {产物} [DONE|PASS|FAIL]`
+- 版本收尾：`release_st_v2 ... DONE`（STO）、`release_qa ... DONE`（QA）、`confirm_guide {p} {v}`（用户确认指南→released）
+- 变更：`change_request {req_id} modify|remove <描述>`（修改→重细化全链重跑 / 删除→忽略+解锁；released 版本冻结）
+- 版本串行：同项目仅 1 活跃版本；released 后才能开新版本架构
+- 查看：`versions [项目]`（版本/模块/迭代聚合视图）

@@ -50,3 +50,10 @@ zteam/                     # 资产层（git 跟踪）
 - 不得修改需求原文（`workspace/input/` 下的文件）；
 - 产出者不得评审自己的产物；评审者不得修改产物；
 - 不得跳过状态（如直接 `pending → approved`）。
+
+## v2 模块中心补充命令
+
+- 规格产出：`release_analyze {key} {规格}` → 等用户评审（`confirm`/`reject`）
+- 模块迭代（worker 用）：`release_module {项目} {模块} {迭代} design|code|case|it {产物} DONE`、`release_module ... review {意见} PASS|FAIL`
+- 版本级：`release_arch ... DONE`、`release_testplan_v2 ... DONE`、`release_st_v2 ... DONE`、`release_qa ... DONE`
+- 问题单：`issue {项目} open|fix|close {iid} ...`（open 未闭环会卡模块/版本收口）
