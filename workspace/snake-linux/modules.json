@@ -1,3 +1,149 @@
 {
-  "modules": []
+  "modules": [
+    {
+      "name": "game-core",
+      "type": "基础平台",
+      "desc": "玩法核心纯逻辑：蛇身模型/移动/吃食/碰撞/反向禁止/难度档位参数/加速曲线/状态机/得分判定，零GUI依赖可UT",
+      "depends_on": [],
+      "reqs": [],
+      "design": {
+        "product": null,
+        "reviews": []
+      },
+      "iterations": [
+        {
+          "n": 1,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        },
+        {
+          "n": 2,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        }
+      ],
+      "alive": true
+    },
+    {
+      "name": "platform-storage",
+      "type": "中间件",
+      "desc": "跨平台用户数据目录定位/最高分偏好JSON持久化/原子写防损坏/重置支撑",
+      "depends_on": [],
+      "reqs": [],
+      "design": {
+        "product": null,
+        "reviews": []
+      },
+      "iterations": [
+        {
+          "n": 2,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        }
+      ],
+      "alive": true
+    },
+    {
+      "name": "gui-renderer",
+      "type": "中间件",
+      "desc": "Pygame画面渲染/平滑插值动画/皮肤系统>=3套/窗口等比缩放/高分屏清晰",
+      "depends_on": [
+        "game-core"
+      ],
+      "reqs": [],
+      "design": {
+        "product": null,
+        "reviews": []
+      },
+      "iterations": [
+        {
+          "n": 1,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        },
+        {
+          "n": 3,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        }
+      ],
+      "alive": true
+    },
+    {
+      "name": "game-app",
+      "type": "上层应用",
+      "desc": "主入口事件循环/输入映射/界面流程(开始-难度-暂停-结束-重开-退出)/皮肤切换/错误提示/PyInstaller打包发布",
+      "depends_on": [
+        "game-core",
+        "gui-renderer",
+        "platform-storage"
+      ],
+      "reqs": [
+        "snake-gui"
+      ],
+      "design": {
+        "product": null,
+        "reviews": []
+      },
+      "iterations": [
+        {
+          "n": 1,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        },
+        {
+          "n": 2,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        },
+        {
+          "n": 3,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        },
+        {
+          "n": 4,
+          "status": "design_pending",
+          "dev_product": null,
+          "ut_product": null,
+          "it_product": null,
+          "it_report": null,
+          "it_reviews": []
+        }
+      ],
+      "alive": true
+    }
+  ]
 }

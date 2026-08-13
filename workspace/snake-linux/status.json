@@ -80,5 +80,98 @@
     "iteration": null,
     "depends_on": [],
     "_project": "snake-linux"
+  },
+  "snake-linux/snake-gui": {
+    "status": "dispatched",
+    "round": 0,
+    "max_rounds": 3,
+    "forced": false,
+    "analysis": "snake-linux/analysis/snake-gui-r1.md",
+    "reviews": [],
+    "failures": 0,
+    "version": "v2.0.0",
+    "iteration": 1,
+    "depends_on": [],
+    "stages": {
+      "plan": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "testplan": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "code": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "test": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "quality": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "security": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "release": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": null,
+        "state_since": null,
+        "timeline": []
+      },
+      "req": {
+        "round": 0,
+        "product": null,
+        "reviews": [],
+        "state": "working",
+        "state_since": "2026-08-13T02:11:03Z",
+        "timeline": [
+          {
+            "t": "2026-08-13T02:10:24Z",
+            "to": "claimed"
+          },
+          {
+            "t": "2026-08-13T02:11:03Z",
+            "to": "working"
+          }
+        ]
+      }
+    },
+    "created_at": "2026-08-13T02:10:24Z",
+    "updated_at": "2026-08-13T03:29:07Z",
+    "_project": "snake-linux",
+    "reject_reason": "用户拍板：1.Q-01 加难度分级（不是仅经典玩法，纳入本轮）2.Q-02 支持暂停/继续 3.Q-03 最高分持久化（本地）4.Q-04 不做音效 5.Q-05 不做排行榜/联网 6.Q-06 三平台免安装单文件可执行 7.Q-07 版本号 v2.0.0 8.Q-08 按建议纳入皮肤系统（含色盲友好/深色主题）9.Q-09 美观基线认可。请修订规格 r2 固化以上决定，难度分级需补充 FR 与验收标准",
+    "approved_at": "2026-08-13T02:38:19Z",
+    "module": "game-app"
   }
 }

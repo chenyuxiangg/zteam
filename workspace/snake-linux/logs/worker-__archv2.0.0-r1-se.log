@@ -1,0 +1,121 @@
+  ┊ review diff
+a/workspace/snake-linux/arch/v2.0.0/架构设计.md → b/workspace/snake-linux/arch/v2.0.0/架构设计.md
+@@ -0,0 +1,144 @@
++# 架构设计：snake-linux v2.0.0（snake-gui）
++
++> SE 产出 · 依据需求规格 `snake-linux/analysis/snake-gui-r1.md`（approved，2026-08-13 用户评审拍板 9 条已固化）
++> 对齐约束：三平台免安装单文件可执行、零预装零配置、单机无网络、无音效、玩法与终端版 v1.0.0 一致
++
++## 总体架构
++
++```
++┌─────────────────────────────────────────────────────────────┐
++│  上层应用  game-app（装配/流程/输入/打包入口）                  │
++│   事件循环 · 输入映射(WASD/方向键/P/ESC) · 界面流程(开始/难度/  │
++│   暂停/结束/重开/退出) · 皮肤切换 · 错误提示 · PyInstaller 入口  │
++├──────────────┬──────────────────────────┬────────────────────┤
++│ 中间件        │ 中间件                    │                    │
++│ gui-renderer │ platform-storage          │                    │
++│ (Pygame渲染)  │ (跨平台本地持久化)         │                    │
++│ 画面/动画/皮肤│ 用户数据目录/最高分原子读写 │                    │
++├──────────────┴──────────────────────────┴────────────────────┤
++│  基础平台  game-core（玩法核心纯逻辑，零 GUI 依赖）              │
++│   蛇身模型/移动/吃食/碰撞/反向禁止 · 难度档位参数/加速曲线        │
++│   状态机(run/paused/over) · 得分/最高分判定                     │
++└─────────────────────────────────────────────────────────────┘
++```
++
++- **依赖方向单向向下**：game-app → gui-renderer / platform-storage / game-core；gui-renderer → game-core；platform-storage / game-core 无依赖（叶子）。
++- **核心与界面解耦**（NFR-05）：game-core 为纯 Python 标准库实现，不 import 任何 GUI 库，可脱离界面做确定性单元测试；gui-renderer 只读 core 的状态快照（snapshot），不直接改游戏状态。
++- **单需求单版本**：v2.0.0 承载 snake-gui 一个需求，独立于已 released 的终端版 v1.0.0（互不影响）。
++
++## 技术选型
++
++| 项 | 选型 | 理由 |
++|----|------|------|
++| 语言 | Python 3.8+（语法兼容 3.8，不使用 3.9+ 新语法） | 与 v1.0.0 同生态；core/storage 标准库零依赖，可测性好；PyInstaller 打包支持成熟 |
++| GUI 框架 | Pygame（SDL2） | 游戏循环/帧率控制/逐帧渲染天然契合（NFR-01 ≥60FPS）；跨三平台行为一致（FR-15）；打包单文件体积适中；无外部运行时 |
++| 打包 | PyInstaller `--onefile --windowed` | 业界通行"下载即用"形态（规格 §参考来源）；三平台各自产出单文件可执行（FR-14） |
++| 持久化 | 标准库 JSON + 原子写（临时文件 + os.replace） | 最高分/偏好仅本地（NFR-06）；原子写保证异常退出不损坏（FR-13）；零第三方依赖 |
++| 用户数据目录 | 手写三平台定位（%APPDATA% / ~/Library/Application Support / ~/.local/share） | 零依赖；便携式不写系统目录（NFR-07） |
++| 构建矩阵 | Linux 构建机打 Linux 包；Windows/macOS 包在对应平台构建（或 CI 三平台矩阵） | PyInstaller 不支持交叉打包；规格验收要求三平台各跑通（FR-14/15、NFR-04） |
++
++> 否决项：Tkinter（动画/帧率控制弱、打包体积大、跨平台观感不一致）、PyQt（许可与体积重、超出游戏需求）、Arcade（打包生态较 Pygame 弱）、Web 技术栈（规格明确不做 Web 版）。
++
++## 模块组织与分工（与 modules.json 一致）
++
++| 模块 | 类型 | 职责 | 依赖 | 迭代 |
++|------|------|------|------|------|
++| game-core | 基础平台 | 玩法核心纯逻辑：蛇身模型、移动/吃食/碰撞/反向禁止判定、难度档位参数（简单 250ms/普通 160ms/困难 100ms 基线节拍）+ 加速曲线、运行状态机（run/paused/over）、得分与最高分判定 | 无 | 1, 2 |
++| platform-storage | 中间件 | 跨平台用户数据目录定位、最高分/偏好 JSON 读写、原子写防损坏、重置入口支撑 | 无 | 2 |
++| gui-renderer | 中间件 | Pygame 画面渲染（蛇/食物/背景/HUD）、平滑插值动画、皮肤系统（≥3 套：经典/深色/色盲友好）、窗口等比缩放自适应、高分屏清晰 | game-core | 1, 3 |
++| game-app | 上层应用 | 主入口与事件循环、输入映射（WASD/方向键/P/ESC）、界面流程（开始/难度选择/暂停/继续/结束/重开/退出）、皮肤切换、可读错误提示、PyInstaller 打包配置与发布物 | game-core, gui-renderer, platform-storage | 1, 2, 3, 4 |
++
++## 需求分发
++
++- snake-gui → **game-app**（上层应用承载需求主体；core/storage/renderer 为支撑模块，需求子集见分工表 §模块×需求）
++
++## 模块间接口与数据流（代码检视依据）
++
++### 接口清单（设计期定义，下游开发依赖）
++
++**game-core（无依赖，纯逻辑）**
++- `Difficulty`（枚举：EASY/MEDIUM/HARD）+ 参数表：`base_tick_ms`（250/160/100）、`speed_curve(score)`（随长度/得分加速，验收以"档位间可感知差异、困难 ≤ 简单 50%"为准）
++- `GameState(width, height, difficulty)`：构造；`set_direction(vec)`（含 180° 反向禁止）；`step()` 每节拍推进（移动/吃食/碰撞/得分）；`toggle_pause()`（暂停定格，暂停期方向输入不生效）；`snapshot()` 返回只读状态快照（蛇身坐标/食物/得分/长度/状态/难度）；`status`（run/paused/over）
++- 事件/回调：`on_score(score)`（供 app 接最高分判定）
++
++**platform-storage（无依赖）**
++- `get_user_data_dir()`：三平台用户数据目录（Windows `%APPDATA%`/macOS `~/Library/Application Support`/Linux `~/.local/share`，追加应用子目录）
++- `HighScoreStore(path)`：`load() -> int`、`save(score)`（原子写：临时文件 + os.replace）、`reset()`；异常退出不损坏历史
++
++**gui-renderer（依赖 game-core）**
++- `Renderer(skin_name)`：`render(snapshot)` 绘制一帧（蛇/食物/背景/HUD：得分/最高分/长度）；`set_skin(name)`（游戏中对局不中断）；`handle_resize(w, h)` 等比缩放；`fps_metric()` 帧率统计（P95 帧时间）
++- 皮肤注册表：≥3 套（经典/深色/色盲友好——色盲方案不以颜色为唯一区分手段，叠加形状/纹理）
++
++**game-app（装配）**
++- `main()`：解析启动 → 初始化窗口 → 主循环（事件 → core 输入 → step → renderer 绘制）；`run()` 为 PyInstaller 入口
++- 错误处理：图形环境缺失/初始化失败输出人类可读提示后退出（NFR-03），退出 1 秒内无残留进程（FR-11）
++
++### 数据流
++
++```
+… omitted 66 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/arch/v2.0.0/功能模块分工表.md → b/workspace/snake-linux/arch/v2.0.0/功能模块分工表.md
+@@ -0,0 +1,28 @@
++# 功能模块分工表：snake-linux v2.0.0（snake-gui）
++
++> SE 排期依据 · 与 `modules.json` 完全一致 · 需求规格：snake-gui-r1（approved）
++
++## 模块清单
++
++| 模块 | 类型 | 职责 | 依赖模块 | 承载需求 | 迭代计划 |
++|------|------|------|----------|----------|----------|
++| game-core | 基础平台 | 玩法核心纯逻辑：蛇身模型、移动/吃食/碰撞/反向禁止、难度档位参数（简单250ms/普通160ms/困难100ms 基线）+加速曲线、运行状态机（run/paused/over）、得分与最高分判定。零 GUI 依赖，可脱离界面 UT（NFR-05） | 无 | snake-gui（子集：FR-01~05/12 逻辑） | 1, 2 |
++| platform-storage | 中间件 | 跨平台用户数据目录定位、最高分/偏好 JSON 持久化、原子写防损坏（异常退出不丢）、重置入口支撑（FR-13/NFR-06/07） | 无 | snake-gui（子集：FR-13） | 2 |
++| gui-renderer | 中间件 | Pygame 画面渲染（蛇/食物/背景/HUD）、平滑插值动画（FR-07）、皮肤系统 ≥3 套（经典/深色/色盲友好，FR-10）、窗口等比缩放自适应（FR-09）、高分屏清晰（NFR-04） | game-core | snake-gui（子集：FR-06~10） | 1, 3 |
++| game-app | 上层应用 | 主入口与事件循环、输入映射（WASD/方向键/P/ESC）、界面流程（开始/难度选择/暂停/继续/结束/重开/退出）、皮肤切换、可读错误提示（NFR-03）、PyInstaller 三平台打包与发布物（FR-14~16） | game-core, gui-renderer, platform-storage | **snake-gui（主体）** | 1, 2, 3, 4 |
++
++## 需求 → 模块映射
++
++- snake-gui → **game-app**（上层应用，需求主体；dispatch 落盘于此）
++- 支撑关系：game-core（玩法逻辑）← gui-renderer（渲染）← game-app（装配）；platform-storage（持久化）→ game-app（最高分展示/重置）
++
++## 迭代计划（SE 排期）
++
++| 迭代 | 目标 | 模块 | 出口验收 |
++|------|------|------|----------|
++| 1 | 最小闭环·可玩 | game-core（玩法闭环+难度参数）、gui-renderer（基础渲染）、game-app（主循环/输入/开始-结束-重开-退出） | 规格验收 1（玩法闭环）、4（控制流程）可自动化验证 |
++| 2 | 体验功能 | game-core（暂停状态机+加速曲线）、platform-storage（最高分持久化）、game-app（难度选择/暂停继续/最高分展示重置） | 验收 2（难度分级）、4（暂停/最高分） |
++| 3 | 视觉增强 | gui-renderer（平滑动画+皮肤系统+窗口缩放）、game-app（皮肤切换 UI） | 验收 3（GUI 呈现） |
++| 4 | 交付打磨 | game-app（三平台打包/错误提示/性能调优）、全模块回归、用户指南+发布物 | 验收 5（开箱即用）、6（性能）、7（兼容矩阵） |
++
++**迭代串行依据**：1→2→3→4 依依赖顺序推进（玩法 → 体验 → 视觉 → 交付）；迭代内模块并行，经 game-core snapshot 接口联调。
+
+session_id: 20260813_032638_d7aace
+SE 架构设计完成，状态已推进：
+
+- 产出：workspace/snake-linux/arch/v2.0.0/（架构设计.md + 功能模块分工表.md）
+- 模块落盘：game-core（基础平台，迭代1,2）、platform-storage（中间件，迭代2）、gui-renderer（中间件，迭代1,3，依赖 game-core）、game-app（上层应用，迭代1-4，依赖前三者）
+- 需求 snake-gui：approved → dispatched（→ game-app）
+- 版本 v2.0.0：arch → arch_reviewing（等 PM 评审）

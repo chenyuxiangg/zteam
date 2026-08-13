@@ -22,6 +22,24 @@
       "test_plan": null,
       "qa_report": null,
       "release_pkg": null
+    },
+    {
+      "name": "v2.0.0",
+      "status": "arch_reviewing",
+      "iterations": [],
+      "reqs": [
+        "snake-gui"
+      ],
+      "released_at": null,
+      "st_product": null,
+      "architecture": "snake-linux/arch/v2.0.0/",
+      "module_plan": null,
+      "test_plan": null,
+      "qa_report": null,
+      "release_pkg": null,
+      "arch_claimed": false,
+      "arch_review_claimed": true,
+      "arch_review_claimed_pid": 4188617
     }
   ],
   "current": "v1.0.0"

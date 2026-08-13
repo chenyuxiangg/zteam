@@ -490,6 +490,35 @@ def read_versions(project: str) -> dict:
     return ensure_versions(project)
 
 
+def advance_current(project: str) -> str:
+    """版本推进（注册盲区修复）：current 版本已 released 时自动开新版本（语义化 minor+1）为 current；
+    否则返回当前 current。调用方在注册新需求未指定版本时使用。"""
+    vd = read_versions(project)
+    cur = vd.get("current", "v1.0.0")
+    v = next((x for x in vd["versions"] if x["name"] == cur), None)
+    if v and v.get("status") != "released":
+        return cur
+    import re as _re
+    m = _re.match(r"v?(\d+)\.(\d+)\.(\d+)", cur)
+    base_minor = int(m.group(2)) if m else 0
+    i = 1
+    while True:
+        new_name = f"v1.{base_minor + i}.0"
+        if not next((x for x in vd["versions"] if x["name"] == new_name), None):
+            break
+        i += 1
+    nv = {"name": new_name, "status": "planning", "iterations": [],
+          "reqs": [], "released_at": None,
+          "architecture": None, "module_plan": None, "test_plan": None,
+          "qa_report": None, "release_pkg": None, "st_product": None,
+          "st_claimed": False, "qa_claimed": False}
+    vd["versions"].append(nv)
+    vd["current"] = new_name
+    write_versions(project, vd)
+    log(f"VERSION_ADVANCE {project}: current {cur}(released) → 新版本 {new_name}（自动）")
+    return new_name
+
+
 def write_versions(project: str, vd: dict) -> None:
     os.makedirs(project_dir(project), exist_ok=True)
     tmp = versions_path(project) + ".tmp"
@@ -1094,6 +1123,40 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                 pid = spawn_worker("se", f"{project}/__arch{v['name']}", 1, query)
                 log(f"SPAWN-SE {project}/{v['name']} worker=se pid={pid}")
                 alarms.append(f"版本 {v['name']} 进入架构设计（SE pid={pid}）")
+        elif status == "arch_reviewing":
+            # PM 评审架构（评审缺失修复：自动 spawn 评审者，不依赖人工）
+            if not v.get("arch_review_claimed"):
+                v["arch_review_claimed"] = True
+                out = f"{project}/review/arch/{v['name']}/"
+                query = (
+                    f"你是本流水线的【PM】。严格遵循 roles/pm.md 为项目 {project} 版本 {v['name']} 评审架构设计。\n"
+                    f"架构设计：{v.get('architecture')}；模块分工：同目录功能模块分工表.md；需求规格见分工表。\n"
+                    f"任务：1. 评审架构是否覆盖全部需求规格/模块组织合理/迭代计划可行；\n"
+                    f"2. 评审意见写到 {out}（明确 PASS 或 FAIL + 具体问题）；\n"
+                    f"3. 运行 python3 scripts/statectl.py release_arch {project} {v['name']} {out} PASS|FAIL；\n"
+                    f"4. 完成后无需汇报。"
+                )
+                pid = spawn_worker("pm", f"{project}/__archrev{v['name']}", 1, query)
+                v["arch_review_claimed_pid"] = pid
+                log(f"SPAWN-ARCHREV {project}/{v['name']} worker=pm pid={pid}")
+                alarms.append(f"版本 {v['name']} 架构待 PM 评审（pid={pid}）")
+        elif status == "testplan_reviewing":
+            # SE 评审整体测试方案（评审缺失修复）
+            if not v.get("testplan_review_claimed"):
+                v["testplan_review_claimed"] = True
+                out = f"{project}/review/testplan/{v['name']}/"
+                query = (
+                    f"你是本流水线的【SE】。严格遵循 roles/se.md 为项目 {project} 版本 {v['name']} 评审整体测试方案。\n"
+                    f"测试方案：{v.get('test_plan')}；架构设计：{v.get('architecture')}。\n"
+                    f"任务：1. 评审 IT/ST 方案覆盖性与测试套件框架可用性（对照架构/模块分工）；\n"
+                    f"2. 评审意见写到 {out}（明确 PASS 或 FAIL + 具体问题）；\n"
+                    f"3. 运行 python3 scripts/statectl.py release_testplan_v2 {project} {v['name']} {out} PASS|FAIL；\n"
+                    f"4. 完成后无需汇报。"
+                )
+                pid = spawn_worker("se", f"{project}/__tprev{v['name']}", 1, query)
+                v["testplan_review_claimed_pid"] = pid
+                log(f"SPAWN-TPREV {project}/{v['name']} worker=se pid={pid}")
+                alarms.append(f"版本 {v['name']} 测试方案待 SE 评审（pid={pid}）")
         elif status == "testplan":
             if not v.get("test_plan_claimed"):
                 v["test_plan_claimed"] = True
@@ -1300,6 +1363,24 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                     it["claimed_pid"] = pid
                     log(f"SPAWN-MDE {project}/{m['name']} iter-{it['n']} pid={pid}")
                     alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入设计（MDE pid={pid}）")
+                elif status == "design_reviewing":
+                    # SE 评审模块设计（评审缺失修复）
+                    if not it.get("design_review_claimed"):
+                        it["design_review_claimed"] = True
+                        out = f"{project}/review/design/{m['name']}/iter-{it['n']}/"
+                        query = (
+                            f"你是本流水线的【SE】。严格遵循 roles/se.md 评审模块 {m['name']} "
+                            f"（版本 {v['name']} 迭代 {it['n']}）功能模块设计。\n"
+                            f"模块设计：{m['design'].get('product')}；架构设计：{v.get('architecture')}\n"
+                            f"任务：1. 评审设计是否遵循架构（接口/数据流/模块间契约）+ 可落地（FO 可据其 TDD）；\n"
+                            f"2. 评审意见写到 {out}（明确 PASS 或 FAIL + 具体问题）；\n"
+                            f"3. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} PASS|FAIL；\n"
+                            f"4. 完成后无需汇报。"
+                        )
+                        pid = spawn_worker("se", f"{project}/__drev-{m['name']}-it{it['n']}", 1, query)
+                        it["design_review_claimed_pid"] = pid
+                        log(f"SPAWN-DREV {project}/{m['name']} iter-{it['n']} worker=se pid={pid}")
+                        alarms.append(f"模块 {m['name']} 迭代 {it['n']} 设计待 SE 评审（pid={pid}）")
                 elif status == "dev_working":
                     out = f"{project}/code/{m['name']}/iter-{it['n']}/"
                     fb = f"\n检视反馈（请先阅读并修复）：{it.get('review_feedback')}\n" if it.get("review_feedback") else ""
@@ -1317,6 +1398,24 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                     it["claimed_pid"] = pid
                     log(f"SPAWN-FO {project}/{m['name']} iter-{it['n']} pid={pid}")
                     alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入开发（FO pid={pid}）")
+                elif status == "dev_reviewing":
+                    # MDE 代码检视（检视门禁，评审缺失修复）
+                    if not it.get("review_claimed"):
+                        it["review_claimed"] = True
+                        out = f"{project}/review/code/{m['name']}/iter-{it['n']}/"
+                        query = (
+                            f"你是本流水线的【MDE】。严格遵循 roles/mde.md 对模块 {m['name']} "
+                            f"（版本 {v['name']} 迭代 {it['n']}）执行代码检视（模块内实现视角）。\n"
+                            f"模块设计：{m['design'].get('product')}；代码：{it.get('dev_product')}\n"
+                            f"任务：1. 按检视清单核对（实现与设计一致/边界异常/可测试性/风格）；\n"
+                            f"2. 检视意见写到 {out}（明确 PASS 或 FAIL + 具体问题，FAIL 需指向代码位置）；\n"
+                            f"3. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} review {out} PASS|FAIL；\n"
+                            f"4. 完成后无需汇报。"
+                        )
+                        pid = spawn_worker("mde", f"{project}/__crev-{m['name']}-it{it['n']}", 1, query)
+                        it["review_claimed_pid"] = pid
+                        log(f"SPAWN-CREV {project}/{m['name']} iter-{it['n']} worker=mde pid={pid}")
+                        alarms.append(f"模块 {m['name']} 迭代 {it['n']} 代码待检视（MDE pid={pid}）")
                 elif status == "it_working":
                     if not it.get("case_passed"):
                         # MTO 用例阶段（TE 评审通过才能写测试代码——脚本侧由 case 命令门禁）
@@ -1684,7 +1783,17 @@ def register_new_inputs(st: dict) -> list:
                     continue
                 vd = ensure_versions(proj)
                 meta = _parse_req_meta(os.path.join(idir, name))
-                ver = meta["version"] or vd.get("current", "v1.0.0")
+                ver = meta["version"]
+                if not ver:
+                    ver = advance_current(proj)  # 未指定 → current；current released 时自动开新版本
+                    vd = read_versions(proj)  # advance 可能已落盘，重读
+                else:
+                    # 显式指定 released 版本 → 拒绝（版本冻结，需开新版本承载）
+                    if ver in [x["name"] for x in vd["versions"]] and \
+                            next(x for x in vd["versions"] if x["name"] == ver).get("status") == "released":
+                        print(f"注册拒绝: {key} 指定版本 {ver} 已 released（冻结），请开新版本或 assign 到新版本", file=sys.stderr)
+                        log(f"REGISTER_REJECT {key} version={ver} released(冻结)")
+                        continue
                 if ver not in [x["name"] for x in vd["versions"]]:
                     vd["versions"].append({"name": ver, "status": "planning",
                                            "iterations": [], "reqs": [], "released_at": None})
@@ -3186,6 +3295,18 @@ def cmd_notify() -> int:
             reminded |= set(new_confirm)
         reminded = {k for k in reminded if st.get(k, {}).get("status") == "awaiting_user_confirm"}
         json.dump(sorted(reminded), open(CONFIRM_REMINDED, "w", encoding="utf-8"))
+        # 段 1.5：版本用户指南待确认（qa_reviewing → 用户 confirm_guide/reject_guide）
+        for proj in sorted(os.listdir(WORKSPACE_DIR)):
+            if proj in ("logs",) or proj.startswith("."):
+                continue
+            try:
+                vd = read_versions(proj)
+            except Exception:
+                continue
+            for v in vd.get("versions", []):
+                if v.get("status") == "qa_reviewing":
+                    out_lines.append(f"📦 版本 {proj}/{v['name']} 发布包待你确认：用户指南 {v.get('release_pkg') or '?'}（released 前最后一关）")
+                    out_lines.append(f"    回复 confirm_guide {proj} {v['name']} 或 reject_guide {proj} {v['name']} <理由>")
         # 段 2：新归档 approved/released（原逻辑）
         marker = ""
         if os.path.exists(NOTIFY_MARKER):
