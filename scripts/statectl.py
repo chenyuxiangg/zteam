@@ -1771,6 +1771,12 @@ def confirm_guide(project: str, version: str) -> int:
                 e["status"] = "released"
                 e["updated_at"] = now_iso()
                 changed = True
+                # v2 归档：artifacts/{project}/{rid}.md 指向版本发布包（保持 D8 诊断语义）
+                ap = abs_artifact(project, r)
+                if not os.path.exists(ap):
+                    os.makedirs(os.path.dirname(ap), exist_ok=True)
+                    with open(ap, "w", encoding="utf-8") as f:
+                        f.write(f"# 归档 {project}/{r}\n\n版本：{version}\n发布包：{v.get('release_pkg')}\n状态：released（v2 模块中心，随版本发布）\n")
         if changed:
             write_status(st)
         log(f"VERSION_RELEASED {project}/{version}（用户确认用户指南）")
