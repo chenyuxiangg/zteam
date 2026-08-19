@@ -760,7 +760,7 @@ def cmd_reject(rid: str, reason: str) -> int:
 # ---------------- 模块管理（v2 模块中心：SE 抉择组织形态） ----------------
 
 MODULES_FILE = "modules.json"
-MODULE_TYPES = ("基础平台", "中间件", "上层应用")
+MODULE_TYPES = ("基础平台", "中间件", "上层应用")  # 默认分类（引导用）；项目组可自定义（SE 与用户对齐）
 
 
 def modules_path(project: str) -> str:
@@ -806,11 +806,12 @@ def cmd_module(project: str, action: str, rest: list) -> int:
             return 0
         if action == "add":
             if len(rest) < 2:
-                print("module add <name> <类型(基础平台/中间件/上层应用)> [desc]", file=sys.stderr)
+                print("module add <name> <类型(默认:基础平台/中间件/上层应用，项目组可自定义)> [desc]", file=sys.stderr)
                 return 1
             name, mtype = rest[0], rest[1]
-            if mtype not in MODULE_TYPES:
-                print(f"类型必须为 {'/'.join(MODULE_TYPES)}", file=sys.stderr)
+            # 类型不强制三类（项目组可自定义分类，如"数据服务"）；仅要求非空
+            if not mtype.strip():
+                print("类型不能为空", file=sys.stderr)
                 return 1
             if any(m["name"] == name for m in mods):
                 print(f"模块 {name} 已存在", file=sys.stderr)
@@ -1133,7 +1134,7 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"版本需求规格（全部已获用户评审通过）：\n{_arch_inputs(project, reqs, st)}\n"
                     f"任务：1. 阅读全部规格，输出架构设计到 {out}（架构/技术选型/模块间依赖/接口/构建/发布/配置）；\n"
                     f"2. 设计功能模块组织并落盘（按需执行，幂等）：\n"
-                    f"   python3 scripts/statectl.py module {project} add <模块名> <基础平台|中间件|上层应用> [desc]\n"
+                    f"   python3 scripts/statectl.py module {project} add <模块名> <类型:默认 基础平台/中间件/上层应用，可自定义> [desc]\n"
                     f"   python3 scripts/statectl.py module {project} dep <模块名> <依赖模块,逗号分隔>\n"
                     f"   python3 scripts/statectl.py module {project} dispatch <模块名> <req_id,逗号分隔>\n"
                     f"   python3 scripts/statectl.py module {project} iter <模块名> <迭代号,逗号分隔>（SE 排迭代计划）\n"
