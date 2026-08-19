@@ -2003,47 +2003,80 @@ def _resource_blocked_reason(project: str, it_or_v: dict, key: str) -> str:
 
 
 def _resource_unblock(project: str, md: dict, vd: dict, alarms: list) -> None:
-    """资源感知自动恢复（用户需求）：blocked 且原因=资源限制 → 检查资源 → 恢复后自动 unblock（zbot 通知）。
-    其他原因 blocked 保持人工。"""
+    """资源感知自动恢复（用户需求）：blocked 且原因=资源/网络（临时性）→ 检查资源 → 恢复后自动 unblock（zbot 通知）。
+    其他原因（other）保持人工。"""
     for m in md.get("modules", []):
         for it in m.get("iterations", []):
             if it.get("status") != "blocked":
                 continue
-            reason = _resource_blocked_reason(project, it, f"{m['name']}-{it['n']}")
-            if reason != "resource:minimax":
+            reason = _mark_blocked_reason(project, m["name"], it)  # key=模块名（宽匹配 worker-__{role}-{模块}-it{N}）
+            if reason not in ("resource:minimax", "network"):
                 continue
-            if _minimax_quota_ok():
+            if reason == "network" or _minimax_quota_ok():
                 _module_unblock(project, m["name"], str(it["n"]))
                 with open(ALARM_FILE, "a", encoding="utf-8") as f:
-                    f.write(f"[RESOURCE_RECOVERED] 模块 {project}/{m['name']} iter-{it['n']} MiniMax 配额恢复，已自动 unblock 重跑。\n")
-                alarms.append(f"模块 {m['name']} 迭代 {it['n']} 配额恢复自动恢复")
+                    f.write(f"[RESOURCE_RECOVERED] 模块 {project}/{m['name']} iter-{it['n']} {reason} 恢复，已自动 unblock 重跑。\n")
+                alarms.append(f"模块 {m['name']} 迭代 {it['n']} {reason} 恢复自动恢复")
     for v in vd.get("versions", []):
         if v.get("status") != "blocked":
             continue
-        if _resource_blocked_reason(project, v, v["name"]) != "resource:minimax":
+        if _mark_blocked_reason(project, v["name"], v) not in ("resource:minimax", "network"):
             continue
-        if _minimax_quota_ok():
+        if v.get("blocked_reason") == "network" or _minimax_quota_ok():
             _version_unblock(project, v["name"])
             with open(ALARM_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[RESOURCE_RECOVERED] 版本 {project}/{v['name']} MiniMax 配额恢复，已自动 unblock 重跑。\n")
-            alarms.append(f"版本 {v['name']} 配额恢复自动恢复")
+                f.write(f"[RESOURCE_RECOVERED] 版本 {project}/{v['name']} {v.get('blocked_reason')} 恢复，已自动 unblock 重跑。\n")
+            alarms.append(f"版本 {v['name']} 资源恢复自动恢复")
 
 
 def _minimax_quota_ok() -> bool:
-    """MiniMax 配额检查（5h 滚动窗口）：scripts/check_minimax_quota.py 判定。
-    脚本不可用/无配置时返回 True（不阻塞自动恢复的保守策略？——不：资源未知时应保持人工——
-    返回 True 仅在明确有配额时；异常 → False 保守）。"""
+    """MiniMax 配额检查（脚本固定规则，非 AI 读日志）：
+    check_minimax_quota.py 退出码 0=健康（judge() 数值判定：5h≥30% 且周≥50%）→ 可自动恢复。
+    1/2=紧张/受限、3=调用失败 → 不自动恢复（保守）。"""
     qs = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "scripts", "check_minimax_quota.py")
     try:
         import subprocess as _sp
-        r = _sp.run(["python3", qs], capture_output=True, text=True, timeout=30)
-        if r.returncode == 0:
-            out = (r.stdout + r.stderr).lower()
-            # 脚本语义：配额充足返回 0（输出含 available/充足/ok 等）——按脚本实际输出判定
-            return not any(w in out for w in ("429", "quota exhausted", "配额已耗尽", "insufficient"))
-        return False
+        r = _sp.run(["python3", qs, "--quiet"], capture_output=True, text=True, timeout=30)
+        return r.returncode == 0
     except Exception:
         return False
+
+
+def _mark_blocked_reason(project: str, key: str, it_or_v: dict) -> str:
+    """blocked 原因判定（脚本固定规则）：读该 key 关联 worker 日志尾部（精确路径 worker-{key}-r{N}-{role}.log
+    或含 key 的 worker 日志）→ 关键词分类：
+      resource:minimax（429/配额/rate limit/insufficient_quota）→ 配额恢复后自动 unblock
+      network（timeout/APITimeoutError/ConnectionError）→ 临时性，自动重试
+      other → 人工介入（永不自动）
+    与 AI 无关——纯代码扫描固定规则；判定结果写入 blocked_reason 持久化。"""
+    if it_or_v.get("blocked_reason"):
+        return it_or_v["blocked_reason"]
+    key_norm = key.replace("/", "-")
+    tail_buf = []
+    for d in (project_dir(project), os.path.join(project_dir(project), "logs"), LOG_DIR):
+        if not os.path.isdir(d):
+            continue
+        try:
+            for fn in sorted(os.listdir(d)):
+                if not fn.startswith("worker-") or ".log" not in fn:
+                    continue
+                if key_norm in fn or fn == "errors.log":
+                    fp = os.path.join(d, fn)
+                    try:
+                        if os.path.getsize(fp) < 50 * 1024 * 1024:
+                            tail_buf.append(open(fp, encoding="utf-8", errors="replace").read()[-8000:])
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    blob = " ".join(tail_buf).lower()
+    if any(w in blob for w in ("429", "quota", "配额已耗尽", "rate limit", "insufficient_quota", "余额不足")):
+        it_or_v["blocked_reason"] = "resource:minimax"
+    elif any(w in blob for w in ("timeout", "apitimeouterror", "connectionerror", "连接超时", "超时")):
+        it_or_v["blocked_reason"] = "network"
+    else:
+        it_or_v["blocked_reason"] = "other"
+    return it_or_v["blocked_reason"]
 
 
 def cmd_versions(project: str = None) -> int:
