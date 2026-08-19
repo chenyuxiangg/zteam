@@ -2053,20 +2053,24 @@ def _mark_blocked_reason(project: str, key: str, it_or_v: dict) -> str:
         return it_or_v["blocked_reason"]
     key_norm = key.replace("/", "-")
     tail_buf = []
-    for d in (project_dir(project), os.path.join(project_dir(project), "logs"), LOG_DIR):
+    # 只扫本项目日志（v2 每项目独立目录）+ 全局 errors.log 兜底；不扫全局 worker-*（v1 遗留跨项目，防串扰）
+    for d in (os.path.join(project_dir(project), "logs"), LOG_DIR):
         if not os.path.isdir(d):
             continue
         try:
             for fn in sorted(os.listdir(d)):
-                if not fn.startswith("worker-") or ".log" not in fn:
+                fp = os.path.join(d, fn)
+                if fn == "errors.log":
+                    pass  # 全局/项目 errors.log 都兜底
+                elif fn.startswith("worker-") and d != LOG_DIR and key_norm in fn:
+                    pass  # 本项目 worker 日志，key 匹配
+                else:
                     continue
-                if key_norm in fn or fn == "errors.log":
-                    fp = os.path.join(d, fn)
-                    try:
-                        if os.path.getsize(fp) < 50 * 1024 * 1024:
-                            tail_buf.append(open(fp, encoding="utf-8", errors="replace").read()[-8000:])
-                    except OSError:
-                        continue
+                try:
+                    if os.path.getsize(fp) < 50 * 1024 * 1024:
+                        tail_buf.append(open(fp, encoding="utf-8", errors="replace").read()[-8000:])
+                except OSError:
+                    continue
         except OSError:
             continue
     blob = " ".join(tail_buf).lower()
