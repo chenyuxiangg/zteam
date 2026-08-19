@@ -7,3 +7,10 @@ workspace/status.lock
 
 # 说明：业务数据（workspace/status.json、workspace/input/、workspace/analysis/、
 # workspace/review/、workspace/artifacts/）全部纳入版本管理——工作区被误删/误改时可 git 恢复
+
+# 虚拟环境/构建产物（worker 运行时生成，不纳入版本管理）
+.venv/
+build/
+*.egg-info/
+.pytest_cache/
+.coverage
