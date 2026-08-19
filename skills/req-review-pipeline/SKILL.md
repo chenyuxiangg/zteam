@@ -126,6 +126,13 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 - 状态机自测（零 token）：`register` → `claim <id> analyst` → 写产物 → `release_analyze` → `claim <id> reviewer` → `release_review <id> <file> FAIL` → 检查 `needs_fix`/`approved`/强制归档分支与 `workspace/artifacts/` 生成。
 - 端到端冒烟：放真实需求进 `workspace/<项目名>/input/`，手动跑 `python3 scripts/statectl.py worker_tick` → 轮询 `get` 到 `approved`，核对 `workspace/logs/pipeline.log` 与 `workspace/<项目>/artifacts/`。
 
+
+### v2 blocked 处理（模块/版本级）
+
+- **解除阻塞命令**：`module {项目} unblock {模块} {迭代}`（blocked → design_pending 重跑）/ `unblock {项目} {版本}`（→ planning）；清 failures/claim，不再手改 modules.json；
+- **资源限制自动恢复**：blocked 时巡检按脚本规则判因（扫项目 worker 日志尾部：429/配额 → `resource:minimax`；timeout → `network`；无痕迹 → `other`）；`resource` + 配额恢复（check_minimax_quota.py 退出码 0）或 `network` → **自动 unblock**（RESOURCE_RECOVERED 告警）；`other` → 人工介入（永不自动）；
+- **判别顺序**：先查 `blocked_reason` 字段（已标记直接用），未标记才扫日志——一切判定为脚本固定规则，非 AI 读日志。
+
 ## v2 模块中心命令（PM/SE/TE/MDE/FO/MTO/STO/QA 八角色）
 
 - 规格评审（用户拍板）：`confirm {req_id}` / `reject {req_id} <理由>`（zbot 推送🧾待评审）

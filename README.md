@@ -7,7 +7,7 @@
 
 基于 **cron + 文件消息池** 的无人值守多角色流水线。调度采用**上半部 / 下半部**架构（对应 Linux 中断处理模型）：**上半部只唤醒（秒级、零 token），下半部干活（分钟级、独立进程、不受 cron 3 分钟硬中断限制）**。
 
-需求分析师与需求评审师是两个独立角色，各自独立绑定模型，通过共享工作区 `workspace/status.json` + 文件目录实现"自动感知"，多轮"分析 → 评审 → 修改 → 再评审"直至通过，全程无人值守。
+v2 起为八角色模块中心模型（PM/SE/TE/MDE/FO/MTO/STO/QA）：需求请求 → PM 细化 → 用户评审锁定规格 → SE 版本级架构 → TE 测试方案 → 模块迭代（MDE 设计→FO TDD→MTO 模块 IT）→ STO 版本 ST → QA 发布（用户确认）→ 版本 released。规格/模块/版本状态全部由脚本固定规则守护（迁移表强制 + 巡检兜底），无人值守。
 
 ## 覆盖的需求
 
@@ -49,7 +49,8 @@
 
 ```
 zteam/                      # 资产层（git 跟踪，uninstall --full 保留）
-├── roles/req-analyst.md       # 需求分析师角色定义（产品视角·麦肯锡：SCQA/MECE，含需求分解模板）
+├── roles/pm.md se.md te.md mde.md fo.md mto.md sto.md qa.md  # v2 八角色
+├── roles/bot.md                     # zbot 职责（gateway 注入）
 ├── roles/req-reviewer.md      # 需求评审师角色定义 + 12 项评审检查清单
 ├── roles/bot.md               # zbot（Telegram bot）职责边界与人格定义（install 注入 gateway，uninstall 移除）
 ├── scripts/                   # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口
