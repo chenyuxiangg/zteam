@@ -1,0 +1,1188 @@
+
+session_id: 20260814_081504_b8e965
+Invalid API response after 3 retries: slow response (766s) — likely upstream timeout
+  ┊ review diff
+a/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -0,0 +1,1623 @@
++# 功能模块设计：game-app（snake-linux v2.0.0 迭代 2）r1（首发，按 iter-1 SE 评审 r3 PASS 修订方向增量）
++
++> MDE r1 · 跨迭代复用基线：**迭代 1 设计 `snake-linux/design/game-app/设计-r3.md`（SE 评审 PASS）** + **迭代 1 实际代码 `snake-linux/code/game-app/iter-1/`（it_passed，代码已 R3 全部落实）**
++> 依据：架构设计 `snake-linux/arch/v2.0.0/架构设计.md` §迭代计划迭代 2 + 功能模块分工表（备注"难度选择 UI 已在迭代 1 完成，迭代 2 不重复"）+ 需求规格 `snake-linux/analysis/snake-gui-r1.md`（approved，R-01~R-09 已固化）
++> SE 评审意见参考：迭代 1 评审 `snake-linux/review/design/game-app/iter-1/snake-linux-game-app-design-iter1-r{1,2,3}.md`（r3 PASS 拍板的修订方向全部沿用）
++> 依赖模块实际契约（**全部 it_passed，契约已锁定**）：
++>   - game-core **迭代 2** `code/game-core/iter-2/game_core/`（state.py）—— `GameState(width=, height=, difficulty=, rng=, initial_direction=, score_callback=)` / `set_direction` / `step` / `snapshot` / **`toggle_pause`**（RUN↔PAUSED，OVER 抛 InvalidStateError，PAUSED→RUN 清空 pending_direction）/ **`set_score_callback(cb)`** / `Snapshot.tick_ms = speed_curve(score, difficulty)`
++>   - gui-renderer **迭代 3** `code/gui-renderer/iter-3/gui_renderer/`（renderer.py）—— `Renderer((W,H), *, skin=None, vsync=True, cell_size, grid_cols, grid_rows, enable_high_dpi=True)` / `init()` / `shutdown()` / **`render(snap, hud, *, interp=None)`**（iterp 非 None 时按 alpha 插值绘制，None=瞬移向后兼容）/ **`set_skin(name)`**（不在 SKIN_REGISTRY 抛 SkinNotFoundError）/ **`handle_resize(w, h)`**（< 最小可玩尺寸抛 RenderError）/ `skin_names()` / `current_skin_name` / `fps_metric()`
++>   - platform-storage **迭代 2** `code/platform-storage/iter-2/platform_storage/`（highscore.py / paths.py）—— `get_user_data_dir() -> Path` / `HighScoreStore(path=None)` / `load() -> int` / `save(score)` / `reset()` / `StorageError`
++> **目标**：FO 拿到本文即可 TDD 开发；迭代 2 在迭代 1 既有代码上增量修改（**保留 iter-1 全部 R3 修订**，新增 PAUSED 状态机接入 / HighScoreStore 接入 / 失焦暂停 / 最高分重置 / 暂停遮罩）；同时消化 iter-1 r3 SE 评审遗留的 6 项 P2-N1~N6（不阻塞 PASS，FO 落地时一并修）
++> **关键决策**：迭代 2 **不新建 iter-2 代码目录**——增量改动直接落在 iter-1 源码目录 `snake-linux/code/game-app/iter-1/` 上（同属 v2.0.0 一个发布单元）；**不重写既有文件**，仅修改 `app.py` / `input.py` / `screens.py` / `menu.py` / `__init__.py` 并新增 `storage.py`；迭代 2 测试加在 `tests/test_game_app/test_app_iter2_*.py`
++
++---
++
++## 0. 修订摘要（相对 iter-1 设计 r3）
++
++### 迭代 2 增量（核心目标，对应需求 R-02/R-03 / FR-12/FR-13）
++
++| ID | 级别 | 修订内容 | 章节 |
++|----|------|----------|------|
++| **G2-1** | 应实现 | **PAUSED 状态机扩展**：`AppScreen.PAUSED` 加入枚举；`InputAction.TOGGGLE_PAUSE` 分支从 iter-1 的 hint 占位（`self._pause_hint_shown = True`）改为 `self.game_state = self.game_state.toggle_pause()`；`_tick` 在 PAUSED 态不推进（**INV-10 新增**：PAUSED 态 `_tick` 必须 return，不累加、不 step——虽然 core 内 toggle_pause 已保证 step 抛 InvalidStateError，但 app 侧少一次调用更清晰）；自动转屏：core 返回 PAUSED → screen=PAUSED；core 返回 RUN（PAUSED→RUN 恢复）→ screen=PLAYING；OVER 态调 toggle_pause 抛 InvalidStateError → app 侧不包装、UT 覆盖 | §1.1 §1.3 §3.4 §4.4 §4.5 §5.6 §6.4 |
++| **G2-2** | 应实现 | **HighScoreStore 接入**：`App.__init__` 新增 `self._storage: Optional[HighScoreStore] = None`（**R2-2 默认 None 让 UT 构造不依赖磁盘**）；`_init_pygame` 内构造 `self._storage = HighScoreStore()` 并 `self._high_score = self._storage.load()`（**迭代 1 占位的 0 替换为真实持久值**）；`_dispatch_menu` 加 `InputAction.RESET_HIGHSCORE` 分支（见 G2-3）；`reset()` 失败抛 `StorageError`（包装为 `AppError` 子类）→ 退出码 1 + stderr 可读 | §1.3 §3.4 §3.6 §4.4 §4.7 §6.4 |
++| **G2-3** | 应实现 | **得分事件回调接入**：`_new_game` 构造 GameState 时通过 `score_callback` 参数注册 `lambda s: self._storage.save(max(s, self._storage.load()))`（**全关键字**沿用 R3-4）；回调异常**app 不捕获**（与 core iter-2 一致："回调内抛异常由调用方隔离"——但 app 是调用方，dispatch 在主循环外层 `except AppError` 兜底；非 AppError 上浮退出码 1）；新增 `InputAction.RESET_HIGHSCORE`（H 键 → MENU 态 dispatch）；`_dispatch_menu` 加该分支：`self._storage.reset(); self._high_score = 0`；**重启最高分回调**：`_new_game` 必须重新注册（core 的 `set_score_callback` 返回新 GameState，回调不延续——验证 game-core iter-2 行为，UT 覆盖） | §1.1 §3.4 §4.4 §4.6 §6.4 |
++| **G2-4** | 应实现 | **窗口失焦自动暂停**：`_init_pygame` 后主循环每帧轮询 `pygame.key.get_focused()`；`False` 且当前 screen==PLAYING → 自动 `game_state.toggle_pause()` 并 screen=PAUSED；`True` 不自动恢复（避免误触，按 P 才继续——避免聚焦切换闪烁）；新增 `InputAction.UNFOCUS`（内部信号，不来自 _map_event；只在主循环内检测到失焦时入 actions 列表）；UT 覆盖：失焦 PLAYING→PAUSED 自动转移、已 PAUSED 再失焦不变、聚焦恢复不自动恢复 | §4.2 §4.4 §5.5 §6.4 |
++| **G2-5** | 应实现 | **暂停遮罩**：`_render` PAUSED 路径在 PLAYING 渲染之后叠加半透明遮罩（app 自绘，**不**依赖 gui-renderer）；新增 `menu.draw_pause_overlay(surface, body_font)`（surface 来自 `pygame.display.get_surface()`，沿用 R3-2 不读 `_screen`）；遮罩 = `(0,0,0,128)` 半透明矩形 + 居中文字 "PAUSED — P 继续"（中文走 CJK 字体回退链 R3-12）；PLAYING→PAUSED 切换帧已渲染一次，PAUSED→RUN 切回 PLAYING 时遮罩不再绘制 | §3.7 §4.8 §6.4 |
++| **G2-6** | 应实现 | **最高分展示**：`draw_menu` / `draw_game_over`（app 自绘）增加"最高分：xxx"行（仅当 `_high_score > 0` 时显示，避免"最高分：0"误导）；数字从 `app._high_score` 传入（**形参收窄沿用 R3-2**：新增 `high_score: int = 0` 参数，不读 app 私有）；HUD `_build_hud` 的 `high_score=self._high_score` 不变（迭代 1 已接 `self._high_score` 字段，仅替换数据源） | §3.7 §4.8 §6.4 |
++| **G2-7** | 应实现 | **"返回菜单"路径**：GAME_OVER 态新增 `InputAction.BACK_TO_MENU`（ESC / Backspace 键）→ `self.screen = AppScreen.MENU; self.game_state = None`（重置 INV-7 保护）；`_dispatch_over` 加该分支；MENU 态进 PLAYING 重置所有 game_state 相关字段 | §1.1 §1.3 §3.4 §4.4 §6.4 |
++| **G2-8** | 应实现 | **难度选择 UI 不在迭代 2 重复实现**（R-01 / R2-14 / R3-3：迭代 1 已完成，分工表已备注；iter-2 范围仅承接暂停继续 + 最高分展示重置） | §0 §附录 B |
++| **G2-9** | 文档 | **新文件组织决策**：迭代 2 **不**新建 `code/game-app/iter-2/` 目录，增量修改直接在 iter-1 源码目录落地（同 v2.0.0 一个发布单元）；新增 `storage.py`（HighScoreStore 包装）；新增 `tests/test_game_app/test_app_iter2_{pause,storage,unfocus,overlay,reset}.py`；`tests/test_game_app/conftest.py` 增加 `storage` fixture（`tmp_path` 注入 HighScoreStore） | §4.1 §6.1 §附录 A |
++| **G2-10** | 文档 | **依赖版本更新**：依赖 game-core iter-2（`toggle_pause`/`set_score_callback`/`speed_curve`）、gui-renderer iter-3（`set_skin`/`handle_resize`/`render(interp=)`——iter-2 game-app **不调用**这些，预告 iter-3 用）、platform-storage iter-2（`HighScoreStore`——本轮首次导入） | §0 §附录 B |
++
++### iter-1 r3 SE 评审遗留 6 项 P2-N1~N6 同步消化（FO 落地修订，不阻塞本次 SE）
++
++| ID | 级别 | 修订内容 | 章节 |
++|----|------|----------|------|
++| **G2-R-N1** | 文档/UT | `App(fps_cap=0)` 与 `App.__init__(config: AppConfig = AppConfig())` 签名矛盾：选 **方案①**——`AppConfig.__post_init__` 在构造期抛 `ConfigError`，§5.6 错误矩阵 + UT-33 改 `App(AppConfig(fps_cap=0))`；`main()` 明确 try 覆盖 App 构造（`try: app = App(); return app.run() except ConfigError/AppError:`） | §3.5 §3.6 §5.6 §6.4 UT-33 |
++| **G2-R-N2** | 文档 | §1.3 `_running` 表述补正：主循环 `if QUIT in actions: break` 直接 break（不写 `_running`），但保留 `_running` 作为"运行态标志"（未来 iter-3 OVER→MENU 等场景可由 dispatch 内部置 False 提前退出主循环）；本轮主循环不读 `_running` 但不删字段（iter-3 留扩展点） | §1.3 §4.2 §4.4 |
++| **G2-R-N3** | 文档 | §4.4 `_dispatch_menu` 注释补正：MENU 态 `MOVE_*` 在 `_drain_events` 已转 START 不会进 dispatch；`TOGGLE_PAUSE`/`RESTART` 在 `_MENU_RESERVED_ACTIONS` 内会进 dispatch 但被显式忽略（不调用 `_new_game` / `toggle_pause`）；菜单提示"按 1/2/3 选难度，按 P/R 暂无效（iter-2 启用 P 暂停），按 Q 退出，按 ESC/Backspace 返回菜单（GAME_OVER 态）" | §4.4 §4.8 |
++| **G2-R-N4** | UT | UT-24 笔误：`HudData` 字段为 `high_score`（公开），app 内部字段为 `_high_score`（私有）；UT-24 改断言 `_build_hud(snap).high_score == 0`（用公开字段名） | §6.4 UT-24 |
++| **G2-R-N5** | 文档 | §5.6 错误矩阵与 §4.2 `run()` 代码对齐：run() 主循环仅 `except AppError`（ConfigError 在 main() 捕获），未捕获异常走解释器兜底（stderr traceback + 退出码 1）；删除 §5.6 "App.run() 中未捕获异常 → 兜底 except Exception → 退出码 1"行，改为"未捕获异常走解释器默认行为（stderr traceback + 退出码 1）" | §4.2 §5.6 |
++| **G2-R-N6** | 实现 | `App.__init__` 默认参数 `config: AppConfig = AppConfig()` 在 import 期求值（frozen 不可变，功能无害）：G2-R-N1 选方案① 已隐含处理——`App(AppConfig())` 每次构造重新求值；保留默认参数（避免 UT 大量改动），但 §3.4 docstring 注明"默认参数在 import 期求值一次，UT 需不同 config 时显式传" | §3.4 |
++
++### 沿用 iter-1 r3（不修订，本轮已 PASS）
++
++- 模块定位（§0）
++- 依赖边界（§0.5）
++- Python 3.8 兼容 / 零配置 / 无网络 / 无音效 / 不写系统目录
++- 跨迭代复用（主循环骨架 / 状态机 / 输入映射 / 错误处理框架）
++- **R3-1 唯一屏态兜底**（None→START 在 `_drain_events`）
++- **R3-2 menu 不读 renderer 私有**（走 `pygame.display.get_surface()`）
++- **R3-4 字段命名统一**（`_difficulty` / `_high_score`）
++- **R3-5 `_running: bool = True`** 在 §1.3 声明
++- **R3-6 game-core iter-2 it_passed 契约锁定**（沿用；iter-2 设计所选接口与锁定代码一致）
++- **R3-7 删除 `_quit()` 死代码 + dispatch QUIT 分支**
++- **R3-8 `_tick` 循环内重读 tick_ms**（G2-1 PAUSED 态 tick 直接 return）
++- **R3-9 InvalidStateError 理论不可达不包装**（G2-1 PAUSED/OVER 切 toggle_pause 同样不包装）
++- **R3-10 App.__init__ 不构造 Renderer**（G2-2 `_storage = None` 同样在 `_init_pygame` 构造）
++- **R3-11 `_render` 共享一次 snap**
++- **R3-12 CJK 字体回退链**（G2-5 暂停遮罩复用）
++- **R3-14 `app_in_playing` fixture**（G2 测试新增 `app_in_paused` / `app_with_storage`）
++- **R3-15 退出码 2 shutdown 兜底**
++
++---
++
++## 0. 模块定位与迭代边界
++
++| 项 | 值 |
++|----|---|
++| 模块 | game-app |
++| 类型 | 上层应用 |
++| 依赖 | game-core（纯逻辑，迭代 2 **it_passed — 接口以 iter-2 落地为准**）、gui-renderer（迭代 3 **it_passed — 接口以 iter-3 落地为准**，iter-2 game-app 仅 `render` 不调 `set_skin`/`handle_resize`/`render(interp=)`）、platform-storage（**迭代 2 接入，本轮首次 import**） |
++| 被依赖 | 无（顶层装配） |
++| 承载需求 | snake-gui **主体**——本迭代 2 增量范围 = FR-12 暂停/继续 + FR-13 最高分持久化（展示/重置） |
++| 迭代 | 2（在 iter-1 既有代码上增量修改；不新建 iter-2 代码目录） |
++| 不引入 | 第三方除 pygame 外任何依赖；不引入音效（架构 §R-04）；不引入网络（NFR-06）；不引入 config 文件（架构 §配置模型） |
++| 跨迭代复用 | 主循环骨架 / 界面状态机 / 输入映射 / 错误处理框架 跨 1~4 迭代复用 |
++| PyInstaller 入口 | `snake-gui.py`（包根 `__main__.py`，`if __name__ == "__main__": main()`）—— 沿用 iter-1 |
++
+… omitted 1545 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_092032_c1bf30
+设计文档已落盘 `snake-linux/design/game-app/设计-iter2-r1.md`（1623 行），状态由 `design_working` → `design_reviewing`。
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -18,7 +18,7 @@
+ 
+ | ID | 级别 | 修订内容 | 章节 |
+ |----|------|----------|------|
+-| **G2-1** | 应实现 | **PAUSED 状态机扩展**：`AppScreen.PAUSED` 加入枚举；`InputAction.TOGGGLE_PAUSE` 分支从 iter-1 的 hint 占位（`self._pause_hint_shown = True`）改为 `self.game_state = self.game_state.toggle_pause()`；`_tick` 在 PAUSED 态不推进（**INV-10 新增**：PAUSED 态 `_tick` 必须 return，不累加、不 step——虽然 core 内 toggle_pause 已保证 step 抛 InvalidStateError，但 app 侧少一次调用更清晰）；自动转屏：core 返回 PAUSED → screen=PAUSED；core 返回 RUN（PAUSED→RUN 恢复）→ screen=PLAYING；OVER 态调 toggle_pause 抛 InvalidStateError → app 侧不包装、UT 覆盖 | §1.1 §1.3 §3.4 §4.4 §4.5 §5.6 §6.4 |
++| **G2-1** | 应实现 | **PAUSED 状态机扩展**：`AppScreen.PAUSED` 加入枚举；`InputAction.TOGGGLE_PAUSE` 分支从 iter-1 的 hint 占位（`self._pause_hint_shown = True`）改为 `self.game_state = self.game_state.toggle_pause()` + **同步切屏**；`_tick` 在 PAUSED 态不推进（**INV-10 新增**：PAUSED 态 `_tick` 必须 return，不累加、不 step——虽然 core 内 toggle_pause 已保证 step 抛 InvalidStateError，但 app 侧少一次调用更清晰）；**屏态同步方案 A（dispatch 内单点同步）**：`_dispatch_playing` 收到 TOGGLE_PAUSE/UNFOCUS 后 toggle 后显式 `self.screen = AppScreen.PAUSED`；`_dispatch_paused` 收到 TOGGLE_PAUSE 后 toggle 后显式 `self.screen = AppScreen.PLAYING`；`_tick` 内**不再**靠 `status == PAUSED` 自动转屏（core step 永不返 PAUSED，原 elif 分支删除，改为防御性注释）；OVER 态调 toggle_pause 抛 InvalidStateError → app 侧不包装、UT 覆盖 | §1.1 §1.3 §3.4 §4.4 §4.5 §5.6 §6.4 |
+ | **G2-2** | 应实现 | **HighScoreStore 接入**：`App.__init__` 新增 `self._storage: Optional[HighScoreStore] = None`（**R2-2 默认 None 让 UT 构造不依赖磁盘**）；`_init_pygame` 内构造 `self._storage = HighScoreStore()` 并 `self._high_score = self._storage.load()`（**迭代 1 占位的 0 替换为真实持久值**）；`_dispatch_menu` 加 `InputAction.RESET_HIGHSCORE` 分支（见 G2-3）；`reset()` 失败抛 `StorageError`（包装为 `AppError` 子类）→ 退出码 1 + stderr 可读 | §1.3 §3.4 §3.6 §4.4 §4.7 §6.4 |
+ | **G2-3** | 应实现 | **得分事件回调接入**：`_new_game` 构造 GameState 时通过 `score_callback` 参数注册 `lambda s: self._storage.save(max(s, self._storage.load()))`（**全关键字**沿用 R3-4）；回调异常**app 不捕获**（与 core iter-2 一致："回调内抛异常由调用方隔离"——但 app 是调用方，dispatch 在主循环外层 `except AppError` 兜底；非 AppError 上浮退出码 1）；新增 `InputAction.RESET_HIGHSCORE`（H 键 → MENU 态 dispatch）；`_dispatch_menu` 加该分支：`self._storage.reset(); self._high_score = 0`；**重启最高分回调**：`_new_game` 必须重新注册（core 的 `set_score_callback` 返回新 GameState，回调不延续——验证 game-core iter-2 行为，UT 覆盖） | §1.1 §3.4 §4.4 §4.6 §6.4 |
+ | **G2-4** | 应实现 | **窗口失焦自动暂停**：`_init_pygame` 后主循环每帧轮询 `pygame.key.get_focused()`；`False` 且当前 screen==PLAYING → 自动 `game_state.toggle_pause()` 并 screen=PAUSED；`True` 不自动恢复（避免误触，按 P 才继续——避免聚焦切换闪烁）；新增 `InputAction.UNFOCUS`（内部信号，不来自 _map_event；只在主循环内检测到失焦时入 actions 列表）；UT 覆盖：失焦 PLAYING→PAUSED 自动转移、已 PAUSED 再失焦不变、聚焦恢复不自动恢复 | §4.2 §4.4 §5.5 §6.4 |
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -20,7 +20,7 @@
+ |----|------|----------|------|
+ | **G2-1** | 应实现 | **PAUSED 状态机扩展**：`AppScreen.PAUSED` 加入枚举；`InputAction.TOGGGLE_PAUSE` 分支从 iter-1 的 hint 占位（`self._pause_hint_shown = True`）改为 `self.game_state = self.game_state.toggle_pause()` + **同步切屏**；`_tick` 在 PAUSED 态不推进（**INV-10 新增**：PAUSED 态 `_tick` 必须 return，不累加、不 step——虽然 core 内 toggle_pause 已保证 step 抛 InvalidStateError，但 app 侧少一次调用更清晰）；**屏态同步方案 A（dispatch 内单点同步）**：`_dispatch_playing` 收到 TOGGLE_PAUSE/UNFOCUS 后 toggle 后显式 `self.screen = AppScreen.PAUSED`；`_dispatch_paused` 收到 TOGGLE_PAUSE 后 toggle 后显式 `self.screen = AppScreen.PLAYING`；`_tick` 内**不再**靠 `status == PAUSED` 自动转屏（core step 永不返 PAUSED，原 elif 分支删除，改为防御性注释）；OVER 态调 toggle_pause 抛 InvalidStateError → app 侧不包装、UT 覆盖 | §1.1 §1.3 §3.4 §4.4 §4.5 §5.6 §6.4 |
+ | **G2-2** | 应实现 | **HighScoreStore 接入**：`App.__init__` 新增 `self._storage: Optional[HighScoreStore] = None`（**R2-2 默认 None 让 UT 构造不依赖磁盘**）；`_init_pygame` 内构造 `self._storage = HighScoreStore()` 并 `self._high_score = self._storage.load()`（**迭代 1 占位的 0 替换为真实持久值**）；`_dispatch_menu` 加 `InputAction.RESET_HIGHSCORE` 分支（见 G2-3）；`reset()` 失败抛 `StorageError`（包装为 `AppError` 子类）→ 退出码 1 + stderr 可读 | §1.3 §3.4 §3.6 §4.4 §4.7 §6.4 |
+-| **G2-3** | 应实现 | **得分事件回调接入**：`_new_game` 构造 GameState 时通过 `score_callback` 参数注册 `lambda s: self._storage.save(max(s, self._storage.load()))`（**全关键字**沿用 R3-4）；回调异常**app 不捕获**（与 core iter-2 一致："回调内抛异常由调用方隔离"——但 app 是调用方，dispatch 在主循环外层 `except AppError` 兜底；非 AppError 上浮退出码 1）；新增 `InputAction.RESET_HIGHSCORE`（H 键 → MENU 态 dispatch）；`_dispatch_menu` 加该分支：`self._storage.reset(); self._high_score = 0`；**重启最高分回调**：`_new_game` 必须重新注册（core 的 `set_score_callback` 返回新 GameState，回调不延续——验证 game-core iter-2 行为，UT 覆盖） | §1.1 §3.4 §4.4 §4.6 §6.4 |
++| **G2-3** | 应实现 | **得分事件回调接入**：`_new_game` 构造 GameState 时通过 `score_callback` 参数注册回调（**全关键字**沿用 R3-4）；**P0-2 修订**：回调内直接同步实例字段 `self._high_score = max(self._high_score, new_score)`（不再用 nonlocal `_high` / `_high_ref` dict 容器）；同时 `self._storage.save(max(new_score, self._storage.load()))` 落盘；回调异常**app 不捕获**（与 core iter-2 一致："回调内抛异常由调用方隔离"——但 app 是调用方，dispatch 在主循环外层 `except AppError` 兜底；非 AppError 上浮退出码 1）；新增 `InputAction.RESET_HIGHSCORE`（H 键 → MENU 态 dispatch）；`_dispatch_menu` 加该分支：`self._storage.reset(); self._high_score = 0`；**重启最高分回调**：`_new_game` 必须重新注册（core 的 `set_score_callback` 返回新 GameState，回调不延续——验证 game-core iter-2 行为，UT 覆盖） | §1.1 §3.4 §4.4 §4.6 §6.4 |
+ | **G2-4** | 应实现 | **窗口失焦自动暂停**：`_init_pygame` 后主循环每帧轮询 `pygame.key.get_focused()`；`False` 且当前 screen==PLAYING → 自动 `game_state.toggle_pause()` 并 screen=PAUSED；`True` 不自动恢复（避免误触，按 P 才继续——避免聚焦切换闪烁）；新增 `InputAction.UNFOCUS`（内部信号，不来自 _map_event；只在主循环内检测到失焦时入 actions 列表）；UT 覆盖：失焦 PLAYING→PAUSED 自动转移、已 PAUSED 再失焦不变、聚焦恢复不自动恢复 | §4.2 §4.4 §5.5 §6.4 |
+ | **G2-5** | 应实现 | **暂停遮罩**：`_render` PAUSED 路径在 PLAYING 渲染之后叠加半透明遮罩（app 自绘，**不**依赖 gui-renderer）；新增 `menu.draw_pause_overlay(surface, body_font)`（surface 来自 `pygame.display.get_surface()`，沿用 R3-2 不读 `_screen`）；遮罩 = `(0,0,0,128)` 半透明矩形 + 居中文字 "PAUSED — P 继续"（中文走 CJK 字体回退链 R3-12）；PLAYING→PAUSED 切换帧已渲染一次，PAUSED→RUN 切回 PLAYING 时遮罩不再绘制 | §3.7 §4.8 §6.4 |
+ | **G2-6** | 应实现 | **最高分展示**：`draw_menu` / `draw_game_over`（app 自绘）增加"最高分：xxx"行（仅当 `_high_score > 0` 时显示，避免"最高分：0"误导）；数字从 `app._high_score` 传入（**形参收窄沿用 R3-2**：新增 `high_score: int = 0` 参数，不读 app 私有）；HUD `_build_hud` 的 `high_score=self._high_score` 不变（迭代 1 已接 `self._high_score` 字段，仅替换数据源） | §3.7 §4.8 §6.4 |
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -143,7 +143,7 @@
+ 
+ | ID | 不变量 | 沿用/新增 |
+ |----|--------|----------|
+-| INV-1 | `screen == PLAYING` 时 `game_state.status == GameStatus.RUN` | 沿用 iter-1 |
++| INV-1 | `screen == PLAYING` 时 `game_state.status == GameStatus.RUN` | 沿用 iter-1；**P0-1 修订**：该不变量由 dispatch 内显式切屏保证（`_dispatch_paused(TOGGLE_PAUSE)` 后 screen=PLAYING 时 `game_state.status == RUN`，因 core toggle_pause(PAUSED→RUN) 直接返回 RUN 态 GameState） |
+ | INV-2 | `screen == GAME_OVER` 时 `game_state.status == GameStatus.OVER` | 沿用 iter-1 |
+ | INV-3 | 难度 `Difficulty` 选定后写入 `game_state.difficulty`，运行中**无接口**可改 | 沿用 iter-1 |
+ | INV-4 | `_tick_accumulator_ms >= tick_ms` 时必调 `step()`，调后减 `tick_ms`（**循环内逐拍重读 tick_ms**） | 沿用 R3-8 |
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -152,8 +152,8 @@
+ | INV-7 | `screen == MENU` 时 `game_state is None`；`screen` 离开 MENU 之前不能访问 `game_state` | 沿用 iter-1 |
+ | INV-8 | `_pause_hint_shown` 字段 iter-2 删除；PAUSED 状态由 `screen` 直接表达 | iter-2 删除 |
+ | INV-9 | `_renderer` 仅在 `_init_pygame()` 之后非 None；调用 `Renderer` 方法前必检 | 沿用 iter-1 |
+-| **INV-10** | `screen == PAUSED` 时 `_tick` 必须 return（不累加、不 step）；`game_state.status == GameStatus.PAUSED` | **iter-2 新增**（G2-1） |
+-| **INV-11** | `screen == PAUSED` 时 `game_state` 非 None 且 `game_state.status == PAUSED`；`screen == PLAYING` 时 `game_state.status == RUN` | **iter-2 新增**（G2-1 PAUSED↔PLAYING 互斥） |
++| **INV-10** | `_tick` 仅在 `screen == PLAYING` 时被调用（前置条件，主循环在 `if screen == PLAYING` 后才调 `_tick`）；`_tick` 内 `assert screen == PLAYING` + `assert game_state.status == GameStatus.RUN`（INV-1 在 `_tick` 入口验证） | **iter-2 新增**（G2-1；**P0-1 修订**：原 INV-10 表述"PAUSED 态 `_tick` 必须 return"被新表述替代——`_tick` 在 PAUSED 态根本不被调用，入口断言即排除 PAUSED/OVER/GAME_OVER 误入） |
++| **INV-11** | `screen == PAUSED` 时 `game_state` 非 None 且 `game_state.status == GameStatus.PAUSED`；`screen == PLAYING` 时 `game_state.status == GameStatus.RUN`；屏态同步唯一发生在 `_dispatch_*` 内（方案 A）—— `_dispatch_playing` 的 TOGGLE_PAUSE/UNFOCUS 分支调 `toggle_pause()` 后置 `self.screen = AppScreen.PAUSED`；`_dispatch_paused` 的 TOGGLE_PAUSE 分支调 `toggle_pause()` 后置 `self.screen = AppScreen.PLAYING` | **iter-2 新增**（G2-1；**P0-1 修订**：屏态同步方案 A 单点落地） |
+ | **INV-12** | `_storage` 仅在 `_init_pygame()` 之后非 None；`_storage.save()` 失败抛 `StorageError` → 包装为 `AppError` 子类 | **iter-2 新增**（G2-2） |
+ | **INV-13** | `_high_score` 与 `_storage.load()` 一致：每次 `_storage.save(score)` 后 `_high_score = max(_high_score, score)`（回调内同步） | **iter-2 新增**（G2-3） |
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -155,7 +155,7 @@
+ | **INV-10** | `_tick` 仅在 `screen == PLAYING` 时被调用（前置条件，主循环在 `if screen == PLAYING` 后才调 `_tick`）；`_tick` 内 `assert screen == PLAYING` + `assert game_state.status == GameStatus.RUN`（INV-1 在 `_tick` 入口验证） | **iter-2 新增**（G2-1；**P0-1 修订**：原 INV-10 表述"PAUSED 态 `_tick` 必须 return"被新表述替代——`_tick` 在 PAUSED 态根本不被调用，入口断言即排除 PAUSED/OVER/GAME_OVER 误入） |
+ | **INV-11** | `screen == PAUSED` 时 `game_state` 非 None 且 `game_state.status == GameStatus.PAUSED`；`screen == PLAYING` 时 `game_state.status == GameStatus.RUN`；屏态同步唯一发生在 `_dispatch_*` 内（方案 A）—— `_dispatch_playing` 的 TOGGLE_PAUSE/UNFOCUS 分支调 `toggle_pause()` 后置 `self.screen = AppScreen.PAUSED`；`_dispatch_paused` 的 TOGGLE_PAUSE 分支调 `toggle_pause()` 后置 `self.screen = AppScreen.PLAYING` | **iter-2 新增**（G2-1；**P0-1 修订**：屏态同步方案 A 单点落地） |
+ | **INV-12** | `_storage` 仅在 `_init_pygame()` 之后非 None；`_storage.save()` 失败抛 `StorageError` → 包装为 `AppError` 子类 | **iter-2 新增**（G2-2） |
+-| **INV-13** | `_high_score` 与 `_storage.load()` 一致：每次 `_storage.save(score)` 后 `_high_score = max(_high_score, score)`（回调内同步） | **iter-2 新增**（G2-3） |
++| **INV-13** | `_high_score` 与 `_storage.load()` 一致：每次 `score_callback(new_score)` 调用后，**回调内**直接 `self._high_score = max(self._high_score, new_score)`（**P0-2 修订**：不再用 nonlocal/外部容器，直接写实例字段）；`self._storage.save(max(new_score, self._storage.load()))` 同时落盘；HUD/`draw_game_over` 每帧读 `self._high_score` 立即可见 | **iter-2 新增**（G2-3；**P0-2 修订**：回调内同步实例字段） |
+ 
+ ---
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -185,8 +185,9 @@
+    │   4. for a in actions: _dispatch(screen, a)                   │
+    │   5. if screen==PLAYING: _tick(dt_ms)                        │
+    │        if screen==PAUSED: 跳过（G2-1 INV-10）                 │
+-   │        if status==OVER → screen=GAME_OVER                    │
+-   │        if status==PAUSED (iter-2 toggle 后) → screen=PAUSED   │
++   │        _tick 内仅检测 status==OVER 自动转 GAME_OVER           │
++   │        （PAUSED 检测分支已删除——core step 永不返 PAUSED，     │
++   │         PAUSED↔PLAYING 切屏在 dispatch 内单点同步 P0-1）      │
+    │   6. _render():                                              │
+    │        MENU        → menu.draw_menu(...) (含最高分行 G2-6)   │
+    │        PLAYING     → renderer.render(snap, hud)              │
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -207,7 +207,7 @@
+                                     lambda s: storage.save(...)
+ ```
+ 
+-> **G2-1 关键变化**：状态机新增 `PAUSED` 节点（PLAYING ↔ PAUSED 由 `toggle_pause` 互转；`status` 变化由 `_tick` 检测后自动同步 `screen`）。
++> **G2-1 关键变化**：状态机新增 `PAUSED` 节点（PLAYING ↔ PAUSED 由 `toggle_pause` 互转）；**屏态同步方案 A（P0-1 修订）**：屏态切换只在 `_dispatch_*` 内发生——`_dispatch_playing(TOGGLE_PAUSE/UNFOCUS)` 调 `toggle_pause()` 后显式 `self.screen = AppScreen.PAUSED`；`_dispatch_paused(TOGGLE_PAUSE)` 调 `toggle_pause()` 后显式 `self.screen = AppScreen.PLAYING`。`_tick` 不再做屏态检测（仅 `status==OVER → screen=GAME_OVER`）。`_drain_events` 的 UNFOCUS 检测仅在 PLAYING 态追加 `InputAction.UNFOCUS`（其他屏态不产生）。
+ > **G2-3 关键变化**：core 的 `set_score_callback` 回调 → `storage.save(max(s, storage.load()))`；storage 抛异常 → core 不捕获（按 game-core iter-2 设计）→ app 不捕获（按 INV-12 包装为 `AppError` 子类）→ 主循环 `except AppError` 兜底 → 退出码 1。
+ > **G2-4 关键变化**：主循环每帧 `_drain_events` 内检测 `pygame.key.get_focused()`，PLAYING 态失焦 → 追加 `InputAction.UNFOCUS` action；`_dispatch` 内对 UNFOCUS 调 `toggle_pause`。
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -314,12 +314,12 @@
+     iter-2 增量（G2-1/2/3/4/5/7）：
+     - 新增 _storage: Optional[HighScoreStore] 字段
+     - 删除 _pause_hint_shown 字段（iter-2 PAUSED 是真实屏态）
+-    - TOGGLE_PAUSE dispatch 从 hint 占位改为 toggle_pause()
++    - TOGGLE_PAUSE dispatch 从 hint 占位改为 toggle_pause() + **同步切屏（P0-1）**
+     - 新增 RESET_HIGHSCORE / BACK_TO_MENU / UNFOCUS 分支
+-    - _new_game 注册 score_callback
++    - _new_game 注册 score_callback（**P0-2**：回调内直接写 `self._high_score` 实例字段）
+     - _run_loop 跳过 PAUSED 态的 _tick
+     - _render 在 PAUSED 态调 render + draw_pause_overlay
+-    - _drain_events 检测 pygame.key.get_focused() 追加 UNFOCUS
++    - _drain_events 检测 pygame.key.get_focused() 追加 UNFOCUS（仅 PLAYING 态产生）
+ 
+     沿用 R3：None→START 屏态兜底 / menu 用 get_surface / _tick 循环内重读
+            / App.__init__ 不构造 Renderer / CJK 字体回退链 / 退出码 2 兜底
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -516,7 +516,7 @@
+ | `AppScreen` | Enum（4 态） | app 界面状态机 |
+ | `InputAction` | Enum（11 个） | 输入归一化 |
+ | `App` | class | 主装配类 |
+-| `main()` | function | 入口函数：`App().run()`，捕获 `ConfigError`/`AppError`/`StorageError` 后输出可读提示 + 退出码 |
++| `main()` | function | 入口函数：`App().run()`，捕获 `ConfigError`/`AppError`（**P2-4 修订**：删除 `StorageError`——`StorageError` 已被包成 `StorageUnavailableError(AppError)`，无需也不应单独捕获）后输出可读提示 + 退出码 |
+ | **AppError 子类** | 异常类 | **G2-2 新增 `StorageUnavailableError(AppError)`**：包装 HighScoreStore 抛的 StorageError |
+ | `HudData` | 来自 gui_renderer | HUD 5 字段 dataclass（沿用 iter-1） |
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -391,25 +391,32 @@
+             self._new_game(self._difficulty)
+ 
+     def _dispatch_playing(self, action: InputAction) -> None:
+-        """PLAYING 态分发。G2-1：TOGGLE_PAUSE 从 hint 占位改为 toggle_pause()。"""
++        """PLAYING 态分发。G2-1：TOGGLE_PAUSE 从 hint 占位改为 toggle_pause()。
++        **P0-1 屏态同步方案 A**：toggle 后显式切屏至 PAUSED（不依赖 _tick 检测 status）。
++        """
+         if action in (InputAction.MOVE_UP, InputAction.MOVE_DOWN,
+                       InputAction.MOVE_LEFT, InputAction.MOVE_RIGHT):
+             d = {InputAction.MOVE_UP: Direction.UP, InputAction.MOVE_DOWN: Direction.DOWN,
+                  InputAction.MOVE_LEFT: Direction.LEFT, InputAction.MOVE_RIGHT: Direction.RIGHT}
+             self.game_state = self.game_state.set_direction(d[action])
+-        elif action == InputAction.TOGGLE_PAUSE:                   # G2-1 修订
+-            assert self.game_state is not None
++        elif action == InputAction.TOGGLE_PAUSE:                   # G2-1 修订（P0-1 同步切屏）
++            # type: ignore[union-attr]  # 游戏态必非 None（INV-7 + 主循环前置条件）
+             self.game_state = self.game_state.toggle_pause()       # R3-9 不包装 InvalidStateError
+-        elif action == InputAction.UNFOCUS:                         # G2-4 新增
+-            assert self.game_state is not None
++            self.screen = AppScreen.PAUSED                         # P0-1 同步切屏（INV-11）
++        elif action == InputAction.UNFOCUS:                         # G2-4 新增（P0-1 同步切屏）
++            # type: ignore[union-attr]
+             if self.game_state.status == GameStatus.RUN:
+                 self.game_state = self.game_state.toggle_pause()   # 失焦 → 暂停
++                self.screen = AppScreen.PAUSED                     # P0-1 同步切屏（INV-11）
+ 
+     def _dispatch_paused(self, action: InputAction) -> None:
+-        """PAUSED 态分发。G2-1 iter-2 新增：仅响应 TOGGLE_PAUSE / UNFOCUS / QUIT。"""
+-        if action == InputAction.TOGGLE_PAUSE:                     # G2-1 P 继续
+-            assert self.game_state is not None
++        """PAUSED 态分发。G2-1 iter-2 新增：仅响应 TOGGLE_PAUSE / UNFOCUS / QUIT。
++        **P0-1 屏态同步方案 A**：toggle 后显式切屏至 PLAYING。
++        """
++        if action == InputAction.TOGGLE_PAUSE:                     # G2-1 P 继续（P0-1 同步切屏）
++            # type: ignore[union-attr]
+             self.game_state = self.game_state.toggle_pause()       # PAUSED→RUN
++            self.screen = AppScreen.PLAYING                        # P0-1 同步切屏（INV-11）
+         elif action == InputAction.UNFOCUS:
+             pass  # PAUSED 态再失焦不变（G2-4）
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -453,12 +453,13 @@
+         self.screen = AppScreen.PLAYING
+ 
+     def _tick(self, dt_ms: int) -> None:
+-        """PLAYING 态推进节拍。G2-1 PAUSED 态不进入此函数（主循环判断）。
++        """PLAYING 态推进节拍。G2-1 PAUSED 态不进入此函数（主循环判断，见 §4.2）。
+         循环内逐拍重读 tick_ms（R3-8）；OVER 自动转 GAME_OVER。
++        **P0-1 屏态同步方案 A**：_tick 不再做 `status == PAUSED` 自动转屏——core step() 永不返 PAUSED（原 elif 分支为不可达死代码，已删除）。PAUSED↔PLAYING 切屏由 _dispatch_* 内 toggle 后显式赋值完成（INV-11）。
+         """
+-        assert self.screen == AppScreen.PLAYING                    # G2-1 INV-10/11 断言
+-        assert self.game_state is not None
+-        assert self.game_state.status == GameStatus.RUN            # INV-1
++        # type: ignore[union-attr]  # INV-10：主循环前置 screen==PLAYING 保证 game_state 非 None
++        assert self.screen == AppScreen.PLAYING                    # INV-10 入口断言
++        assert self.game_state.status == GameStatus.RUN            # INV-1 入口断言
+         self._tick_accumulator_ms += dt_ms
+         while True:
+             tick_ms = self.game_state.snapshot().tick_ms
+@@ -467,11 +468,12 @@
+             self.game_state = self.game_state.step()
+             new_status = self.game_state.status
+             if new_status == GameStatus.OVER:
+-                self.screen = AppScreen.GAME_OVER
++                self.screen = AppScreen.GAME_OVER                  # OVER 自动转 GAME_OVER
+                 break
+-            elif new_status == GameStatus.PAUSED:                   # G2-1 失焦自动暂停到达
+-                self.screen = AppScreen.PAUSED
+-                break
++            # P0-1 修订：原 `elif new_status == PAUSED` 分支删除
++            # —— core step() 在 status != RUN 时抛 InvalidStateError（game-core iter-2 锁定），
++            #    step() 永不返回 PAUSED，该分支永远不可达。
++            # PAUSED↔PLAYING 切屏由 _dispatch_* 内显式赋值（INV-11 方案 A）
+ 
+     def _build_hud(self, snap: Snapshot) -> HudData:
+         """R3-11 共享 snap；G2-6 high_score 来源 self._high_score（不变，数据源替换）。"""
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -432,19 +432,27 @@
+         """game_state = GameState(width=20, height=15, difficulty=..., rng=Random(),
+                                  score_callback=<绑定 self._storage>); screen=PLAYING。
+ 
+-        G2-3：注册 score_callback 同步写入 _storage（仅在 _storage 非 None 时注册，
+-        UT 用 fake storage）。
++        **G2-3 + P0-2 权威实现**（§3.4 与 §4.6 合并一处）：
++        1. 若 `_storage is None`（UT 未注入）：`score_callback=None`（core 不触发）。
++        2. 若 `_storage is not None`（生产环境）：注册回调 `lambda s: self._on_score(s)`，
++           `_on_score` 内**直接**：
++           - `self._high_score = max(self._high_score, s)`  ← **INV-13 同步实例字段**
++           - `self._storage.save(max(s, self._storage.load()))` ← 落盘
++           - 若 storage.save 抛 StorageError → 包 `StorageUnavailableError(AppError)`
++        3. `game_state` 用全关键字构造（game-core iter-2 锁定签名）。
++        4. 重置 `_tick_accumulator_ms=0` + `screen=PLAYING`。
+         """
+         if self._storage is None:
+             cb = None
+         else:
+-            _storage = self._storage                               # 闭包变量
+-            _high = self._high_score                               # 闭包变量（同步更新）
++            _storage = self._storage
+             def cb(score: int) -> None:
+-                nonlocal _high
+-                _storage.save(max(score, _storage.load()))
+-                _high = max(_high, score)                          # INV-13
+-            self._storage.load()                                    # 确保 _high_score 同步
++                # type: ignore[union-attr]  # _storage 在 _init_pygame 后非 None（INV-12）
++                try:
++                    self._high_score = max(self._high_score, score)            # INV-13 P0-2
++                    _storage.save(max(score, _storage.load()))                 # 落盘
++                except StorageError as e:
++                    raise StorageUnavailableError(f"最高分保存失败: {e}") from e
+         self.game_state = GameState(
+             width=20, height=15, difficulty=difficulty,
+             rng=random.Random(), score_callback=cb,
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -996,10 +996,13 @@
+     """构造 renderer + HighScoreStore；CJK 字体回退链。
+ 
+     G2-2：HighScoreStore 构造在 _init_pygame 内（不构造在 App.__init__，让 UT 不依赖磁盘）；
+-          HighScoreStore 构造期 mkdir 失败抛 StorageError → 包 GraphicsUnavailableError？
+-          不，mkdir 失败意味着用户数据目录不可写（罕见，但应给可读提示）→ 包 StorageUnavailableError，
+-          退出码 1（不是 2，因为图形环境 OK，只是存储不可用）。
+-          **修订**：mkdir 失败 → AppError("用户数据目录不可写")，退出码 1。
++    **P1-1 修订**：HighScoreStore 构造期 `self.path.parent.mkdir(parents=True, exist_ok=True)`
++    失败抛**裸 OSError（PermissionError 等）**——platform-storage iter-2 `highscore.py` 实际行为
++    （模块 docstring 声称"__init__ mkdir 失败抛 StorageError"，但实核代码：mkdir 是裸 OSError，
++    StorageError 仅在 `save()` 内包 atomic_write_json 失败时抛）。为对齐 NFR-03「可读错误提示」，
++    此处捕获 `(StorageError, OSError)` 双类型，统一包 AppError（退出码 1）。
++    **P1-3 修订**：`_storage = None` 时由 fixture 注入 fake；构造前 `if self._storage is None:`
++    跳过 create_storage()，保留 UT 注入值。
+     """
+     # R3-10：构造 renderer
+     try:
+@@ -1011,13 +1014,13 @@
+     except (RenderError, pygame.error) as e:
+         raise GraphicsUnavailableError(str(e)) from e
+ 
+-    # G2-2：构造 HighScoreStore
+-    try:
+-        self._storage = create_storage()                               # None path → get_user_data_dir()
+-        self._high_score = self._storage.load()
+-    except StorageError as e:
+-        # 用户数据目录不可写（罕见但应可读提示）
+-        raise AppError(f"用户数据目录不可写: {e}") from e
++    # G2-2：构造 HighScoreStore（P1-3：已注入 fake 则跳过；P1-1：捕获双类型）
++    if self._storage is None:                                        # P1-3 fixture 注入旁路
++        try:
++            self._storage = create_storage()                         # None path → get_user_data_dir()
++            self._high_score = self._storage.load()
++        except (StorageError, OSError) as e:                         # P1-1 mkdir 失败 = 裸 OSError
++            raise AppError(f"用户数据目录不可写: {e}") from e
+ 
+     # R3-12：CJK 字体回退链
+     self._menu_title_font = _load_cjk_font(48, bold=True)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -421,10 +421,14 @@
+             pass  # PAUSED 态再失焦不变（G2-4）
+ 
+     def _dispatch_over(self, action: InputAction) -> None:
+-        """GAME_OVER 态分发。G2-7 新增 BACK_TO_MENU 分支。"""
++        """GAME_OVER 态分发。G2-7 新增 BACK_TO_MENU 分支（P1-2 修订：ESC 独立 action）。
++        - RESTART → _new_game
++        - BACK_TO_MENU（GAME_OVER 态 ESC/Backspace → _drain_events 覆盖产生）→ MENU
++        - QUIT（仅来自 pygame.QUIT 窗口关闭或 Q 键，未被 GAME_OVER 覆盖）→ 主循环 break
++        """
+         if action == InputAction.RESTART:
+             self._new_game(self._difficulty)
+-        elif action == InputAction.BACK_TO_MENU:                   # G2-7 新增
++        elif action == InputAction.BACK_TO_MENU:                   # G2-7 / P1-2
+             self.screen = AppScreen.MENU
+             self.game_state = None                                  # INV-7 重置
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -794,16 +794,21 @@
+     """单键归一化；不感知屏态；返回 None 表示未映射（由 _drain_events 屏态兜底处理）。
+ 
+     G2-3 新增 H 键 → RESET_HIGHSCORE；G2-7 新增 ESC/Backspace → BACK_TO_MENU。
+-    ESC 在 MENU 态映射 QUIT（沿用 iter-1），在 GAME_OVER 态映射 BACK_TO_MENU（G2-7）——
+-    由 _drain_events 屏态感知覆盖（MENU 时透传 QUIT，GAME_OVER 时覆盖为 BACK_TO_MENU）。
++    **P1-2 修订**：ESC 与 Q 在 `_map_event` 层**不可区分**地都返回 QUIT——ESC 在 GAME_OVER
++    态由 `_drain_events` 覆盖为 BACK_TO_MENU；Q（用户意图退出）保持 QUIT 直通主循环 break。
++    物理区分：Q 走 KEYDOWN（pygame.K_q）；ESC 走 KEYDOWN（pygame.K_ESCAPE）；
++    pygame.QUIT（窗口关闭）走 event.type==QUIT。后两者在 `_drain_events` GAME_OVER 分支
++    都进入"非 pygame.QUIT 则覆盖"逻辑，因此仅 ESC 键按下被转 BACK_TO_MENU，窗口关闭仍是 QUIT。
+     """
+     if event.type == pygame.QUIT:
+         return InputAction.QUIT
+     if event.type != pygame.KEYDOWN:
+         return None
+     k = event.key
+-    if k == _QUIT_KEYS[0] or k == _QUIT_KEYS[1]:
+-        return InputAction.QUIT                                        # MENU 态兜底用；GAME_OVER 由 _drain_events 覆盖
++    if k == _QUIT_KEYS[0]:                                             # P1-2：Q 键 → QUIT（主循环 break）
++        return InputAction.QUIT
++    if k == _QUIT_KEYS[1]:                                             # P1-2：ESC 键 → QUIT（GAME_OVER 由 _drain_events 覆盖）
++        return InputAction.QUIT
+     if k == _PAUSE_KEY:
+         return InputAction.TOGGLE_PAUSE
+     if k == _RESTART_KEY:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -748,30 +748,44 @@
+         return 1
+ ```
+ 
+-### 4.3 输入映射（_map_event，G2-3/7 新增 RESET_HIGHSCORE / BACK_TO_MENU；R3-1 沿用）
++### 4.3 输入映射（_map_event，G2-3/7 新增 RESET_HIGHSCORE / BACK_TO_MENU；R3-1 沿用；**P2-1 修订** 沿用 iter-1 `_pygame_attr` 模式）
+ 
+ ```python
+ # input.py
+-import pygame
++# **P2-1 修订**：沿用 iter-1 `_pygame_attr(name)` 延迟读取模式（input.py 头注释 + _map_event 全部
++# 常量走 _pygame_attr），让 UT 在 monkeypatch 替换 sys.modules['pygame'] 后能读到 fake_pygame
++# 的属性。直接 `import pygame; _PAUSE_KEY = pygame.K_p` 会破坏 iter-1 既有测试基建（无 pygame
++# 环境无法 import 整个模块；fake_pygame 替换后读到缓存的属性而非 fake 值）。iter-2 增量仅加
++# H / Backspace 分支：
++#   - H 键 → RESET_HIGHSCORE（G2-3）
++#   - Backspace → BACK_TO_MENU（G2-7，_map_event 层直接转；ESC 仍返 QUIT 由 _drain_events 覆盖）
++import sys as _sys
++from typing import Any
++
++
++def _pygame_attr(name: str) -> Any:
++    """iter-1 沿用：通过 sys.modules['pygame'].__dict__ 读取属性（UT 友好）。"""
++    return _sys.modules["pygame"].__dict__.get(name)
++
+ 
+ _DIFFICULTY_KEYS = {
+-    pygame.K_1: InputAction.SELECT_EASY,
+-    pygame.K_2: InputAction.SELECT_MEDIUM,
+-    pygame.K_3: InputAction.SELECT_HARD,
++    "K_1": InputAction.SELECT_EASY,    # P2-1：常量名作 key，_map_event 内 _pygame_attr 取值
++    "K_2": InputAction.SELECT_MEDIUM,
++    "K_3": InputAction.SELECT_HARD,
+ }
+ 
+ _DIRECTION_KEYS = {
+-    pygame.K_w: InputAction.MOVE_UP, pygame.K_UP: InputAction.MOVE_UP,
+-    pygame.K_s: InputAction.MOVE_DOWN, pygame.K_DOWN: InputAction.MOVE_DOWN,
+-    pygame.K_a: InputAction.MOVE_LEFT, pygame.K_LEFT: InputAction.MOVE_LEFT,
+-    pygame.K_d: InputAction.MOVE_RIGHT, pygame.K_RIGHT: InputAction.MOVE_RIGHT,
++    "K_w": InputAction.MOVE_UP,   "K_UP":    InputAction.MOVE_UP,
++    "K_s": InputAction.MOVE_DOWN, "K_DOWN":  InputAction.MOVE_DOWN,
++    "K_a": InputAction.MOVE_LEFT, "K_LEFT":  InputAction.MOVE_LEFT,
++    "K_d": InputAction.MOVE_RIGHT,"K_RIGHT": InputAction.MOVE_RIGHT,
+ }
+ 
+-_PAUSE_KEY = pygame.K_p
+-_RESTART_KEY = pygame.K_r
+-_QUIT_KEYS = (pygame.K_q, pygame.K_ESCAPE)
+-_RESET_HIGHSCORE_KEY = pygame.K_h                                    # G2-3 iter-2 新增
+-_BACK_TO_MENU_KEYS = (pygame.K_ESCAPE, pygame.K_BACKSPACE)           # G2-7 iter-2 新增
++_PAUSE_KEY = "K_p"
++_RESTART_KEY = "K_r"
++_QUIT_KEYS = ("K_q", "K_ESCAPE")                            # P1-2：ESC 与 Q 在 _map_event 同返 QUIT
++_RESET_HIGHSCORE_KEY = "K_h"                                # G2-3 iter-2 新增
++_BACK_TO_MENU_KEYS = ("K_ESCAPE", "K_BACKSPACE")            # G2-7 iter-2 新增（仅 K_BACKSPACE 在 _map_event 层直转；K_ESCAPE 仍返 QUIT 由 _drain_events 覆盖）
+ 
+ # R3-1 沿用：MENU 态保留键（G2-7 扩展加 BACK_TO_MENU 不在 MENU 保留——MENU 态 ESC 走 QUIT 优先）
+ _MENU_RESERVED_ACTIONS = frozenset({
+@@ -793,36 +807,46 @@
+ def _map_event(event: pygame.event.Event) -> Optional[InputAction]:
+     """单键归一化；不感知屏态；返回 None 表示未映射（由 _drain_events 屏态兜底处理）。
+ 
+-    G2-3 新增 H 键 → RESET_HIGHSCORE；G2-7 新增 ESC/Backspace → BACK_TO_MENU。
+-    **P1-2 修订**：ESC 与 Q 在 `_map_event` 层**不可区分**地都返回 QUIT——ESC 在 GAME_OVER
+-    态由 `_drain_events` 覆盖为 BACK_TO_MENU；Q（用户意图退出）保持 QUIT 直通主循环 break。
+-    物理区分：Q 走 KEYDOWN（pygame.K_q）；ESC 走 KEYDOWN（pygame.K_ESCAPE）；
+-    pygame.QUIT（窗口关闭）走 event.type==QUIT。后两者在 `_drain_events` GAME_OVER 分支
+-    都进入"非 pygame.QUIT 则覆盖"逻辑，因此仅 ESC 键按下被转 BACK_TO_MENU，窗口关闭仍是 QUIT。
++    G2-3 新增 H 键 → RESET_HIGHSCORE；G2-7 新增 Backspace → BACK_TO_MENU。
++    **P1-2 修订**：ESC 与 Q 在 `_map_event` 层都返回 QUIT——ESC 在 GAME_OVER
++    态由 `_drain_events` 覆盖为 BACK_TO_MENU（`ev.type != pygame.QUIT` 守卫保证窗口关闭
++    仍 QUIT 直通）；Q（用户意图退出）保持 QUIT 直通主循环 break。UT 区分：
++    `event.key == K_q` 走 `_QUIT_KEYS[0]`，`event.key == K_ESCAPE` 走 `_QUIT_KEYS[1]`。
++    所有常量走 `_pygame_attr`（P2-1）。
+     """
+-    if event.type == pygame.QUIT:
++    QUIT_TYPE = _pygame_attr("QUIT")
++    KEYDOWN_TYPE = _pygame_attr("KEYDOWN")
+… omitted 48 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -1293,7 +1293,7 @@
+ 
+ ### 6.1 测试组织（见 §4.1 文件树）
+ 
+-### 6.2 桩与夹具（conftest.py，G2 增量）
++### 6.2 桩与夹具（conftest.py，G2 增量 + **P1-3 fixture 注入顺序** + **P2-1 fake_pygame 补 input 模块替换**）
+ 
+ ```python
+ # conftest.py — iter-1 fixture + G2 新增
+@@ -1305,7 +1305,11 @@
+ 
+ @pytest.fixture
+ def fake_pygame(monkeypatch):
+-    """替换 game_app.app + game_app.menu + game_app.storage 内部的 pygame 引用。"""
++    """替换 game_app.app + game_app.menu + game_app.storage + **game_app.input**（P2-1）内部的 pygame 引用。
++
++    **P2-1 修订**：iter-1 conftest 只替换 game_app.app + game_app.menu；iter-2 game_app.input
++    同样依赖 `_pygame_attr`（沿用 iter-1 模式），需同时 monkeypatch input 模块的 pygame 引用。
++    """
+     fake = MagicMock()
+     fake.error = RuntimeError
+     fake.QUIT = 256
+@@ -1331,8 +1335,10 @@
+     fake.key.get_focused.return_value = True                          # G2-4 默认聚焦
+     monkeypatch.setitem(sys.modules, "pygame", fake)
+     from game_app import app as app_module, menu as menu_module
++    from game_app import input as input_module                          # P2-1 新增
+     monkeypatch.setattr(app_module, "pygame", fake)
+     monkeypatch.setattr(menu_module, "pygame", fake)
++    monkeypatch.setattr(input_module, "pygame", fake)                  # P2-1 新增
+     return fake
+ 
+ 
+@@ -1347,43 +1353,65 @@
+ 
+ 
+ @pytest.fixture
+-def app(fake_pygame, fake_storage, monkeypatch):
+-    """iter-1 沿用 + G2-2 fake_storage 注入。"""
++def app(fake_pygame, fake_storage):
++    """iter-1 沿用 + G2-2 fake_storage 注入（**P1-3 修订**：注入顺序在 _init_pygame 之后）。
++
++    **P1-3 修订**：`_init_pygame()` 内 `self._storage = create_storage()` 无条件覆盖 fixture 刚
++    注入的 fake_storage——会污染开发机真实用户目录。本 fixture 在 `_init_pygame()` 之后注入，
++    并配合 §4.7 `_init_pygame` 的 `if self._storage is None: ...` 守卫（已注入则跳过 create_storage）。
++    """
+     from game_app import App
+     a = App()
+-    # G2-2：直接注入 fake_storage，跳过 _init_pygame 内 create_storage()
+-    a._storage = fake_storage
++    a._init_pygame()                                          # P1-3：先调 _init_pygame（此时 _storage=None→create_storage）
++    a._storage = fake_storage                                  # P1-3：之后注入 fake（避免 create_storage 覆盖）
+     a._high_score = fake_storage.load.return_value
+     return a
+ 
+ 
+ @pytest.fixture
+ def app_in_playing(fake_pygame, fake_storage):
+-    """iter-1 沿用 + G2 fake_storage 注入。"""
++    """iter-1 沿用 + G2 fake_storage 注入（**P1-3**）。"""
+     from game_app import App
+     from game_core import Difficulty
+     a = App()
++    a._init_pygame()                                          # P1-3
++    a._storage = fake_storage                                  # P1-3
++    a._high_score = fake_storage.load.return_value
++    a._difficulty = Difficulty.HARD
++    a._new_game(Difficulty.HARD)
++    return a
++
++
++@pytest.fixture
++def app_in_paused(fake_pygame, fake_storage):
++    """G2-1 新增：PLAYING 态触发 toggle_pause 后进入 PAUSED（**P0-1 屏态同步方案 A 验证**）。"""
++    from game_app import App, InputAction, AppScreen
++    from game_core import Difficulty
++    a = App()
++    a._init_pygame()                                          # P1-3
++    a._storage = fake_storage                                  # P1-3
+… omitted 50 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -1449,17 +1449,18 @@
+ - **UT-24 修订（G2-R-N4）**：断言 `_build_hud(snap).high_score == 0`（公开字段名，非 `_high_score`）。
+ - **UT-33 修订（G2-R-N1）**：`App(AppConfig(fps_cap=0))` 抛 `ConfigError` → `main()` 返 1。
+ 
+-#### G2-1 新增（PAUSED 状态机）
++#### G2-1 新增（PAUSED 状态机 + **P0-1 方案 A 单点落地**）
+ 
+ | # | 场景 | 断言 |
+ |---|------|------|
+-| P-1 | PLAYING→PAUSED（P 键） | `_dispatch_playing(TOGGLE_PAUSE)` → `screen == PAUSED`（INV-11）+ `game_state.status == PAUSED` |
+-| P-2 | PAUSED→RUN（P 键） | `app_in_paused._dispatch_paused(TOGGLE_PAUSE)` → `screen == PLAYING`（INV-11）+ `game_state.status == RUN` |
++| P-1 | PLAYING→PAUSED（P 键） | `app_in_playing._dispatch_playing(TOGGLE_PAUSE)` → `screen == PAUSED`（INV-11 方案 A 同步切屏） + `game_state.status == PAUSED` |
++| P-2 | PAUSED→RUN（P 键） | `app_in_paused._dispatch_paused(TOGGLE_PAUSE)` → `screen == PLAYING`（INV-11 方案 A 同步切屏） + `game_state.status == RUN` |
+ | P-3 | PAUSED 态 `_tick` 不进入 | 主循环判断 `screen == PAUSED` → 跳过 `_tick` 调用（spy 验证 `_tick` 调用次数 = 0） |
+ | P-4 | PAUSED 态 `_dispatch_paused` 忽略 MOVE_* | `_dispatch_paused(MOVE_UP)` → `game_state.pending_direction` 不变（由 core iter-2 静默忽略保证） |
+-| P-5 | OVER 态调 toggle_pause 抛 InvalidStateError | `app_in_game_over._dispatch_playing(TOGGLE_PAUSE)`（若 dispatch 到 playing）→ `pytest.raises(InvalidStateError)`（R3-9 不包装） |
+-| P-6 | PAUSED→RUN 后 pending_direction 清空（INV-8） | toggle_pause 前后 pending_direction 由 None → "some" → None（依赖 core iter-2 行为） |
++| **P-5**（**P2-2 修订**） | OVER 态调 `toggle_pause` 抛 InvalidStateError | **直接 `pytest.raises(InvalidStateError)` 调 `app_in_game_over.game_state.toggle_pause()`**（先手动把 status 置 OVER——`app_in_game_over` fixture 见 §6.2）；不再走 dispatch 路径（app 层 GAME_OVER 态 TOGGLE_PAUSE 不进 `_dispatch_playing`） |
++| **P-6**（**P2-3 修订**） | PAUSED→RUN 后 pending_direction 清空（INV-8） | 前置步骤：`app_in_playing._dispatch_playing(MOVE_RIGHT)` 设置 pending → `_dispatch_playing(TOGGLE_PAUSE)` 进 PAUSED（screen=PAUSED）→ `_dispatch_paused(TOGGLE_PAUSE)` 回 RUN；断言 `pending_direction == None`（core iter-2 行为） |
+ | P-7 | `_render` PAUSED 路径 | `app_in_paused._render()` → spy `renderer.render` 调用 1 次 + spy `menu.draw_pause_overlay` 调用 1 次 |
++| **P-8**（**P0-1 新增**） | **方案 A 同步切屏不依赖 _tick** | spy `_tick` 在 PAUSED 态不调用（已在 P-3）；但**额外**断言 `_tick` 内**不**存在 `elif new_status == PAUSED` 分支（AST/源码检查：`inspect.getsource(app._tick)` 不含 `GameStatus.PAUSED`）—— 防止 FO 后续误把 elif 加回 |
+ 
+ #### G2-2 新增（HighScoreStore 接入）
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -1477,13 +1477,13 @@
+ | S-9 | storage.load 损坏文件返 0 | 用 `app_with_storage(tmp_path)` 写损坏 JSON → `app._high_score == 0`（依赖 platform-storage 行为） |
+ | S-10 | `_init_pygame` 替代路径用 `create_storage(path=tmp_path)` | UT 验证 `app_with_storage` fixture 可工作 |
+ 
+-#### G2-3 新增（得分事件自动写入）
++#### G2-3 新增（得分事件自动写入 + **P0-2 INV-13 同步实例字段**）
+ 
+ | # | 场景 | 断言 |
+ |---|------|------|
+-| SC-1 | 吃食触发 callback | fake GameState 注入 `step()` 返回 `score=10` 的新对象 + `_score_callback=app 内 callback` → step 后 fake_storage.save(max(10, load())) 调用 1 次 |
+-| SC-2 | `_high_score` 同步更新 | SC-1 后 `app._high_score == 10`（INV-13） |
+-| SC-3 | 重开新局重新注册 callback | `_new_game` 第二次 → 新 callback 持有新闭包变量；旧 game_state 的 callback 不影响新 game_state |
++| **SC-1**（**P0-2 修订**） | 吃食触发 callback 同步 `_high_score` | fake GameState 注入 `step()` 返回 `score=10` 的新对象 + `_score_callback=app 内 callback` → step 后 `fake_storage.save(max(10, load()))` 调用 1 次 + **`app._high_score == 10`（INV-13 同步实例字段）** |
++| **SC-2**（**P0-2 修订**） | `_high_score` 同步更新（同 SC-1 合并） | SC-1 后 `app._high_score == 10`（INV-13 直接写实例字段，不再走 nonlocal 容器） |
++| SC-3 | 重开新局重新注册 callback | `_new_game` 第二次 → 新 callback 持有 `self` 引用（直接写 `self._high_score`）；旧 game_state 的 callback 不影响新 game_state |
+ 
+ #### G2-4 新增（窗口失焦自动暂停）
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -1514,14 +1514,15 @@
+ | H-3 | `draw_game_over(high_score=100)` 绘制最高分行 | spy 含 "最高分：100" |
+ | H-4 | `draw_game_over(high_score=0)` 不绘制最高分行 | spy 不含 "最高分" |
+ 
+-#### G2-7 新增（返回菜单）
++#### G2-7 新增（返回菜单 + **P1-2 ESC/Q 语义分离**）
+ 
+ | # | 场景 | 断言 |
+ |---|------|------|
+-| B-1 | GAME_OVER 态 ESC → BACK_TO_MENU | `_drain_events` 返 [BACK_TO_MENU]（ESC 在 GAME_OVER 态被覆盖）→ `_dispatch_over(BACK_TO_MENU)` → `screen == MENU` + `game_state is None`（INV-7） |
+-| B-2 | GAME_OVER 态 Backspace → BACK_TO_MENU | `_map_event(K_BACKSPACE)` → BACK_TO_MENU → 同上 |
+-| B-3 | GAME_OVER 态 pygame.QUIT 仍为 QUIT（不被覆盖） | `pygame.event.Event(pygame.QUIT)` → `pygame.QUIT` 类型 action 仍是 QUIT（不覆盖为主循环 break 用） |
+-| B-4 | MENU 态 ESC 仍为 QUIT | `_drain_events` 在 MENU 态返 [QUIT] → 主循环 break（沿用 iter-1） |
++| **B-1**（**P1-2 修订**） | GAME_OVER 态 ESC → BACK_TO_MENU | `app_in_game_over` + fake_pygame 注入 `event = Event(KEYDOWN, key=K_ESCAPE)` → 调 `app._drain_events()` → actions 含 `[BACK_TO_MENU]`（_drain_events 屏态覆盖）→ `_dispatch_over(BACK_TO_MENU)` → `screen == MENU` + `game_state is None`（INV-7）；**不**含 QUIT |
++| **B-2** | GAME_OVER 态 Backspace → BACK_TO_MENU | `app_in_game_over` + `event = Event(KEYDOWN, key=K_BACKSPACE)` → `_map_event` 直接返 BACK_TO_MENU（P2-1 _pygame_attr 模式）→ 同上 |
++| **B-3** | GAME_OVER 态 pygame.QUIT 仍为 QUIT（不被覆盖） | `pygame.event.Event(pygame.QUIT)` → `_map_event` 返 QUIT（event.type==QUIT 守卫）→ `_drain_events` 在 GAME_OVER 态**不**覆盖（`ev.type == pygame.QUIT` 守卫）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU |
++| **B-4**（**P1-2 修订**） | GAME_OVER 态 Q 键 → QUIT 直通 | `app_in_game_over` + `event = Event(KEYDOWN, key=K_q)` → `_map_event` 返 QUIT（K_q 直通）→ `_drain_events` GAME_OVER 态**不**覆盖（仅 ESC 键被覆盖，Q 仍 QUIT）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU；主循环 break 退出 |
++| B-5 | MENU 态 ESC 仍为 QUIT | `app`（MENU 态）+ fake_pygame 注入 KEYDOWN K_ESCAPE → `_drain_events` 返 [QUIT]（MENU 态无 GAME_OVER 覆盖）→ 主循环 break（沿用 iter-1） |
+ 
+ #### G2-R-N1 修订（__post_init__ 校验）
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -1102,20 +1102,30 @@
+ 
+ 
+ # menu.py — G2-5 新增 draw_pause_overlay；G2-6 加 high_score 形参
++# **P2-6 修订**：移除 `big_font = ... if False else body_font` 废代码；统一使用 body_font（22px）
++# 渲染 "PAUSED" 大字与 "按 P 继续" 小字（FO 落地时如需视觉强化 "PAUSED" 大字，建议新增 32px
++# CJK 字体或调 body_font 字号；本设计不强制大字号，避免实现复杂度超 iter-2 范围）
++PAUSE_OVERLAY_ALPHA = 128                                              # G2-5 半透明常量（§4.1 声明）
++PAUSE_OVERLAY_COLOR = (0, 0, 0, PAUSE_OVERLAY_ALPHA)
++PAUSE_OVERLAY_TITLE_COLOR = (255, 210, 90)
++PAUSE_OVERLAY_HINT_COLOR = (220, 220, 230)
++
++
+ def draw_pause_overlay(surface: pygame.Surface, body_font: pygame.font.Font) -> None:
+-    """PAUSED 遮罩自绘。surface 来自 pygame.display.get_surface()。"""
+-    # 1. 半透明矩形覆盖全屏
++    """PAUSED 遮罩自绘。surface 来自 pygame.display.get_surface()。R3-2 沿用。
++    **P2-6 修订**：移除原废代码 `big_font = ... if False else body_font`，统一 body_font（22px）渲染；
++    遮罩色值走 PAUSE_OVERLAY_ALPHA/PAUSE_OVERLAY_COLOR 常量（不再硬编码 128）。
++    """
++    # 1. 半透明矩形覆盖全屏（走 PAUSE_OVERLAY_COLOR 常量）
+     overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+-    overlay.fill((0, 0, 0, 128))                                      # G2-5 PAUSE_OVERLAY_ALPHA
++    overlay.fill(PAUSE_OVERLAY_COLOR)
+     surface.blit(overlay, (0, 0))
+-    # 2. 居中绘制 "PAUSED" 大字
+-    big_font = pygame.font.Font(body_font.get_bold() if hasattr(body_font, 'get_bold') else None, 48) \
+-               if False else body_font                                  # 直接用 body_font 加大字号不可行，用 32px 替代
+-    title = body_font.render("PAUSED", True, (255, 210, 90))
++    # 2. 居中绘制 "PAUSED" 字（body_font 22px 统一渲染）
++    title = body_font.render("PAUSED", True, PAUSE_OVERLAY_TITLE_COLOR)
+     surface.blit(title, (surface.get_width() // 2 - title.get_width() // 2,
+                          surface.get_height() // 2 - title.get_height() // 2))
+-    # 3. 居中绘制 "P 继续" 小字
+-    hint = body_font.render("按 P 继续", True, (220, 220, 230))
++    # 3. 居中绘制 "按 P 继续" 小字
++    hint = body_font.render("按 P 继续", True, PAUSE_OVERLAY_HINT_COLOR)
+     surface.blit(hint, (surface.get_width() // 2 - hint.get_width() // 2,
+                         surface.get_height() // 2 + hint.get_height()))
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r1.md
+@@ -1267,7 +1267,7 @@
+ | 场景 | 处理 |
+ |------|------|
+ | 图形环境缺失 | `Renderer.init()` 抛 `RenderError` → `GraphicsUnavailableError` → 退出码 2（G2-R-N1 不变） |
+-| **用户数据目录不可写** | `HighScoreStore.__init__` mkdir 失败 → `StorageError` → 包 `AppError("用户数据目录不可写")` → 退出码 1（G2-2 新增） |
++| **用户数据目录不可写** | `HighScoreStore.__init__` mkdir 失败 → **裸 `OSError`（**P1-1 修订**：platform-storage iter-2 `highscore.py` 实核：mkdir 不包异常，仅 save() 包 StorageError）→ `_init_pygame` 捕获 `(StorageError, OSError)` → 包 `AppError("用户数据目录不可写")` → 退出码 1（G2-2 + P1-1） |
+ | **最高分保存失败** | `score_callback` 内 `storage.save` 抛 `StorageError` → 包 `StorageUnavailableError` → 主循环 except AppError → 退出码 1（G2-3 新增） |
+ | 同一帧多事件 | `_drain_events` 返 list；主循环按序处理；QUIT 优先 break |
+ | 反向输入 | 透传到 `core.set_direction`；core 内静默忽略 |
+
+session_id: 20260814_094041_2b41e4
+API call failed after 3 retries: HTTP 429: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)
+
+session_id: 20260814_095547_3b8f7a
+API call failed after 3 retries: HTTP 429: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -1,8 +1,8 @@
+-# 功能模块设计：game-app（snake-linux v2.0.0 迭代 2）r1（首发，按 iter-1 SE 评审 r3 PASS 修订方向增量）
+-
+-> MDE r1 · 跨迭代复用基线：**迭代 1 设计 `snake-linux/design/game-app/设计-r3.md`（SE 评审 PASS）** + **迭代 1 实际代码 `snake-linux/code/game-app/iter-1/`（it_passed，代码已 R3 全部落实）**
++# 功能模块设计：game-app（snake-linux v2.0.0 迭代 2）r2（修订：回应 SE r1 评审 FAIL 意见）
++
++> MDE r2 · 跨迭代复用基线：迭代 1 设计 `snake-linux/design/game-app/设计-r3.md`（SE 评审 PASS）+ 迭代 1 实际代码 `snake-linux/code/game-app/iter-1/`（it_passed）
+ > 依据：架构设计 `snake-linux/arch/v2.0.0/架构设计.md` §迭代计划迭代 2 + 功能模块分工表（备注"难度选择 UI 已在迭代 1 完成，迭代 2 不重复"）+ 需求规格 `snake-linux/analysis/snake-gui-r1.md`（approved，R-01~R-09 已固化）
+-> SE 评审意见参考：迭代 1 评审 `snake-linux/review/design/game-app/iter-1/snake-linux-game-app-design-iter1-r{1,2,3}.md`（r3 PASS 拍板的修订方向全部沿用）
++> **本轮修订**：回应 SE 评审 `snake-linux/review/design/game-app/iter-2/snake-linux-game-app-design-iter2-r1.md`（FAIL，2026-08-14）—— 详见 §0.0 修订摘要。本版 r2 全文一致性已自检（代码示例 / UT / 不变量三方对齐）。
+ > 依赖模块实际契约（**全部 it_passed，契约已锁定**）：
+ >   - game-core **迭代 2** `code/game-core/iter-2/game_core/`（state.py）—— `GameState(width=, height=, difficulty=, rng=, initial_direction=, score_callback=)` / `set_direction` / `step` / `snapshot` / **`toggle_pause`**（RUN↔PAUSED，OVER 抛 InvalidStateError，PAUSED→RUN 清空 pending_direction）/ **`set_score_callback(cb)`** / `Snapshot.tick_ms = speed_curve(score, difficulty)`
+ >   - gui-renderer **迭代 3** `code/gui-renderer/iter-3/gui_renderer/`（renderer.py）—— `Renderer((W,H), *, skin=None, vsync=True, cell_size, grid_cols, grid_rows, enable_high_dpi=True)` / `init()` / `shutdown()` / **`render(snap, hud, *, interp=None)`**（iterp 非 None 时按 alpha 插值绘制，None=瞬移向后兼容）/ **`set_skin(name)`**（不在 SKIN_REGISTRY 抛 SkinNotFoundError）/ **`handle_resize(w, h)`**（< 最小可玩尺寸抛 RenderError）/ `skin_names()` / `current_skin_name` / `fps_metric()`
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -9,6 +9,36 @@
+ >   - platform-storage **迭代 2** `code/platform-storage/iter-2/platform_storage/`（highscore.py / paths.py）—— `get_user_data_dir() -> Path` / `HighScoreStore(path=None)` / `load() -> int` / `save(score)` / `reset()` / `StorageError`
+ > **目标**：FO 拿到本文即可 TDD 开发；迭代 2 在迭代 1 既有代码上增量修改（**保留 iter-1 全部 R3 修订**，新增 PAUSED 状态机接入 / HighScoreStore 接入 / 失焦暂停 / 最高分重置 / 暂停遮罩）；同时消化 iter-1 r3 SE 评审遗留的 6 项 P2-N1~N6（不阻塞 PASS，FO 落地时一并修）
+ > **关键决策**：迭代 2 **不新建 iter-2 代码目录**——增量改动直接落在 iter-1 源码目录 `snake-linux/code/game-app/iter-1/` 上（同属 v2.0.0 一个发布单元）；**不重写既有文件**，仅修改 `app.py` / `input.py` / `screens.py` / `menu.py` / `__init__.py` 并新增 `storage.py`；迭代 2 测试加在 `tests/test_game_app/test_app_iter2_*.py`
++
++---
++
++## 0.0 本轮修订摘要（回应 SE r1 评审 FAIL，2026-08-14）
++
++SE 评审 r1 在 `snake-linux/review/design/game-app/iter-2/snake-linux-game-app-design-iter2-r1.md` 给出 FAIL：2×P0 内部自相矛盾（代码示例与 UT/不变量声明直接冲突）+ 3×P1（异常类型契约错配 / 键位语义破坏 / fixture 注入失效）+ 7×P2 文档/UT 级问题。**r2 全部消化，逐条落地（与 r1 标注文本一致，但实际代码块已重写对齐）**：
++
++| 评审意见 | r2 修订 | 验证位置 |
++|----------|---------|----------|
++| **P0-1** PAUSED 屏态同步断链 | `_dispatch_playing(TOGGLE_PAUSE/UNFOCUS)` 调 `toggle_pause()` 后**显式** `self.screen = AppScreen.PAUSED`；`_dispatch_paused(TOGGLE_PAUSE)` 调 `toggle_pause()` 后**显式** `self.screen = AppScreen.PLAYING`；`_tick` 内删除 `elif new_status == PAUSED` 死代码（core step 永不返 PAUSED） | §3.4 / §4.4 / §4.5 / §1.4 INV-10/11 / §6.4 UT P-1/P-2/P-3/P-8 |
++| **P0-2** INV-13「回调同步 _high_score」与 §4.6 实现矛盾 | `_new_game` 回调**直接写** `self._high_score = max(self._high_score, s)`，删除 nonlocal `_high` / `_high_ref` dict 容器；§3.4 与 §4.6 合并为一处权威实现（以 §4.6 为基底） | §3.4 / §4.6 / §1.4 INV-13 / §6.4 UT SC-1/SC-2 |
++| **P1-1** mkdir 失败抛 OSError 而非 StorageError | `_init_pygame` 改 `except (StorageError, OSError) as e: raise AppError("用户数据目录不可写") from e`（同时记 platform-storage issue：__init__ mkdir 失败应包 StorageError） | §4.7 / §5.5 / §6.4 UT S-3 |
++| **P1-2** GAME_OVER 态 Q 键被误转 BACK_TO_MENU | `_map_event` ESC 仍返 QUIT（与 Q 同 action）；`_drain_events` GAME_OVER 态 ESC → BACK_TO_MENU（`ev.type != pygame.QUIT` 守卫保留）；Q 始终 QUIT 直通；新增 UT B-1/B-4 区分断言 | §4.3 / §4.4 / §6.4 UT B-1/B-4 |
++| **P1-3** fixture 注入 fake_storage 被覆盖 | `_init_pygame` 改 `if self._storage is None: self._storage = create_storage()`（已注入则跳过）；fixture 在 `_init_pygame()` **之后**注入 fake | §4.7 / §6.2 |
++| **P2-1** input.py 示例破坏 iter-1 `_pygame_attr` 模式 | §4.3 沿用 iter-1 `_pygame_attr(name)` 延迟读取；fake_pygame fixture 补 `input` 模块替换 | §4.3 / §6.2 |
++| **P2-2** UT P-5 引用不存在的 `app_in_game_over` | 新增 `app_in_game_over` fixture（§6.2）；UT P-5 改 `pytest.raises(InvalidStateError)` 调 `app.game_state.toggle_pause()` | §6.2 / §6.4 UT P-5 |
++| **P2-3** UT P-6 序列描述含糊 | 补前置步骤（RUN 态 set_direction → P → P） | §6.4 UT P-6 |
++| **P2-4** main() 捕获 StorageError 多余 | §3.5 公开 API 表删 StorageError 项；§3.4 / §4.2 与 iter-1 main() 对齐 | §3.5 |
++| **P2-5** §3.4 vs §4.6 _new_game 双版本不一致 | 随 P0-2 合并为一处权威实现（以 §4.6 为基底），§3.4 删 _new_game 代码（仅在 docstring 引用 §4.6） | §3.4 / §4.6 |
++| **P2-6** draw_pause_overlay 废代码 + 色值硬编码 | §4.8 删 `big_font = ... if False else body_font`；统一 body_font（22px）渲染；色值走 `PAUSE_OVERLAY_ALPHA` 常量 | §4.8 |
++| **P2-7** assert 风格与 iter-1 不一致 | `# type: ignore[union-attr]` 注释统一替换 `assert game_state is not None`（iter-1 风格） | §4.4 |
++
++**一致性自检结果**（r2 提交前 MDE 自查）：
++
++- §3.4 docstring 描述 ↔ §4.4 实际代码（_dispatch_*/_tick）：一致（屏态同步方案 A）
++- §1.4 不变量 INV-1/10/11 ↔ §4.4/§4.5 代码：不变量由方案 A 单点保证
++- §3.4 _new_game docstring ↔ §4.6 _new_game 代码：合并为一处（§4.6 为权威）
++- §6.4 UT 断言 ↔ §4.4/§4.6 实现：UT P-1/P-2/P-3/P-8 / SC-1/SC-2 与代码语义一致
++- §4.7 _init_pygame ↔ §6.2 fixture：注入顺序 + `if None` 守卫配套
++- §4.3 _map_event ↔ §4.4 _drain_events GAME_OVER 覆盖：ESC/Q 区分语义明确
+ 
+ ---
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -952,7 +952,11 @@
+ 
+ 
+ def _dispatch_playing(self, action: InputAction) -> None:
+-    """PLAYING 态分发。G2-1：TOGGLE_PAUSE 从 hint 占位改为 toggle_pause()；G2-4 加 UNFOCUS。"""
++    """PLAYING 态分发。G2-1：TOGGLE_PAUSE 从 hint 占位改为 toggle_pause()；G2-4 加 UNFOCUS。
++
++    **P0-1 屏态同步方案 A**：TOGGLE_PAUSE / UNFOCUS 调 `toggle_pause()` 后**显式**写
++    `self.screen = AppScreen.PAUSED`（与 §3.4 / §1.4 INV-11 一致；§6.4 UT P-1 验证）。
++    """
+     if action == InputAction.MOVE_UP:
+         self.game_state = self.game_state.set_direction(Direction.UP)
+     elif action == InputAction.MOVE_DOWN:
+@@ -961,20 +965,24 @@
+         self.game_state = self.game_state.set_direction(Direction.LEFT)
+     elif action == InputAction.MOVE_RIGHT:
+         self.game_state = self.game_state.set_direction(Direction.RIGHT)
+-    elif action == InputAction.TOGGLE_PAUSE:                           # G2-1 修订
+-        assert self.game_state is not None
++    elif action == InputAction.TOGGLE_PAUSE:                           # G2-1 修订（P0-1 同步切屏）
+         self.game_state = self.game_state.toggle_pause()               # R3-9 不包装
+-    elif action == InputAction.UNFOCUS:                                # G2-4 新增
+-        assert self.game_state is not None
+-        if self.game_state.status == GameStatus.RUN:
++        self.screen = AppScreen.PAUSED                                 # P0-1 同步切屏（INV-11）
++    elif action == InputAction.UNFOCUS:                                # G2-4 新增（P0-1 同步切屏）
++        if self.game_state.status == GameStatus.RUN:                   # 仅 RUN 态失焦 → 暂停
+             self.game_state = self.game_state.toggle_pause()
++            self.screen = AppScreen.PAUSED                             # P0-1 同步切屏（INV-11）
+ 
+ 
+ def _dispatch_paused(self, action: InputAction) -> None:              # G2-1 新增
+-    """PAUSED 态分发：仅响应 TOGGLE_PAUSE / UNFOCUS（G2-4 失焦再触发不变）。"""
++    """PAUSED 态分发：仅响应 TOGGLE_PAUSE / UNFOCUS（G2-4 失焦再触发不变）。
++
++    **P0-1 屏态同步方案 A**：TOGGLE_PAUSE 调 `toggle_pause()` 后**显式**写
++    `self.screen = AppScreen.PLAYING`（与 §3.4 / §1.4 INV-11 一致；§6.4 UT P-2 验证）。
++    """
+     if action == InputAction.TOGGLE_PAUSE:
+-        assert self.game_state is not None
+         self.game_state = self.game_state.toggle_pause()               # PAUSED→RUN
++        self.screen = AppScreen.PLAYING                                # P0-1 同步切屏（INV-11）
+     elif action == InputAction.UNFOCUS:
+         pass                                                           # PAUSED 态再失焦不变
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -1000,15 +1000,19 @@
+ 
+ ```python
+ def _tick(self, dt_ms: int) -> None:
+-    """PLAYING 态累加节拍。G2-1 PAUSED 不进入此函数（主循环判断）。
+-
+-    循环内逐拍重读 tick_ms（R3-8）；
+-    OVER 自动转 GAME_OVER（G2-1）；
+-    PAUSED 自动转 PAUSED（G2-1 失焦触发 toggle_pause 后 _tick 下一帧到达此处检测）。
+-    """
+-    assert self.screen == AppScreen.PLAYING                            # G2-1 INV-10/11 断言
++    """PLAYING 态累加节拍。G2-1 PAUSED 不进入此函数（主循环判断，见 §4.2）。
++
++    循环内逐拍重读 tick_ms（R3-8）；OVER 自动转 GAME_OVER（G2-1）；
++    **P0-1 屏态同步方案 A 修订**：`_tick` 内**不**做屏态切换——
++    - PAUSED 切屏发生在 `_dispatch_playing(TOGGLE_PAUSE/UNFOCUS)` / `_dispatch_paused(TOGGLE_PAUSE)`
++      调 `toggle_pause()` 后显式 `self.screen = ...`（§4.4 / INV-11）；
++    - core `step()` 在 `status != RUN` 时抛 `InvalidStateError`，**永不返回 PAUSED**，
++      因此本函数不可能看到 `new_status == PAUSED`，原 `elif` 分支已删除（**死代码**）。
++    主循环 INV-10：`screen == PLAYING` 时才调 `_tick`（PAUSED/OVER/MENU/GAME_OVER 均不进入）。
++    """
++    assert self.screen == AppScreen.PLAYING                            # G2-1 INV-10/11 入口断言
+     assert self.game_state is not None
+-    assert self.game_state.status == GameStatus.RUN                    # INV-1
++    assert self.game_state.status == GameStatus.RUN                    # INV-1 入口断言
+     self._tick_accumulator_ms += dt_ms
+     while True:
+         tick_ms = self.game_state.snapshot().tick_ms
+@@ -1018,11 +1022,11 @@
+         self.game_state = self.game_state.step()
+         new_status = self.game_state.status
+         if new_status == GameStatus.OVER:
+-            self.screen = AppScreen.GAME_OVER
++            self.screen = AppScreen.GAME_OVER                          # OVER 自动转 GAME_OVER
+             break
+-        elif new_status == GameStatus.PAUSED:                          # G2-1 失焦→toggle_pause 后到达
+-            self.screen = AppScreen.PAUSED
+-            break
++        # P0-1 修订：原 `elif new_status == GameStatus.PAUSED` 分支已删除（死代码）：
++        # core step() 永不返回 PAUSED（status != RUN 时抛 InvalidStateError），
++        # PAUSED↔PLAYING 切屏由 _dispatch_* 内显式赋值（INV-11 方案 A，§4.4）
+ ```
+ 
+ ### 4.6 最高分接入（G2-3 score_callback 注册）
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -1029,37 +1029,42 @@
+         # PAUSED↔PLAYING 切屏由 _dispatch_* 内显式赋值（INV-11 方案 A，§4.4）
+ ```
+ 
+-### 4.6 最高分接入（G2-3 score_callback 注册）
++### 4.6 最高分接入（G2-3 score_callback 注册；**P0-2 权威实现**）
++
++> **§3.4 与 §4.6 合并为一处权威实现**（P0-2 / P2-5 修订）：§3.4 仅描述 _new_game 在
++> 主循环中的调用流程与 docstring 引用，本节为唯一代码实现位置。FO 仅需按 §4.6 实现，
++> 无需参考 §3.4 重复实现。
+ 
+ ```python
+ def _new_game(self, difficulty: Difficulty) -> None:
+     """game_state = GameState(width=20, height=15, difficulty=..., rng=Random(),
+-                             score_callback=<绑定 self._storage>);
+-    screen=PLAYING。G2-3 注册 score_callback 同步写入 _storage。
+-    """
+-    cb = None
+-    if self._storage is not None:
+-        # 闭包变量：local 引用避免 self 捕获（更易 UT）
++                             score_callback=<绑定 self._storage>); screen=PLAYING。
++
++    **G2-3 + P0-2 权威实现**（仅本节，§3.4 不重复）：
++    1. 若 `_storage is None`（UT 未注入）：`score_callback=None`（core 不触发）。
++    2. 若 `_storage is not None`（生产环境）：注册回调 `lambda s: self._on_score(s)`，
++       `_on_score` 内**直接写**（P0-2）：
++       - `self._high_score = max(self._high_score, s)`  ← INV-13 同步实例字段
++         （HUD / draw_game_over 每帧读 self._high_score 立即可见）
++       - `self._storage.save(max(s, self._storage.load()))` ← 落盘
++       - 若 storage.save 抛 StorageError → 包 StorageUnavailableError(AppError)
++    3. `game_state` 用全关键字构造（game-core iter-2 锁定签名）。
++    4. 重置 `_tick_accumulator_ms=0` + `screen=PLAYING`。
++    """
++    if self._storage is None:
++        cb = None
++    else:
+         _storage = self._storage
+-        _high_ref = {"v": self._high_score}                           # 用 dict 装可变容器
+-
+         def cb(score: int) -> None:
+-            # G2-3：core 吃食时回调；INV-13 同步更新 _high_score
+             try:
+-                new_val = max(score, _storage.load())
+-                _storage.save(new_val)
+-                _high_ref["v"] = max(_high_ref["v"], new_val)
++                self._high_score = max(self._high_score, score)        # INV-13 P0-2 直接写实例字段
++                _storage.save(max(score, _storage.load()))             # 落盘
+             except StorageError as e:
+-                # G2-2：包装为 AppError 子类；主循环 except AppError 兜底退出码 1
+                 raise StorageUnavailableError(f"写入最高分失败: {e}") from e
+-
+     self.game_state = GameState(
+         width=20, height=15, difficulty=difficulty,
+         rng=random.Random(), score_callback=cb,
+     )
+-    # 同步更新 _high_score（即使 cb 未触发，新一局仍展示当前最高分）
+-    if self._storage is not None:
+-        self._high_score = self._storage.load()                       # INV-6/13
+     self._tick_accumulator_ms = 0
+     self.screen = AppScreen.PLAYING
+ ```
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -813,9 +813,12 @@
+ 
+ _PAUSE_KEY = "K_p"
+ _RESTART_KEY = "K_r"
+-_QUIT_KEYS = ("K_q", "K_ESCAPE")                            # P1-2：ESC 与 Q 在 _map_event 同返 QUIT
++# **P1-2 修订**：ESC 在 _map_event 层返回独立 action ESCAPE（与 Q 的 QUIT 区分），
++# 由 _drain_events GAME_OVER 态覆盖 ESCAPE → BACK_TO_MENU；Q 始终返 QUIT 直通主循环 break。
++_QUIT_KEY = "K_q"
++_ESCAPE_KEY = "K_ESCAPE"
+ _RESET_HIGHSCORE_KEY = "K_h"                                # G2-3 iter-2 新增
+-_BACK_TO_MENU_KEYS = ("K_ESCAPE", "K_BACKSPACE")            # G2-7 iter-2 新增（仅 K_BACKSPACE 在 _map_event 层直转；K_ESCAPE 仍返 QUIT 由 _drain_events 覆盖）
++_BACK_TO_MENU_KEY = "K_BACKSPACE"                           # G2-7 iter-2 新增（Backspace 直返 BACK_TO_MENU）
+ 
+ # R3-1 沿用：MENU 态保留键（G2-7 扩展加 BACK_TO_MENU 不在 MENU 保留——MENU 态 ESC 走 QUIT 优先）
+ _MENU_RESERVED_ACTIONS = frozenset({
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -331,7 +331,8 @@
+     SELECT_MEDIUM = "sel_med"
+     SELECT_HARD = "sel_hard"
+     RESET_HIGHSCORE = "reset_hs"    # G2-3 iter-2 新增：H 键 → MENU 态 dispatch
+-    BACK_TO_MENU = "back"           # G2-7 iter-2 新增：ESC / Backspace → GAME_OVER 态 dispatch
++    BACK_TO_MENU = "back"           # G2-7 iter-2 新增：Backspace → GAME_OVER 态 dispatch
++    ESCAPE = "escape"               # **P1-2 iter-2 新增**：ESC 键独立 action（与 Q 区分）
+     UNFOCUS = "unfocus"             # G2-4 iter-2 新增：内部信号，不来自 _map_event
+ ```
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -841,11 +841,9 @@
+ def _map_event(event: pygame.event.Event) -> Optional[InputAction]:
+     """单键归一化；不感知屏态；返回 None 表示未映射（由 _drain_events 屏态兜底处理）。
+ 
+-    G2-3 新增 H 键 → RESET_HIGHSCORE；G2-7 新增 Backspace → BACK_TO_MENU。
+-    **P1-2 修订**：ESC 与 Q 在 `_map_event` 层都返回 QUIT——ESC 在 GAME_OVER
+-    态由 `_drain_events` 覆盖为 BACK_TO_MENU（`ev.type != pygame.QUIT` 守卫保证窗口关闭
+-    仍 QUIT 直通）；Q（用户意图退出）保持 QUIT 直通主循环 break。UT 区分：
+-    `event.key == K_q` 走 `_QUIT_KEYS[0]`，`event.key == K_ESCAPE` 走 `_QUIT_KEYS[1]`。
++    G2-3 新增 H 键 → RESET_HIGHSCORE；G2-7 新增 Backspace → BACK_TO_MENU；
++    **P1-2 修订**：ESC 在 `_map_event` 层返回**独立 action ESCAPE**（与 Q 的 QUIT 区分），
++    Q 始终 QUIT 直通主循环 break；ESC 由 `_drain_events` GAME_OVER 态覆盖为 BACK_TO_MENU。
+     所有常量走 `_pygame_attr`（P2-1）。
+     """
+     QUIT_TYPE = _pygame_attr("QUIT")
+@@ -861,8 +859,8 @@
+     k = event.key
+     if k == K_q:                                                # P1-2：Q 键 → QUIT（主循环 break）
+         return InputAction.QUIT
+-    if k == K_ESCAPE:                                           # P1-2：ESC 键 → QUIT（GAME_OVER 由 _drain_events 覆盖）
+-        return InputAction.QUIT
++    if k == K_ESCAPE:                                           # P1-2：ESC 键 → ESCAPE（GAME_OVER 由 _drain_events 覆盖为 BACK_TO_MENU）
++        return InputAction.ESCAPE
+     if k == K_BACKSPACE:                                        # G2-7：Backspace 直接 → BACK_TO_MENU（无需屏态覆盖）
+         return InputAction.BACK_TO_MENU
+     if k == _pygame_attr("K_p"):
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -890,7 +890,7 @@
+ 
+     R3-1 屏态兜底（不变）：MENU 屏态下所有 action（除保留键外）→ START。
+     G2-4 新增：screen==PLAYING 时 pygame.key.get_focused() == False → 追加 UNFOCUS。
+-    G2-7 新增：screen==GAME_OVER 时 ESC 映射的 QUIT → BACK_TO_MENU（MENU 态 ESC 保持 QUIT）。
++    **P1-2 修订**：screen==GAME_OVER 时 ESCAPE action → BACK_TO_MENU（仅 ESC 转，Q 保持 QUIT 直通 break）。
+     """
+     raw = pygame.event.get()
+     actions: List[InputAction] = []
+@@ -902,10 +902,8 @@
+             elif action not in _MENU_RESERVED_ACTIONS:
+                 action = InputAction.START
+         elif self.screen == AppScreen.GAME_OVER:                       # G2-7 新增
+-            if action == InputAction.QUIT:                             # ESC 在 GAME_OVER 态转 BACK_TO_MENU
+-                # 注意：pygame.QUIT（窗口关闭）仍保留 QUIT 优先级，不被覆盖
+-                if ev.type != pygame.QUIT:
+-                    action = InputAction.BACK_TO_MENU
++            if action == InputAction.ESCAPE:                           # P1-2：ESC 转 BACK_TO_MENU（不影响 Q）
++                action = InputAction.BACK_TO_MENU
+         if action is not None:
+             actions.append(action)
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -821,20 +821,24 @@
+ _RESET_HIGHSCORE_KEY = "K_h"                                # G2-3 iter-2 新增
+ _BACK_TO_MENU_KEY = "K_BACKSPACE"                           # G2-7 iter-2 新增（Backspace 直返 BACK_TO_MENU）
+ 
+-# R3-1 沿用：MENU 态保留键（G2-7 扩展加 BACK_TO_MENU 不在 MENU 保留——MENU 态 ESC 走 QUIT 优先）
++# R3-1 沿用：MENU 态保留键（G2-7 扩展加 BACK_TO_MENU 不在 MENU 保留——MENU 态 ESC 走 _drain_events 转 START）
++# **P1-2 修订**：ESC 在 _map_event 层返 ESCAPE（独立 action）；MENU 态下 ESCAPE 走 _drain_events 兜底转 START
++# （保留键集合不含 ESCAPE，MENU 态按任意键开始；GAME_OVER 态下 ESCAPE 由屏态覆盖转 BACK_TO_MENU）。
+ _MENU_RESERVED_ACTIONS = frozenset({
+     InputAction.QUIT,
++    InputAction.ESCAPE,                                            # P1-2：MENU 态下 ESCAPE 与 QUIT 同等保留（MENU 态按 ESC 视为开始）
+     InputAction.SELECT_EASY, InputAction.SELECT_MEDIUM, InputAction.SELECT_HARD,
+     InputAction.TOGGLE_PAUSE,                                         # G2-1 仍保留（P 键 MENU 态透传，不当 START）
+     InputAction.RESET_HIGHSCORE,                                      # G2-3 新增
+     InputAction.RESTART,                                              # R 键 MENU 态透传
+ })
+ 
+-# GAME_OVER 态保留键（G2-7 新增）：QUIT / RESTART / BACK_TO_MENU
++# GAME_OVER 态保留键（G2-7 新增）：QUIT / RESTART / BACK_TO_MENU / ESCAPE（**P1-2** 修订后：ESCAPE 在 GAME_OVER 走屏态覆盖）
+ _GAME_OVER_RESERVED_ACTIONS = frozenset({
+     InputAction.QUIT,
+     InputAction.RESTART,
+     InputAction.BACK_TO_MENU,
++    InputAction.ESCAPE,                                             # P1-2：GAME_OVER 态 ESC 转 BACK_TO_MENU，Q 仍 QUIT
+ })
+ 
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -21,7 +21,7 @@
+ | **P0-1** PAUSED 屏态同步断链 | `_dispatch_playing(TOGGLE_PAUSE/UNFOCUS)` 调 `toggle_pause()` 后**显式** `self.screen = AppScreen.PAUSED`；`_dispatch_paused(TOGGLE_PAUSE)` 调 `toggle_pause()` 后**显式** `self.screen = AppScreen.PLAYING`；`_tick` 内删除 `elif new_status == PAUSED` 死代码（core step 永不返 PAUSED） | §3.4 / §4.4 / §4.5 / §1.4 INV-10/11 / §6.4 UT P-1/P-2/P-3/P-8 |
+ | **P0-2** INV-13「回调同步 _high_score」与 §4.6 实现矛盾 | `_new_game` 回调**直接写** `self._high_score = max(self._high_score, s)`，删除 nonlocal `_high` / `_high_ref` dict 容器；§3.4 与 §4.6 合并为一处权威实现（以 §4.6 为基底） | §3.4 / §4.6 / §1.4 INV-13 / §6.4 UT SC-1/SC-2 |
+ | **P1-1** mkdir 失败抛 OSError 而非 StorageError | `_init_pygame` 改 `except (StorageError, OSError) as e: raise AppError("用户数据目录不可写") from e`（同时记 platform-storage issue：__init__ mkdir 失败应包 StorageError） | §4.7 / §5.5 / §6.4 UT S-3 |
+-| **P1-2** GAME_OVER 态 Q 键被误转 BACK_TO_MENU | `_map_event` ESC 仍返 QUIT（与 Q 同 action）；`_drain_events` GAME_OVER 态 ESC → BACK_TO_MENU（`ev.type != pygame.QUIT` 守卫保留）；Q 始终 QUIT 直通；新增 UT B-1/B-4 区分断言 | §4.3 / §4.4 / §6.4 UT B-1/B-4 |
++| **P1-2** GAME_OVER 态 Q 键被误转 BACK_TO_MENU | `_map_event` ESC 返**独立 action ESCAPE**（与 Q 的 QUIT 区分）；`_drain_events` GAME_OVER 态 ESCAPE → BACK_TO_MENU；Q 始终 QUIT 直通；新增 UT B-1/B-4 区分断言 | §1.1 / §3.3 / §4.3 / §4.4 / §6.4 UT B-1/B-4 |
+ | **P1-3** fixture 注入 fake_storage 被覆盖 | `_init_pygame` 改 `if self._storage is None: self._storage = create_storage()`（已注入则跳过）；fixture 在 `_init_pygame()` **之后**注入 fake | §4.7 / §6.2 |
+ | **P2-1** input.py 示例破坏 iter-1 `_pygame_attr` 模式 | §4.3 沿用 iter-1 `_pygame_attr(name)` 延迟读取；fake_pygame fixture 补 `input` 模块替换 | §4.3 / §6.2 |
+ | **P2-2** UT P-5 引用不存在的 `app_in_game_over` | 新增 `app_in_game_over` fixture（§6.2）；UT P-5 改 `pytest.raises(InvalidStateError)` 调 `app.game_state.toggle_pause()` | §6.2 / §6.4 UT P-5 |
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -143,7 +143,7 @@
+ | 类型 | 字段 | 说明 |
+ |------|------|------|
+ | `AppScreen`（Enum） | `MENU` / `PLAYING` / **`PAUSED`** / `GAME_OVER` | app 顶层界面状态机；iter-2 加 `PAUSED` 态；iter-3/4 不再加 |
+-| `InputAction`（Enum） | `QUIT` / `START` / `MOVE_UP/DOWN/LEFT/RIGHT` / `TOGGLE_PAUSE` / `RESTART` / `SELECT_EASY/MEDIUM/HARD` / **`RESET_HIGHSCORE`** / **`BACK_TO_MENU`** / **`UNFOCUS`**（内部信号） | iter-2 新增 3 个；`UNFOCUS` 不来自 `_map_event`，仅主循环内检测到失焦时入 actions |
++| `InputAction`（Enum） | `QUIT` / `START` / `MOVE_UP/DOWN/LEFT/RIGHT` / `TOGGLE_PAUSE` / `RESTART` / `SELECT_EASY/MEDIUM/HARD` / **`RESET_HIGHSCORE`** / **`BACK_TO_MENU`** / **`ESCAPE`**（**P1-2 iter-2 新增**：ESC 独立 action，与 Q 区分）/ **`UNFOCUS`**（内部信号） | iter-2 新增 4 个；`UNFOCUS` 不来自 `_map_event`，仅主循环内检测到失焦时入 actions |
+ 
+ > **G2-7 备注**：`BACK_TO_MENU` 在 GAME_OVER 态触发；`RESET_HIGHSCORE` 在 MENU 态触发（H 键）；`_MENU_RESERVED_ACTIONS` 需同步扩展（见 §4.4）；`UNFOCUS` 不进 `_MENU_RESERVED_ACTIONS`（仅主循环内部产生，不经 `_drain_events`）。
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -54,7 +54,7 @@
+ | **G2-4** | 应实现 | **窗口失焦自动暂停**：`_init_pygame` 后主循环每帧轮询 `pygame.key.get_focused()`；`False` 且当前 screen==PLAYING → 自动 `game_state.toggle_pause()` 并 screen=PAUSED；`True` 不自动恢复（避免误触，按 P 才继续——避免聚焦切换闪烁）；新增 `InputAction.UNFOCUS`（内部信号，不来自 _map_event；只在主循环内检测到失焦时入 actions 列表）；UT 覆盖：失焦 PLAYING→PAUSED 自动转移、已 PAUSED 再失焦不变、聚焦恢复不自动恢复 | §4.2 §4.4 §5.5 §6.4 |
+ | **G2-5** | 应实现 | **暂停遮罩**：`_render` PAUSED 路径在 PLAYING 渲染之后叠加半透明遮罩（app 自绘，**不**依赖 gui-renderer）；新增 `menu.draw_pause_overlay(surface, body_font)`（surface 来自 `pygame.display.get_surface()`，沿用 R3-2 不读 `_screen`）；遮罩 = `(0,0,0,128)` 半透明矩形 + 居中文字 "PAUSED — P 继续"（中文走 CJK 字体回退链 R3-12）；PLAYING→PAUSED 切换帧已渲染一次，PAUSED→RUN 切回 PLAYING 时遮罩不再绘制 | §3.7 §4.8 §6.4 |
+ | **G2-6** | 应实现 | **最高分展示**：`draw_menu` / `draw_game_over`（app 自绘）增加"最高分：xxx"行（仅当 `_high_score > 0` 时显示，避免"最高分：0"误导）；数字从 `app._high_score` 传入（**形参收窄沿用 R3-2**：新增 `high_score: int = 0` 参数，不读 app 私有）；HUD `_build_hud` 的 `high_score=self._high_score` 不变（迭代 1 已接 `self._high_score` 字段，仅替换数据源） | §3.7 §4.8 §6.4 |
+-| **G2-7** | 应实现 | **"返回菜单"路径**：GAME_OVER 态新增 `InputAction.BACK_TO_MENU`（ESC / Backspace 键）→ `self.screen = AppScreen.MENU; self.game_state = None`（重置 INV-7 保护）；`_dispatch_over` 加该分支；MENU 态进 PLAYING 重置所有 game_state 相关字段 | §1.1 §1.3 §3.4 §4.4 §6.4 |
++| **G2-7** | 应实现 | **"返回菜单"路径**：GAME_OVER 态新增 `InputAction.BACK_TO_MENU`（**P1-2 iter-2 新增 Backspace 键 → BACK_TO_MENU**）→ `self.screen = AppScreen.MENU; self.game_state = None`（重置 INV-7 保护）；`_dispatch_over` 加该分支；MENU 态进 PLAYING 重置所有 game_state 相关字段 | §1.1 §1.3 §3.4 §4.4 §6.4 |
+ | **G2-8** | 应实现 | **难度选择 UI 不在迭代 2 重复实现**（R-01 / R2-14 / R3-3：迭代 1 已完成，分工表已备注；iter-2 范围仅承接暂停继续 + 最高分展示重置） | §0 §附录 B |
+ | **G2-9** | 文档 | **新文件组织决策**：迭代 2 **不**新建 `code/game-app/iter-2/` 目录，增量修改直接在 iter-1 源码目录落地（同 v2.0.0 一个发布单元）；新增 `storage.py`（HighScoreStore 包装）；新增 `tests/test_game_app/test_app_iter2_{pause,storage,unfocus,overlay,reset}.py`；`tests/test_game_app/conftest.py` 增加 `storage` fixture（`tmp_path` 注入 HighScoreStore） | §4.1 §6.1 §附录 A |
+ | **G2-10** | 文档 | **依赖版本更新**：依赖 game-core iter-2（`toggle_pause`/`set_score_callback`/`speed_curve`）、gui-renderer iter-3（`set_skin`/`handle_resize`/`render(interp=)`——iter-2 game-app **不调用**这些，预告 iter-3 用）、platform-storage iter-2（`HighScoreStore`——本轮首次导入） | §0 §附录 B |
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -1275,7 +1275,7 @@
+ 10. **renderer.skin 只读**：iter-2 仅 `DEFAULT_SKIN`，**不调** `set_skin`（iter-3 接入）。
+ 11. **失焦检测跨平台行为**：`pygame.key.get_focused()` 在 Linux X11 / Windows / macOS 行为一致（窗口失焦返 False）；Headless 环境抛异常 → 兜底为 True（不自动暂停）；UT 用 fake `pygame.key.get_focused` 注入。
+ 12. **HighScoreStore 跨进程不安全**：内部 RLock 保护单进程并发；多进程启动同用户 → 文件锁缺失（spec 未要求）；**spec 范围**：单机单进程。
+-13. **score_callback 闭包陷阱**：用 `_high_ref = {"v": ...}` dict 装可变容器，避免 Python 闭包 non-local 声明；UT 用 fake storage 时同样可工作。
++13. **score_callback 闭包陷阱（**P0-2 修订**）**：r2 回调内**直接** `self._high_score = max(self._high_score, score)`（写实例字段，无需 nonlocal/容器）；UT 用 fake storage 时同样可工作（fake_storage.save 副作用可验证；self 实例字段天然可断言）。
+ 14. **G2-R-N6**：`App.__init__` 默认参数 `config: AppConfig = AppConfig()` 在 import 期求值；UT 需不同 config 时显式传 `App(AppConfig(fps_cap=30))`。
+ 
+ ---
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -452,10 +452,10 @@
+             pass  # PAUSED 态再失焦不变（G2-4）
+ 
+     def _dispatch_over(self, action: InputAction) -> None:
+-        """GAME_OVER 态分发。G2-7 新增 BACK_TO_MENU 分支（P1-2 修订：ESC 独立 action）。
++        """GAME_OVER 态分发。G2-7 新增 BACK_TO_MENU 分支（**P1-2 修订**：ESC 独立 action）。
+         - RESTART → _new_game
+-        - BACK_TO_MENU（GAME_OVER 态 ESC/Backspace → _drain_events 覆盖产生）→ MENU
+-        - QUIT（仅来自 pygame.QUIT 窗口关闭或 Q 键，未被 GAME_OVER 覆盖）→ 主循环 break
++        - BACK_TO_MENU（GAME_OVER 态 Backspace → _map_event 直转 或 ESCAPE → _drain_events 覆盖）→ MENU
++        - QUIT（来自 pygame.QUIT 窗口关闭或 Q 键，未被 GAME_OVER 覆盖）→ 主循环 break
+         """
+         if action == InputAction.RESTART:
+             self._new_game(self._difficulty)
+@@ -467,33 +467,8 @@
+         """game_state = GameState(width=20, height=15, difficulty=..., rng=Random(),
+                                  score_callback=<绑定 self._storage>); screen=PLAYING。
+ 
+-        **G2-3 + P0-2 权威实现**（§3.4 与 §4.6 合并一处）：
+-        1. 若 `_storage is None`（UT 未注入）：`score_callback=None`（core 不触发）。
+-        2. 若 `_storage is not None`（生产环境）：注册回调 `lambda s: self._on_score(s)`，
+-           `_on_score` 内**直接**：
+-           - `self._high_score = max(self._high_score, s)`  ← **INV-13 同步实例字段**
+-           - `self._storage.save(max(s, self._storage.load()))` ← 落盘
+-           - 若 storage.save 抛 StorageError → 包 `StorageUnavailableError(AppError)`
+-        3. `game_state` 用全关键字构造（game-core iter-2 锁定签名）。
+-        4. 重置 `_tick_accumulator_ms=0` + `screen=PLAYING`。
+-        """
+-        if self._storage is None:
+-            cb = None
+-        else:
+-            _storage = self._storage
+-            def cb(score: int) -> None:
+-                # type: ignore[union-attr]  # _storage 在 _init_pygame 后非 None（INV-12）
+-                try:
+-                    self._high_score = max(self._high_score, score)            # INV-13 P0-2
+-                    _storage.save(max(score, _storage.load()))                 # 落盘
+-                except StorageError as e:
+-                    raise StorageUnavailableError(f"最高分保存失败: {e}") from e
+-        self.game_state = GameState(
+-            width=20, height=15, difficulty=difficulty,
+-            rng=random.Random(), score_callback=cb,
+-        )
+-        self._tick_accumulator_ms = 0
+-        self.screen = AppScreen.PLAYING
++        **P0-2 权威实现**：实现位于 §4.6（§3.4 与 §4.6 合并一处；P2-5），本节 docstring 仅
++        描述调用流程，不重复实现代码。FO 直接按 §4.6 实现即可。
+ 
+     def _tick(self, dt_ms: int) -> None:
+         """PLAYING 态推进节拍。G2-1 PAUSED 态不进入此函数（主循环判断，见 §4.2）。
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -435,7 +435,6 @@
+             self.game_state = self.game_state.toggle_pause()       # R3-9 不包装 InvalidStateError
+             self.screen = AppScreen.PAUSED                         # P0-1 同步切屏（INV-11）
+         elif action == InputAction.UNFOCUS:                         # G2-4 新增（P0-1 同步切屏）
+-            # type: ignore[union-attr]
+             if self.game_state.status == GameStatus.RUN:
+                 self.game_state = self.game_state.toggle_pause()   # 失焦 → 暂停
+                 self.screen = AppScreen.PAUSED                     # P0-1 同步切屏（INV-11）
+@@ -445,7 +444,6 @@
+         **P0-1 屏态同步方案 A**：toggle 后显式切屏至 PLAYING。
+         """
+         if action == InputAction.TOGGLE_PAUSE:                     # G2-1 P 继续（P0-1 同步切屏）
+-            # type: ignore[union-attr]
+             self.game_state = self.game_state.toggle_pause()       # PAUSED→RUN
+             self.screen = AppScreen.PLAYING                        # P0-1 同步切屏（INV-11）
+         elif action == InputAction.UNFOCUS:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -1552,10 +1552,10 @@
+ 
+ | # | 场景 | 断言 |
+ |---|------|------|
+-| **B-1**（**P1-2 修订**） | GAME_OVER 态 ESC → BACK_TO_MENU | `app_in_game_over` + fake_pygame 注入 `event = Event(KEYDOWN, key=K_ESCAPE)` → 调 `app._drain_events()` → actions 含 `[BACK_TO_MENU]`（_drain_events 屏态覆盖）→ `_dispatch_over(BACK_TO_MENU)` → `screen == MENU` + `game_state is None`（INV-7）；**不**含 QUIT |
++| **B-1**（**P1-2 修订**） | GAME_OVER 态 ESC → BACK_TO_MENU | `app_in_game_over` + fake_pygame 注入 `event = Event(KEYDOWN, key=K_ESCAPE)` → `_map_event` 返 `InputAction.ESCAPE`（P1-2 独立 action）→ `_drain_events` GAME_OVER 态 ESCAPE → BACK_TO_MENU（屏态覆盖）→ `_dispatch_over(BACK_TO_MENU)` → `screen == MENU` + `game_state is None`（INV-7）；**不**含 QUIT |
+ | **B-2** | GAME_OVER 态 Backspace → BACK_TO_MENU | `app_in_game_over` + `event = Event(KEYDOWN, key=K_BACKSPACE)` → `_map_event` 直接返 BACK_TO_MENU（P2-1 _pygame_attr 模式）→ 同上 |
+-| **B-3** | GAME_OVER 态 pygame.QUIT 仍为 QUIT（不被覆盖） | `pygame.event.Event(pygame.QUIT)` → `_map_event` 返 QUIT（event.type==QUIT 守卫）→ `_drain_events` 在 GAME_OVER 态**不**覆盖（`ev.type == pygame.QUIT` 守卫）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU |
+-| **B-4**（**P1-2 修订**） | GAME_OVER 态 Q 键 → QUIT 直通 | `app_in_game_over` + `event = Event(KEYDOWN, key=K_q)` → `_map_event` 返 QUIT（K_q 直通）→ `_drain_events` GAME_OVER 态**不**覆盖（仅 ESC 键被覆盖，Q 仍 QUIT）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU；主循环 break 退出 |
++| **B-3** | GAME_OVER 态 pygame.QUIT 仍为 QUIT（不被覆盖） | `pygame.event.Event(pygame.QUIT)` → `_map_event` 返 QUIT（event.type==QUIT 守卫）→ `_drain_events` 在 GAME_OVER 态**不**覆盖（P1-2 修订后仅 ESCAPE 被覆盖；window QUIT 仍 QUIT）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU |
++| **B-4**（**P1-2 修订**） | GAME_OVER 态 Q 键 → QUIT 直通 | `app_in_game_over` + `event = Event(KEYDOWN, key=K_q)` → `_map_event` 返 QUIT（K_q 直通）→ `_drain_events` GAME_OVER 态**不**覆盖（P1-2 修订后仅 ESCAPE 被覆盖，Q 仍 QUIT）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU；主循环 break 退出 |
+ | B-5 | MENU 态 ESC 仍为 QUIT | `app`（MENU 态）+ fake_pygame 注入 KEYDOWN K_ESCAPE → `_drain_events` 返 [QUIT]（MENU 态无 GAME_OVER 覆盖）→ 主循环 break（沿用 iter-1） |
+ 
+ #### G2-R-N1 修订（__post_init__ 校验）
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -1556,7 +1556,7 @@
+ | **B-2** | GAME_OVER 态 Backspace → BACK_TO_MENU | `app_in_game_over` + `event = Event(KEYDOWN, key=K_BACKSPACE)` → `_map_event` 直接返 BACK_TO_MENU（P2-1 _pygame_attr 模式）→ 同上 |
+ | **B-3** | GAME_OVER 态 pygame.QUIT 仍为 QUIT（不被覆盖） | `pygame.event.Event(pygame.QUIT)` → `_map_event` 返 QUIT（event.type==QUIT 守卫）→ `_drain_events` 在 GAME_OVER 态**不**覆盖（P1-2 修订后仅 ESCAPE 被覆盖；window QUIT 仍 QUIT）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU |
+ | **B-4**（**P1-2 修订**） | GAME_OVER 态 Q 键 → QUIT 直通 | `app_in_game_over` + `event = Event(KEYDOWN, key=K_q)` → `_map_event` 返 QUIT（K_q 直通）→ `_drain_events` GAME_OVER 态**不**覆盖（P1-2 修订后仅 ESCAPE 被覆盖，Q 仍 QUIT）→ actions 含 `[QUIT]` 不含 BACK_TO_MENU；主循环 break 退出 |
+-| B-5 | MENU 态 ESC 仍为 QUIT | `app`（MENU 态）+ fake_pygame 注入 KEYDOWN K_ESCAPE → `_drain_events` 返 [QUIT]（MENU 态无 GAME_OVER 覆盖）→ 主循环 break（沿用 iter-1） |
++| B-5 | MENU 态 ESC 转 START | `app`（MENU 态）+ fake_pygame 注入 KEYDOWN K_ESCAPE → `_map_event` 返 `InputAction.ESCAPE`（P1-2）→ `_drain_events` MENU 态 ESCAPE 不在 `_MENU_RESERVED_ACTIONS` 中（P1-2 修订：ESCAPE **不在**保留键集合）→ 兜底转 START |
+ 
+ #### G2-R-N1 修订（__post_init__ 校验）
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter2-r2.md
+@@ -794,12 +794,12 @@
+ _RESET_HIGHSCORE_KEY = "K_h"                                # G2-3 iter-2 新增
+ _BACK_TO_MENU_KEY = "K_BACKSPACE"                           # G2-7 iter-2 新增（Backspace 直返 BACK_TO_MENU）
+ 
+-# R3-1 沿用：MENU 态保留键（G2-7 扩展加 BACK_TO_MENU 不在 MENU 保留——MENU 态 ESC 走 _drain_events 转 START）
+-# **P1-2 修订**：ESC 在 _map_event 层返 ESCAPE（独立 action）；MENU 态下 ESCAPE 走 _drain_events 兜底转 START
+-# （保留键集合不含 ESCAPE，MENU 态按任意键开始；GAME_OVER 态下 ESCAPE 由屏态覆盖转 BACK_TO_MENU）。
++# R3-1 沿用：MENU 态保留键（G2-7 扩展加 BACK_TO_MENU 不在 MENU 保留）
++# **P1-2 修订**：ESC 在 _map_event 层返 ESCAPE（独立 action，与 Q 区分）；ESCAPE **不在**
++# `_MENU_RESERVED_ACTIONS` 内 → MENU 态下 ESCAPE 由 `_drain_events` 兜底转 START（与 iter-1
++# "ESC 视为开始"语义一致）；GAME_OVER 态下 ESCAPE 由屏态覆盖转 BACK_TO_MENU。
+ _MENU_RESERVED_ACTIONS = frozenset({
+     InputAction.QUIT,
+-    InputAction.ESCAPE,                                            # P1-2：MENU 态下 ESCAPE 与 QUIT 同等保留（MENU 态按 ESC 视为开始）
+     InputAction.SELECT_EASY, InputAction.SELECT_MEDIUM, InputAction.SELECT_HARD,
+     InputAction.TOGGLE_PAUSE,                                         # G2-1 仍保留（P 键 MENU 态透传，不当 START）
+     InputAction.RESET_HIGHSCORE,                                      # G2-3 新增
+
+session_id: 20260814_142254_73bec0
+All done. Summary:
+
+- Created `snake-linux/design/game-app/设计-iter2-r2.md` (115KB) — r2 revision addressing SE r1 FAIL- P0-1 (PAUSED 屏态同步): Fixed `_dispatch_playing` and `_dispatch_paused` to explicitly set `self.screen` after `toggle_pause()`; removed dead `elif new_status == PAUSED` branch from `_tick`
+- P0-2 (INV-13 同步实例字段): Fixed `_new_game` score_callback to write `self._high_score = max(self._high_score, s)` directly; removed `_high_ref` dict container; merged §3.4/§4.6 to single authoritative implementation
+- P1-1 (mkdir OSError): Verified `except (StorageError, OSError)` in `_init_pygame`
+- P1-2 (ESC vs Q in GAME_OVER): Introduced `InputAction.ESCAPE` (separate action), updated `_map_event` to return ESCAPE for ESC key (Q still returns QUIT); `_drain_events` GAME_OVER only converts ESCAPE → BACK_TO_MENU
+- P1-3 (fixture injection): Verified `if self._storage is None` guard in `_init_pygame`
+- P2-1~7: Addressed all P2 items (input.py `_pygame_attr` mode, app_in_game_over fixture, main() StorageError removal, draw_pause_overlay cleanup, assert style)
+- Ran `release_module snake-linux game-app 2 design snake-linux/design/game-app/ DONE` → status: `design_working` → `design_reviewing` (audit log: `2026-08-14T14:41:54Z MODULE_DESIGN ... DONE -> design_reviewing`)

@@ -1,0 +1,386 @@
+  ┊ review diff
+a/workspace/snake-linux/it/game-core/iter-1/测试用例.md → b/workspace/snake-linux/it/game-core/iter-1/测试用例.md
+@@ -0,0 +1,122 @@
++# 模块 IT 测试用例：game-core（snake-linux v2.0.0 迭代 1）
++
++> MTO 产出 · 依据整体测试方案 `snake-linux/testplans/v2.0.0/整体测试方案.md` §2.3 与测试套件框架设计 §2/§3
++> 依据模块设计 `snake-linux/design/game-core/设计-r2.md`（SE 已评审通过、MDE 修订版）
++> 模块代码 `snake-linux/code/game-core/iter-1/`（MDE 检视已通过，FO TDD 实现已落）
++> 承载需求：FR-01（玩法闭环）、FR-02（反向禁止）、FR-03（食物生成）、FR-04（结束判定）；NFR-05（零 GUI 依赖）由 IT 形态天然验证
++> 测试层级：IT（模块级集成测试，MTO 执行）；UT 见 `snake-linux/code/game-core/iter-1/tests/`
++
++## 0. 范围与依赖
++
++- **被测对象**：`game_core` 包（Point / Direction / Difficulty / GameStatus / Snake / Food / Snapshot / GameState / spawn_food / DIFFICULTY_PARAMS / InvalidStateError）
++- **测试驱动**：pytest 9.x（与框架设计 §1 一致）；运行时零第三方依赖（NFR-05）
++- **隔离策略**：RNG 注入 `random.Random(seed)` 实现确定性；模块不依赖文件系统/网络；无 GUI/SDL 初始化
++- **用例编号**：`IT-game-core-1-{序号}`，与整体测试方案 §2.3 编号体系一致
++- **优先级映射**：P0 = 玩法闭环/发布阻塞；P1 = 鲁棒性边界；P2 = 接口契约细节
++
++## 1. 用例清单
++
++| 用例 ID | 关联需求 | 标题 | 优先级 | 类型 |
++|---------|---------|------|--------|------|
++| IT-game-core-1-01 | FR-01 | 初始构造：蛇长 3、方向 RIGHT、score=0、status=RUN、食物不在蛇身 | P0 | 构造 |
++| IT-game-core-1-02 | FR-01 | 普通前进：step 后蛇头按方向前进 1 格、蛇尾移除、score 不变 | P0 | 移动 |
++| IT-game-core-1-03 | FR-01 | pending 合并：同 tick 多次 set_direction 取最后一次 | P0 | 输入 |
++| IT-game-core-1-04 | FR-02 | 180° 反向禁止（长度≥2）：向右时按左，蛇不死、方向不变 | P0 | 反向 |
++| IT-game-core-1-05 | FR-02 | 180° 反向特例（长度=1）：单节蛇允许反向生效 | P0 | 反向 |
++| IT-game-core-1-06 | FR-01 | 幂等：set_direction(同方向) 返回值与 self.snapshot 相等 | P1 | 输入 |
++| IT-game-core-1-07 | FR-01 | 吃食：score+1、长度+1、新食物不在蛇身（固定 seed 验证坐标） | P0 | 吃食 |
++| IT-game-core-1-08 | FR-03 | 食物不与蛇身重叠：吃后 1 tick 内新食物坐标 ∉ 蛇身（重复 20 次） | P0 | 食物 |
++| IT-game-core-1-09 | FR-04 | 撞墙结束：头越界 → status=OVER，蛇身/食物/得分不变 | P0 | 碰撞 |
++| IT-game-core-1-10 | FR-04 | 撞自身结束：新头与非尾身段重叠 → status=OVER | P0 | 碰撞 |
++| IT-game-core-1-11 | FR-04 | 撞尾（不吃食）：新头 = 旧尾 且 不吃食 → 不结束，蛇身让行（v1 行为一致） | P0 | 碰撞 |
++| IT-game-core-1-12 | FR-04 | 撞尾（吃食）：新头 = 旧尾 且 吃食 → status=OVER（v1 行为一致） | P0 | 碰撞 |
++| IT-game-core-1-13 | FR-04 | OVER 保护：status=OVER 后 step 抛 InvalidStateError | P0 | 状态机 |
++| IT-game-core-1-14 | FR-04 | OVER 保护：status=OVER 后 set_direction 抛 InvalidStateError | P0 | 状态机 |
++| IT-game-core-1-15 | FR-01 | 纯函数性：step 前后 self.snapshot 不变 | P0 | 不变量 |
++| IT-game-core-1-16 | FR-01 | pending 隔离：set_direction(UP) 后 state.direction 仍为 RIGHT | P0 | 输入 |
++| IT-game-core-1-17 | FR-01 | pending 消费：step 一次后 pending_direction=None，新 set_direction 不被旧污染 | P0 | 输入 |
++| IT-game-core-1-18 | NFR-05 | 固定 seed：同 seed 两次构造初始食物坐标一致 | P0 | 确定性 |
++| IT-game-core-1-19 | FR-01 | snapshot 不可变：snapshot 字段不能赋值（frozen dataclass） | P1 | 接口 |
++| IT-game-core-1-20 | FR-01 | snapshot 字段一致：snake_body/food/score/length/status/difficulty/tick_ms 全部正确 | P0 | 接口 |
++| IT-game-core-1-21 | FR-01 | snapshot.tick_ms = difficulty.base_tick_ms（迭代 1） | P0 | 接口 |
++| IT-game-core-1-22 | FR-01 | 非法网格（< 4）：width<4 或 height<4 抛 ValueError（3×3/3×15/20×3） | P0 | 鲁棒性 |
++| IT-game-core-1-23 | FR-01 | 合法下限 4×4：构造成功、初始蛇身全部在界内 | P0 | 边界 |
++| IT-game-core-1-24 | FR-01 | Direction.dx/dy/opposite 配对正确（UP↔DOWN, LEFT↔RIGHT） | P1 | 接口 |
++| IT-game-core-1-25 | FR-01 | Point 值对象：相等性、可哈希（可放入 set） | P1 | 接口 |
++| IT-game-core-1-26 | FR-01 | Difficulty.base_tick_ms 三档值（EASY=250, MEDIUM=160, HARD=100） | P0 | 接口 |
++| IT-game-core-1-27 | FR-01 | DIFFICULTY_PARAMS 单一数据源：修改 dict 后 property 返回新值 | P0 | 接口 |
++| IT-game-core-1-28 | FR-03 | spawn_food 鲁棒：5×5 全屏填蛇 → 抛 RuntimeError | P1 | 食物 |
++| IT-game-core-1-29 | FR-01 | 端到端 100 步：固定 seed 跑 100 步，score 变化曲线与蛇身长度一致 | P0 | 回归 |
++| IT-game-core-1-30 | NFR-05 | 零 GUI 依赖：游戏核心不导入 pygame/pyinstaller 等 | P0 | 静态检查 |
++| IT-game-core-1-31 | NFR-05 | 语法兼容 Python 3.8：无 PEP 604（X \| None）/ 内置泛型下标（tuple[X,...]） | P0 | 静态检查 |
++| IT-game-core-1-32 | FR-01 | GameStatus 枚举：RUN/PAUSED/OVER 三值；迭代 1 不暴露 PAUSED 入口 | P1 | 接口 |
++
++合计 32 条（P0 = 21、P1 = 10、P2 = 1，注：原设计 UT #5 难度参数化已并入 26/27；#14/14b 已并入 22/23）。
++
++## 2. 用例详情（关键 P0）
++
++### IT-game-core-1-01：初始构造
++
++**前置**：注入 `rng=Random(42)`，网格 20×15，难度 MEDIUM。
++**步骤**：构造 `GameState(width=20, height=15, difficulty=Difficulty.MEDIUM, rng=rng)`。
++**预期**：
++- `len(snake) == 3`（INV-1）
++- `direction == Direction.RIGHT`
++- `score == 0`、`status == GameStatus.RUN`
++- `food.pos not in snake.body`（INV-2）
++- 蛇身 = `[(10,7),(9,7),(8,7)]`（居中朝右，W//2=10, H//2=7）
++
++### IT-game-core-1-09：撞墙结束
++
++**前置**：默认 20×15 MEDIUM 状态，蛇初始朝右。
++**步骤**：连续 step 4 次（蛇头 x 从 10 → 14），第 5 次 step（蛇头预期到 x=15，越界）。
++**预期**：
++- 第 5 次 step 后 `status == GameStatus.OVER`
++- `snake.body`、`food.pos`、`score` 与 step 前一致（INV-4）
++
++### IT-game-core-1-10：撞自身结束
++
+… omitted 44 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py → b/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py
+@@ -0,0 +1,538 @@
++"""模块 IT 测试：game-core（snake-linux v2.0.0 迭代 1）。
++
++按 `snake-linux/it/game-core/iter-1/测试用例.md` 落地，pytest 9.x。
++覆盖 FR-01/02/03/04 与 NFR-05；运行零 GUI 依赖（NFR-05）。
++
++执行：pytest test_it_game_core_1.py -v
++"""
++from __future__ import annotations
++
++import ast
++import random
++import sys
++from pathlib import Path
++
++import pytest
++
++# 被测代码路径：tests/ 与 code/ 平级在 workspace/snake-linux/ 下
++_HERE = Path(__file__).resolve().parent
++_WORKSPACE = _HERE.parents[2]  # it/game-core/iter-1 -> snake-linux
++_CODE_DIR = _WORKSPACE / "code" / "game-core" / "iter-1"
++sys.path.insert(0, str(_CODE_DIR))
++
++from game_core import (  # noqa: E402
++    DIFFICULTY_PARAMS,
++    Direction,
++    Difficulty,
++    Food,
++    GameState,
++    GameStatus,
++    InvalidStateError,
++    Point,
++    Snake,
++    Snapshot,
++    spawn_food,
++)
++
++
++# ---------- 公共 fixture ----------
++
++@pytest.fixture
++def rng():
++    return random.Random(42)
++
++
++@pytest.fixture
++def default_state(rng):
++    return GameState(width=20, height=15, difficulty=Difficulty.MEDIUM, rng=rng)
++
++
++@pytest.fixture
++def small_state(rng):
++    """5x5 网格，便于穷举。"""
++    return GameState(width=5, height=5, difficulty=Difficulty.MEDIUM, rng=rng)
++
++
++# ---------- IT-game-core-1-01 ~ 03：构造 / 移动 / pending 合并 ----------
++
++@pytest.mark.p0
++def test_it_game_core_1_01_initial_construction(default_state):
++    """IT-game-core-1-01 初始构造。FR-01."""
++    assert len(default_state.snake) == 3  # INV-1
++    assert default_state.direction == Direction.RIGHT
++    assert default_state.score == 0
++    assert default_state.status == GameStatus.RUN
++    assert default_state.food.pos not in default_state.snake.body  # INV-2
++    assert default_state.snake.body == (
++        Point(10, 7), Point(9, 7), Point(8, 7)
++    ), "初始蛇应居中朝右 3 节"
++
++
++@pytest.mark.p0
++def test_it_game_core_1_02_step_advances_head(default_state):
++    """IT-game-core-1-02 普通前进。FR-01."""
++    before = default_state.snapshot()
++    after = default_state.step()
++    assert after.snake.head == Point(11, 7)
++    assert after.snake.body == (Point(11, 7), Point(10, 7), Point(9, 7))
++    assert after.score == 0  # 未吃食
+… omitted 460 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py
+@@ -82,13 +82,18 @@
+ 
+ @pytest.mark.p0
+ def test_it_game_core_1_03_pending_direction_merges(default_state):
+-    """IT-game-core-1-03 pending 合并。FR-01."""
++    """IT-game-core-1-03 pending 合并。FR-01.
++
++    注意：RIGHT 时按 LEFT 是反向（长度≥2 被忽略），不能用作 pending 合并断言。
++    用非反向的两个方向：RIGHT 时按 UP，再按 LEFT（与 RIGHT 反向被忽略）
++    改用 UP 与 DOWN 验证（UP→DOWN 覆盖 pending）：
++    """
+     s1 = default_state.set_direction(Direction.UP)
+-    s2 = s1.set_direction(Direction.LEFT)
++    s2 = s1.set_direction(Direction.DOWN)
+     after = s2.step()
+-    # pending 两次：最终 LEFT 生效
+-    assert after.direction == Direction.LEFT
+-    assert after.snake.head == Point(9, 7)
++    # pending 两次：最终 DOWN 生效
++    assert after.direction == Direction.DOWN
++    assert after.snake.head == Point(10, 8)
+ 
+ 
+ # ---------- IT-game-core-1-04 ~ 06：反向禁止/特例/幂等 ----------
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py
+@@ -111,7 +111,11 @@
+ 
+ @pytest.mark.p0
+ def test_it_game_core_1_05_reversal_allowed_when_length_eq_1():
+-    """IT-game-core-1-05 长度 1 反向特例。FR-02."""
++    """IT-game-core-1-05 长度 1 反向特例。FR-02.
++
++    长度 1 时 set_direction(opposite) 后方向立即变为 pending_direction，
++    direction 在 step 后才提交。验证最终行为：step 后方向 = 反向。
++    """
+     # 构造单节蛇：先让蛇撞墙减到长度 1（撞墙不删身，只 OVER）
+     # 改用：构造小网格 + 多次 set_direction 让蛇身长度减少 — 实际蛇长度只会增加或不变
+     # 方案：构造 1 节蛇用 dataclasses.replace
+@@ -120,8 +124,10 @@
+     one_seg = dataclasses.replace(gs, snake=Snake((Point(10, 7),)))
+     # 当前 direction 默认 RIGHT；按 LEFT（opposite）
+     s1 = one_seg.set_direction(Direction.LEFT)
+-    assert s1.direction == Direction.LEFT, "长度 1 允许反向生效"
++    assert s1.pending_direction == Direction.LEFT, "长度 1 允许反向：pending_direction 已登记"
++    assert s1.direction == Direction.RIGHT, "direction 仍为 RIGHT（pending 隔离）"
+     after = s1.step()
++    assert after.direction == Direction.LEFT, "step 后方向提交为 LEFT（长度 1 反向生效）"
+     assert after.snake.head == Point(9, 7)
+     assert after.status == GameStatus.RUN
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py
+@@ -176,13 +176,14 @@
+ @pytest.mark.p0
+ def test_it_game_core_1_09_wall_collision_ends_game(default_state):
+     """IT-game-core-1-09 撞墙结束。FR-04."""
+-    # 默认状态：蛇头 (10,7) 朝右，连续 step 5 次撞右墙
++    # 默认状态：蛇头 (10,7) 朝右，网格宽 20 (x ∈ [0,19])
++    # 需要 step 10 次：蛇头 10→11→12→...→20，越界 (x=20)
+     s = default_state
+-    for _ in range(4):  # 第 1~4 步正常移动（蛇头 10→14）
++    for _ in range(9):  # 前 9 步正常移动（蛇头 10→19）
+         s = s.step()
+-    assert s.snake.head == Point(14, 7)
++    assert s.snake.head == Point(19, 7)
+     assert s.status == GameStatus.RUN
+-    # 第 5 步：蛇头预期到 15 越界
++    # 第 10 步：蛇头预期到 (20,7) 越界 → OVER
+     s_over = s.step()
+     assert s_over.status == GameStatus.OVER
+     assert s_over.snake == s.snake, "撞墙蛇身不变（INV-4）"
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1/test_it_game_core_1.py
+@@ -285,9 +285,9 @@
+ @pytest.mark.p0
+ def test_it_game_core_1_13_step_on_over_raises(default_state):
+     """IT-game-core-1-13 OVER 后 step 抛 InvalidStateError。FR-04."""
+-    # 撞墙到 OVER
++    # 撞墙到 OVER（默认网格宽 20，step 10 次越界）
+     s = default_state
+-    for _ in range(5):
++    for _ in range(10):
+         s = s.step()
+     assert s.status == GameStatus.OVER
+     with pytest.raises(InvalidStateError):
+@@ -298,7 +298,7 @@
+ def test_it_game_core_1_14_set_direction_on_over_raises(default_state):
+     """IT-game-core-1-14 OVER 后 set_direction 抛 InvalidStateError。FR-04."""
+     s = default_state
+-    for _ in range(5):
++    for _ in range(10):
+         s = s.step()
+     assert s.status == GameStatus.OVER
+     with pytest.raises(InvalidStateError):
+  ┊ review diff
+a/workspace/snake-linux/it/game-core/iter-1/conftest.py → b/workspace/snake-linux/it/game-core/iter-1/conftest.py
+@@ -0,0 +1,9 @@
++"""pytest 全局配置：注册 p0/p1/p2 marker（消除警告）。"""
++import sys
++from pathlib import Path
++
++# 注册自定义 marker
++def pytest_configure(config):
++    config.addinivalue_line("markers", "p0: P0 用例（核心功能/发布阻塞）")
++    config.addinivalue_line("markers", "p1: P1 用例（重要功能边界）")
++    config.addinivalue_line("markers", "p2: P2 用例（体验细节）")
+  ┊ review diff
+a/workspace/snake-linux/it/game-core/iter-1/模块测试报告.md → b/workspace/snake-linux/it/game-core/iter-1/模块测试报告.md
+@@ -0,0 +1,64 @@
++# 模块测试报告：game-core 迭代 1
++
++## 结论：PASS
++
++## 覆盖范围
++
++- 用例：IT-game-core-1-01 ~ IT-game-core-1-32（共 32 条，TE 已评审 PASS）
++  - P0：21 条（IT-game-core-1-01/02/03/04/05/07/08/09/10/11/12/13/14/15/16/17/18/20/21/22/23/26/27/29/30/31）
++  - P1：10 条（IT-game-core-1-06/19/24/25/28/32 等）
++  - P2：0 条（与设计对齐：原 UT #5/#13 等已合并到 P0/P1）
++- 执行：通过 32 / 失败 0 / 跳过 0
++
++## 执行结果
++
++```
++============================== 32 passed in 0.07s ==============================
++```
++
++测试代码：`snake-linux/it/game-core/iter-1/test_it_game_core_1.py`
++junitxml 报告：`snake-linux/it/game-core/iter-1/it-report.xml`
++
++## 需求 → 用例覆盖
++
++| 需求 | 用例 |
++|------|------|
++| FR-01（玩法闭环：移动/吃食/得分） | IT-game-core-1-01/02/03/06/07/15/16/17/20/23/24/25/29 |
++| FR-02（反向禁止） | IT-game-core-1-04/05 |
++| FR-03（食物生成） | IT-game-core-1-07/08/28 |
++| FR-04（结束判定：撞墙/撞身/撞尾/OVER 保护） | IT-game-core-1-09/10/11/12/13/14 |
++| NFR-05（零 GUI 依赖 / 纯标准库 / Python 3.8 兼容） | IT-game-core-1-18/30/31 |
++| 难度参数 / 接口契约（DIFFICULTY_PARAMS / Snapshot / GameStatus） | IT-game-core-1-19/21/26/27/32 |
++| 网格下限校验（INV-7） | IT-game-core-1-22/23 |
++
++## 缺陷（问题单）
++
++- 无（32 条全部通过，0 问题单 open）
++
++## 关键验证点
++
++- **构造**：初始 3 节蛇居中朝右、食物不在蛇身、score=0、status=RUN
++- **移动**：step 蛇头前进 1 格、蛇尾移除、不修改 self（纯函数性）
++- **输入合并**：pending 隔离、step 一次性消费；多次 set_direction 取最后一次
++- **反向禁止**：长度 ≥2 反向静默忽略；长度 1 反向生效（架构特例）
++- **幂等**：set_direction(同方向) 返回值 == self.snapshot
++- **吃食**：score+1、长度+1、新食物用同 rng 在非蛇身格随机生成（重复 20 次验证）
++- **撞墙**：蛇头越界 → status=OVER，蛇身/食物/得分不变（INV-4）
++- **撞自身**：新头与非尾身段重叠 → status=OVER
++- **撞尾（不吃食）**：新头 = 旧尾且不吃食 → 不结束，蛇身让行（v1 行为一致）
++- **撞尾（吃食）**：新头 = 旧尾且吃食 → status=OVER（v1 行为一致）
++- **OVER 保护**：OVER 后 step / set_direction 抛 InvalidStateError
++- **snapshot**：字段一致、tick_ms == difficulty.base_tick_ms、frozen 不可变
++- **网格下限**：< 4 抛 ValueError；4×4 下限构造成功、初始蛇身全部在界内
++- **接口契约**：Direction dx/dy/opposite 配对、Point 值对象（相等/哈希/frozen）、Difficulty 三档 base_tick_ms、property 走 DIFFICULTY_PARAMS 单一数据源
++- **spawn_food 鲁棒**：5×5 全屏填蛇 → RuntimeError
++- **100 步端到端回归**：score 与 length 同步（每节长度+1 = 1 分）、食物不在蛇身、蛇身节点 4-邻接
++- **零 GUI 依赖**：无 pygame/pyinstaller/tkinter 等 import（NFR-05）
++- **语法兼容 3.8**：所有 game_core/*.py AST 解析通过（无 PEP 604 / 内置泛型下标）
++- **GameStatus**：迭代 1 不暴露 PAUSED 入口（无 toggle_pause 方法）
++
++## 通过判定
++
++- P0 全部 PASS（无 skip、无 fail）→ 模块迭代 PASS
++- 全部问题单闭环（本次无 open）
++- 模块进入 it_passed 状态（`release_module ... it ... DONE` 已执行）
+  ┊ review diff
+a//tmp/hermes-verify-game-core-it1.sh → b//tmp/hermes-verify-game-core-it1.sh
+@@ -0,0 +1,33 @@
++#!/usr/bin/env bash
++# Ad-hoc verification: 跑 game-core iter-1 IT 套件，核对结果
++set -u
++WS="/home/zyzs/cyx/zteam/workspace/snake-linux/it/game-core/iter-1"
++
++echo "=== 1. pytest ==="
++( cd "$WS" && python3 -m pytest test_it_game_core_1.py -m "p0 or p1 or p2" \
++    --junitxml=it-report.xml -o junit_family=xunit2 2>&1 | tail -3 )
++
++echo ""
++echo "=== 2. junitxml 解析 ==="
++python3 -c "
++import xml.etree.ElementTree as ET
++s = ET.parse('$WS/it-report.xml').getroot().find('testsuite')
++print(f\"tests={s.get('tests')} failures={s.get('failures')} errors={s.get('errors')} skipped={s.get('skipped')} time={s.get('time')}s\")
++"
++
++echo ""
++echo "=== 3. issue list ==="
++( cd /home/zyzs/cyx/zteam && python3 scripts/statectl.py issue snake-linux list )
++
++echo ""
++echo "=== 4. 模块状态 ==="
++python3 -c "
++import json
++md = json.load(open('/home/zyzs/cyx/zteam/workspace/snake-linux/modules.json'))
++for m in md['modules']:
++    if m['name']=='game-core':
++        for it in m['iterations']:
++            if it['n']==1:
++                print(f\"status={it['status']} case_passed={it.get('case_passed')} it_report={it.get('it_report')}\")
++                break
++"
+
+session_id: 20260814_014100_1db144
+Ad-hoc 验证通过（脚本已清理 `/tmp/hermes-verify-game-core-it1.sh`）：
+
+- pytest：`32 passed in 0.07s`（exit 0）
+- junitxml：`tests=32 failures=0 errors=0 skipped=0 time=0.068s`
+- issue list：空
+- 模块状态：`status=it_passed case_passed=True`
+
+说明：这是针对改动路径 `test_it_game_core_1.py` + `conftest.py` 的 ad-hoc 验证（一次性脚本写盘 / 运行 / 删除），不是套件本身的"绿色"信号；套件本身在仓库内由 pytest 接管。

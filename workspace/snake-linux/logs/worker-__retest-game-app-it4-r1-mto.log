@@ -1,0 +1,52 @@
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md
+@@ -1,6 +1,6 @@
+ # 问题单 MTO-4-01
+ 
+-状态：fixed
++状态：open
+ 严重级：P0
+ 提单人：MTO
+ 时间：2026-08-15T06:38:29Z
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md
+@@ -18,3 +18,4 @@
+ 
+ ## 复测记录
+ - 2026-08-15T10:07:28Z FO 修复完成
++- 2026-08-15T12:10:00Z MTO 复测：**不通过，改回 open**。主缺陷（Color dataclass → pygame 颜色 TypeError）确认已修复：gui-renderer UT 99 passed / IT 53 passed；game-app UT 186 passed / IT 28 passed；真实集成冒烟（3 皮肤 × 20 帧真实渲染闭环）通过。但**连带缺陷修复不彻底（影响面 NFR-02）**：`scripts/bench_memory.py` 的方向切换序列 `["up","down","left","right"]` 含反向项——`down` 是 `up` 的反向、`right` 是 `left` 的反向，而 game_core `set_direction` 对反向（蛇长≥2）静默忽略 → 蛇实际直行，HARD 难度下撞墙 OVER → `_tick` 入口断言崩溃。**实测：`--duration 2`（IT 用例参数）侥幸通过；`--duration 3` 必崩（AssertionError @ app.py:618，复跑 2/2 复现）；脚本默认 `BENCH_DURATION_SECONDS=60` 默认运行必崩 → NFR-02 仍无法实测**。IT 用例 test_04_15 用 2s 恰好绕过崩溃窗口，未暴露。修复方向：方向切换序列改用无反向项循环（如 up→left→down→right）或每次切换后跳过反向项。
+
+session_id: 20260815_101016_592da2
+复测完成，结论：**不通过**，问题单已改回 open（未执行 close）。
+
+原因一句话：主缺陷（颜色 TypeError）已修复，但 FO 顺带声称修好的 bench_memory 撞墙崩溃其实没修好——方向序列 `up→down→left→right` 里 down/right 是反向项被 game_core 静默忽略，蛇直行撞墙，`--duration 3` 必崩（复跑 2/2 复现），默认 60s 运行必崩，NFR-02 仍无法实测。
+
+复测证据：
+- 主缺陷修复确认：gui-renderer UT 99 / IT 53、game-app UT 186 / IT 28 全过；真实集成冒烟（3 皮肤 × 20 帧渲染闭环）通过，renderer.py `_pygame_color()` 覆盖全部 pygame 颜色参数
+- 连带缺陷未修复：bench_memory `--duration 2`（IT 用例参数）侥幸通过、`--duration 3` 必崩（app.py:618 `_tick` 断言）；IT 用例 test_04_15 用 2s 恰好绕过崩溃窗口
+
+已写入 `workspace/snake-linux/issues/MTO-4-01.md`：
+- 状态：fixed → open
+- 复测记录：含修复方向建议（方向切换序列改用无反向项循环，如 up→left→down→right）
+
+待 FO 修复后重新复测，届时通过再执行 `issue close`。
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md
+@@ -26,3 +26,8 @@
+ - 2026-08-15T10:07:28Z FO 修复完成
+ - 2026-08-15T12:10:00Z MTO 复测：**不通过，改回 open**。主缺陷（Color dataclass → pygame 颜色 TypeError）确认已修复：gui-renderer UT 99 passed / IT 53 passed；game-app UT 186 passed / IT 28 passed；真实集成冒烟（3 皮肤 × 20 帧真实渲染闭环）通过。但**连带缺陷修复不彻底（影响面 NFR-02）**：`scripts/bench_memory.py` 的方向切换序列 `["up","down","left","right"]` 含反向项——`down` 是 `up` 的反向、`right` 是 `left` 的反向，而 game_core `set_direction` 对反向（蛇长≥2）静默忽略 → 蛇实际直行，HARD 难度下撞墙 OVER → `_tick` 入口断言崩溃。**实测：`--duration 2`（IT 用例参数）侥幸通过；`--duration 3` 必崩（AssertionError @ app.py:618，复跑 2/2 复现）；脚本默认 `BENCH_DURATION_SECONDS=60` 默认运行必崩 → NFR-02 仍无法实测**。IT 用例 test_04_15 用 2s 恰好绕过崩溃窗口，未暴露。修复方向：方向切换序列改用无反向项循环（如 up→left→down→right）或每次切换后跳过反向项。
+ - 2026-08-15T12:12:09Z FO 修复完成
++- 2026-08-15T14:30:00Z MTO 复测：**通过，close**。
++  1. **主缺陷（Color dataclass → pygame TypeError）已修复**：gui-renderer iter-3 `renderer.py` 新增 `_pygame_color()`（dataclass→tuple，tuple/str/pygame.Color 幂等），覆盖 screen.fill / draw.rect（蛇头/蛇身/食物三形态/outline/镂空）/ font.render（hud_text/hud_accent/status_color）全部 pygame API 颜色参数。实测：gui-renderer UT 99 passed / IT 53 passed；game-app UT 188 passed（含 +2 防回归）/ IT 28 passed；真实集成冒烟——三皮肤（classic/dark/colorblind_friendly）× 每皮肤 20 帧真实渲染闭环（SDL dummy + 真实 pygame 2.6.1）无异常。
++  2. **连带缺陷（NFR-01/02 bench 方向序列含反向项→撞墙断言崩溃）已彻底修复**：bench_memory.py / bench_fps.py 方向序列改为无反向项循环 `BENCH_DIRECTION_CYCLE = ["up","left","down","right"]`（相邻项正交，蛇走矩形回路不撞墙），切换处 `direction_cycle % len(...)` 取模；防回归 UT `test_direction_cycle_no_reversal`（两脚本各一，断言相邻项含首尾互不为反向）已加入并通过。
++  3. **MTO 复测标准实测**：`bench_memory --duration 3`（此前必崩 AssertionError@app.py:618）现 PASS（峰值 57.8MB ≤ 300MB），`--duration 10` PASS（57.5MB）；`bench_fps --duration 3` PASS（P95 0.60ms ≤ 25ms、avg FPS 1710 ≥ 60），`--duration 10` PASS（P95 0.63ms）。NFR-01/02 均可实测，退出码 0。
++  4. **结论**：主缺陷 + 连带缺陷（NFR-01/02 影响面）全部修复并经真实执行验证，无遗留问题。close。
+
+session_id: 20260815_121544_b20458
+复测完成，MTO-4-01 已闭环关闭。
+
+复测结果：通过
+
+- 主缺陷（Color dataclass → pygame TypeError）：gui-renderer UT 99 / IT 53、game-app UT 188（含 +2 防回归）/ IT 28 全过；三皮肤×20 帧真实渲染闭环无异常
+- 连带缺陷（NFR-01/02 bench 方向序列反向项→撞墙崩溃）：bench_memory --duration 3（此前必崩）现 PASS 57.8MB，--duration 10 PASS；bench_fps --duration 3/10 PASS（P95 0.6ms）；防回归 UT test_direction_cycle_no_reversal 已加入并通过
+- 复测记录已写入问题单，`statectl issue close` 已执行（pipeline.log 有 ISSUE_CLOSE 记录）

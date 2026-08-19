@@ -1,0 +1,90 @@
+  ┊ review diff
+a/workspace/snake-linux/review/testplan/v2.0.0/snake-linux-testplan-v2.0.0-r1.md → b/workspace/snake-linux/review/testplan/v2.0.0/snake-linux-testplan-v2.0.0-r1.md
+@@ -0,0 +1,83 @@
++# 测试方案评审意见：snake-linux v2.0.0（snake-gui）r1
++
++> SE 评审 · 依据：`testplans/v2.0.0/整体测试方案.md` + `testplans/v2.0.0/测试套件框架设计.md`
++> 对照：架构设计 `arch/v2.0.0/架构设计.md` + 功能模块分工表 `arch/v2.0.0/功能模块分工表.md`（与 modules.json 一致）+ 需求规格 `analysis/snake-gui-r1.md`（approved）
++> 评审日期：2026-08-13
++
++## 0. 评审结论
++
++- **结论：PASS**
++- 一句话理由：IT/ST 方案按架构四模块×迭代全覆盖、需求 FR-01~16/NFR-01~07 映射齐全（16/16、7/7），验收标准 1~7 均有承载用例，分层策略（core/storage 全自动、renderer headless、app 事件注入、ST 人工/半自动）与架构 NFR-05 解耦设计一致；框架选型（pytest+pexpect+SDL dummy+事件注入）可用且继承 v1 已验证模式。**发现 1 项 P1 级框架文档错误（ws_dir fixture 路径定位）与 3 项 P2 级缺口/细节，均不阻塞本轮**，但 P1 项须在 MTO 实现测试代码前修正。
++
++## 1. 覆盖性核对（对照架构/模块分工）
++
++### 1.1 模块 × 迭代 IT 覆盖（对照分工表，9/9 全覆盖）
++
++| 模块 | 迭代 | 架构职责（分工表） | IT 方案范围 | 结果 |
++|------|:----:|--------------------|-------------|:----:|
++| game-core | 1 | 玩法闭环+难度参数表 | 玩法闭环接口/反向禁止/吃食/碰撞/得分/snapshot | ✅ |
++| game-core | 2 | 暂停状态机+加速曲线 | toggle_pause/加速曲线/难度档位参数化 | ✅ |
++| platform-storage | 2 | 三平台目录+原子写持久化 | 目录定位/load/save/reset/原子写（tmp_path） | ✅ |
++| gui-renderer | 1 | 基础渲染（蛇/食物/背景/HUD） | 首帧元素断言+只读 snapshot | ✅ |
++| gui-renderer | 3 | 动画+皮肤+缩放 | 插值动画/皮肤≥3套/等比缩放 | ✅ |
++| game-app | 1 | 主循环/输入/流程 | 事件注入数据流/开始-结束-重开-退出 | ✅ |
++| game-app | 2 | 难度选择/暂停/最高分 | 难度界面/暂停继续/最高分联动 | ✅ |
++| game-app | 3 | 皮肤切换 UI | 皮肤切换对局不中断 | ✅ |
++| game-app | 4 | 打包/错误提示/性能 | 可读错误/退出卫生/性能指标 | ✅ |
++
++### 1.2 需求 → 用例映射（规格 → 测试方案 §4）
++
++- **FR 16/16 全覆盖**：玩法闭环（core-1-01/04+ST-03）、反向禁止（core-1-03）、食物生成（core-1-05）、结束判定（core-1-06/07）、难度分级（core-2-02+app-2-01+ST-02）、渲染/动画/美观/缩放/皮肤（renderer-1-01、renderer-3-01/02、app-3-01、ST-03）、开始重开退出（app-1-01、app-4-02、ST-01/05）、暂停（core-2-01+app-2-02）、最高分（storage-2-01~03+app-2-03+ST-04）、开箱即用（ST-01）、跨平台（ST-07）、用户指南（ST-06）——无遗漏；
++- **NFR 7/7 全覆盖**：性能（app-4+ST-08）、资源占用（ST-08）、错误提示（app-4-01）、平台矩阵/HiDPI（renderer-3-02+ST-07）、职责分离（core 全量 UT+renderer 只读断言）、无网络（静态检查+ST-04）、发布物规范（ST-01）；
++- **验收标准 1~7 对齐**：1 玩法闭环（core-1 全组）、2 难度分级（core-2-02 含"困难≤简单 50%"）、3 GUI 呈现（renderer/app 组）、4 控制流程（app-1/2 组+storage-2）、5 开箱即用（ST-01/06/07）、6 性能（ST-08）、7 兼容矩阵（ST-07）——逐条有承载；
++- 测试层级与角色分工正确：UT/IT 自动化、ST 版本级（STO 执行）、TE 只设计不执行，符合 v2 流水线角色边界。
++
++### 1.3 框架可用性（对照技术选型/接口契约）
++
++- 技术栈与被测基线一致（Python 3.8+ 语法、pygame/SDL2），SDL dummy headless 与架构"core 零 GUI 依赖"（NFR-05）天然契合；
++- 接口契约以架构 §接口清单为唯一事实源（难度参数/Point 坐标/snapshot 契约），防参数漂移（框架 §3.4）——正确；
++- 事件注入（pygame.event.post）驱动 app 主循环、pexpect 进程级验证退出卫生/打包产物、性能采样用分位数判定（v1 相位锁定踩坑教训已吸收）——模式成熟可用；
++- 目录结构（tests/v2.0.0/ 按 core/storage/renderer/app/st/perf 分层）与模块分工一一对应，marker p0/p1/p2、退出码 0/1/2、junitxml、checklist-system.md 人工清单——闭环完整。
++
++## 2. 发现的问题（不阻塞 PASS，按优先级）
++
++### P1-01 框架文档错误：conftest.py `ws_dir` fixture 路径定位错误（实现前必改）
++
++框架设计 §3.1：`Path(__file__).resolve().parents[3]  # tests/v2.0.0 -> workspace/snake-linux`
++
++- **错误**：conftest.py 位于 `workspace/snake-linux/tests/v2.0.0/conftest.py` 时，`parents[0]=v2.0.0、[1]=tests、[2]=snake-linux、[3]=workspace`——`parents[3]` 实际返回 **workspace 根**，而非注释声称的 `snake-linux`；
++- **影响**：MTO 照抄实现会导致被测代码路径定位到错误层级，所有依赖 `ws_dir` 的用例无法找到被测代码（直接连锁失败）；
++- **处置**：应改为 `parents[2]`（返回 snake-linux），或按 v1 已验证的"由测试目录上溯工作区"模式重新计算；MTO 写 conftest.py 前必须修正，TE 评审用例文档时核对。
++
++### P2-01 覆盖缺口：NFR-02 CPU 占用 ≤10% 指标无断言口径
++
++- 规格 NFR-02 含两项指标：内存 ≤300MB **与 CPU 占用 ≤10%（单核，空闲画面）**；
++- 整体方案 §3.3 性能维度、ST-08 口径、框架 `perf_snake.py` 均只列 FPS/帧时间 P95/输入延迟/内存，**CPU 指标全程缺失**；
++- 处置：`perf_snake.sh` 已有 pidstat 优先/ps 兜底（pidstat 可采 CPU），建议在性能脚本与 ST-08 补充 CPU 采样断言并留档。
++
++### P2-02 文档结构：ST-07/ST-08 被引用但 §3.1 用例清单未定义
++
++- §3.2/§3.3 引用 ST-07（兼容矩阵）、ST-08（性能基线），但 §3.1 用例清单仅列 ST-01~06，ST-07/08 无步骤要点/关键断言条目；
++- 落点实际存在（checklist-system.md + perf 脚本），属清单不完整而非能力缺失；
++- 处置：§3.1 补 ST-07/08 条目（或显式指向 checklist-system.md/perf_snake 脚本），避免 STO 执行时口径漂移。
++
++### P2-03 技术细节：pytest 9.x 与 Python 3.8 基线冲突
++
++- 框架选型 `pytest（9.x）` 要求 Python ≥3.9，被测代码基线为 3.8（架构约定"语法兼容 3.8"）；
++- 测试侧依赖不影响被测代码 3.8 兼容性，但**若测试机/CI 用 Python 3.8 环境将无法安装 pytest 9.x**；
++- 处置：明确测试机 Python ≥3.9（推荐，测试侧与产品侧基线分开声明），或降级 pytest 8.x（支持 3.8）二选一，写入 requirements-test.txt 约束。
++
++### P3 观察项（不阻塞，执行时落实即可）
++
++1. **打包构建无自动化冒烟**：PyInstaller 构建正确性仅靠 ST-01/07 人工验收；建议 IT-app-4 增加 Linux 本机构建冒烟（构建成功+产物可启动），Windows/macOS 侧维持人工矩阵；
++2. **HiDPI 验证未显式编号**：框架 assets/expected 提及 HiDPI，但整体方案用例清单无对应条目；建议落 checklist-system.md 人工项明确化（NFR-04 高分屏清晰）；
++3. **迭代出口验收 ↔ 用例无显式对照表**：分工表每迭代出口（验收 1/4、2/4、3、5/6/7）与用例的对应需从 §4 自行推导；建议执行期在每迭代收口记录中显式勾选。
++
++## 3. 评审要点与结论
++
++- 覆盖性：模块×迭代 9/9、FR 16/16、NFR 7/7、验收标准 7/7，无范围外需求遗漏；
+… omitted 5 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260813_161515_6553c8
+评审完成。
+
+- 结论：PASS（评审意见落盘 snake-linux/review/testplan/v2.0.0/snake-linux-testplan-v2.0.0-r1.md）
+- 覆盖性核对：模块×迭代 IT 9/9、FR 16/16、NFR 7/7、验收标准 1~7 全有承载
+- 主要问题：P1-01 框架 conftest.py ws_dir fixture 的 parents[3] 路径定位错误（应为 parents[2]，实现前必改）；P2 CPU 指标缺断言口径、ST-07/08 清单缺条目、pytest 9.x 与 3.8 基线冲突
+- 状态已推进：pipeline.log 记录 `TESTPLAN_REVIEW snake-linux/v2.0.0 PASS by=SE`，版本进入 in_dev

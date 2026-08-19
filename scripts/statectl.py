@@ -203,12 +203,12 @@ PLAN_DESIGNER_MODEL = os.environ.get("PLAN_DESIGNER_MODEL", "deepseek-v4-flash")
 PLAN_REVIEWER_MODEL = os.environ.get("PLAN_REVIEWER_MODEL", "deepseek-v4-pro")
 TESTPLAN_DESIGNER_MODEL = os.environ.get("TESTPLAN_DESIGNER_MODEL", "deepseek-v4-flash")
 TESTPLAN_REVIEWER_MODEL = os.environ.get("TESTPLAN_REVIEWER_MODEL", "deepseek-v4-pro")
-CODE_DEVELOPER_MODEL = os.environ.get("CODE_DEVELOPER_MODEL", "MiniMax-M3")
-CODE_REVIEWER_MODEL = os.environ.get("CODE_REVIEWER_MODEL", "MiniMax-M3")
-CODE_PROVIDER = os.environ.get("CODE_PROVIDER", "minimax-cn")  # MiniMax（中国站，Anthropic 兼容 endpoint）
-TEST_DEVELOPER_MODEL = os.environ.get("TEST_DEVELOPER_MODEL", "MiniMax-M3")
-TEST_REVIEWER_MODEL = os.environ.get("TEST_REVIEWER_MODEL", "MiniMax-M3")
-TEST_PROVIDER = os.environ.get("TEST_PROVIDER", "minimax-cn")  # MiniMax（中国站，Anthropic 兼容 endpoint）
+CODE_DEVELOPER_MODEL = os.environ.get("CODE_DEVELOPER_MODEL", "deepseek-v4-flash")
+CODE_REVIEWER_MODEL = os.environ.get("CODE_REVIEWER_MODEL", "deepseek-v4-flash")
+CODE_PROVIDER = os.environ.get("CODE_PROVIDER", "deepseek")  # 2026-08-15 临时切 DeepSeek（MiniMax 周配额 4%）
+TEST_DEVELOPER_MODEL = os.environ.get("TEST_DEVELOPER_MODEL", "deepseek-v4-flash")
+TEST_REVIEWER_MODEL = os.environ.get("TEST_REVIEWER_MODEL", "deepseek-v4-flash")
+TEST_PROVIDER = os.environ.get("TEST_PROVIDER", "deepseek")  # 2026-08-15 临时切 DeepSeek（MiniMax 周配额 4%）
 QUALITY_REVIEWER_MODEL = os.environ.get("QUALITY_REVIEWER_MODEL", "deepseek-v4-pro")
 SECURITY_REVIEWER_MODEL = os.environ.get("SECURITY_REVIEWER_MODEL", "deepseek-v4-pro")
 RELEASER_MODEL = os.environ.get("RELEASER_MODEL", "deepseek-v4-flash")
@@ -897,6 +897,11 @@ def cmd_module(project: str, action: str, rest: list) -> int:
             write_modules(project, md)
             log(f"MODULE_ITER {project}/{rest[0]} -> {nums}")
             return 0
+        if action == "unblock":
+            if len(rest) < 2:
+                print("module unblock <name> <迭代号>", file=sys.stderr)
+                return 1
+            return _module_unblock(project, rest[0], rest[1])
         print(f"未知 module 动作: {action}（add/rm/dep/dispatch/list）", file=sys.stderr)
         return 1
 
@@ -969,8 +974,15 @@ def cmd_issue(project: str, action: str, rest: list) -> int:
             return 1
         content = content.replace("状态：fixed", "状态：closed", 1)
         content += f"- {now_iso()} 提单人复测通过，关闭\n"
+    elif action == "reopen":
+        # 复测不通过 → 回 open（FO 再修；waiting_issues 分支自动重试）
+        if "状态：fixed" not in content:
+            print(f"问题单 {iid} 非 fixed 状态（仅复测不通过可 reopen）", file=sys.stderr)
+            return 1
+        content = content.replace("状态：fixed", "状态：open", 1)
+        content += f"- {now_iso()} 复测不通过，重新 open：{' '.join(rest[1:]) or '未注明原因'}\n"
     else:
-        print(f"未知 issue 动作: {action}（open/fix/close/list）", file=sys.stderr)
+        print(f"未知 issue 动作: {action}（open/fix/close/reopen/list）", file=sys.stderr)
         return 1
     with open(p, "w", encoding="utf-8") as f:
         f.write(content)
@@ -1022,12 +1034,16 @@ def release_arch(project: str, version: str, product: str, conclusion: str) -> i
             print(f"评审仅对 arch_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
             return 1
         v["arch_reviews"] = v.get("arch_reviews", []) + [norm_product(product)]
+        v["arch_review_claimed"] = False  # 评审完成清 claim（防 stale 误判）
+        v["arch_review_claimed_pid"] = 0
         if conclusion == "PASS":
             v["status"] = "testplan"  # TE 测试方案阶段
             v["test_plan_claimed"] = False
         else:
             v["status"] = "arch"  # 重做
             v["arch_claimed"] = False
+        v["arch_review_claimed"] = False
+        v["arch_review_claimed_pid"] = 0
         write_versions(project, vd)
         log(f"ARCH_REVIEW {project}/{version} {conclusion} by=PM")
     return 0
@@ -1065,11 +1081,15 @@ def release_testplan_v2(project: str, version: str, product: str, conclusion: st
             print(f"评审仅对 testplan_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
             return 1
         v["test_plan_reviews"] = v.get("test_plan_reviews", []) + [norm_product(product)]
+        v["testplan_review_claimed"] = False  # 评审完成清 claim
+        v["testplan_review_claimed_pid"] = 0
         if conclusion == "PASS":
             v["status"] = "in_dev"  # 模块迭代开发
         else:
             v["status"] = "testplan"
             v["test_plan_claimed"] = False
+        v["testplan_review_claimed"] = False
+        v["testplan_review_claimed_pid"] = 0
         write_versions(project, vd)
         log(f"TESTPLAN_REVIEW {project}/{version} {conclusion} by=SE")
     return 0
@@ -1225,8 +1245,23 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
                     print(f"design 评审需 design_reviewing（当前 {status}）", file=sys.stderr)
                     return 1
                 m["design"]["reviews"].append(norm_product(product))
-                it["status"] = "dev_working" if conclusion == "PASS" else "design_working"
+                it["design_review_claimed"] = False  # 评审完成清 claim
+                it["design_review_claimed_pid"] = 0
+                if conclusion == "PASS":
+                    it["status"] = "dev_working"
+                    it["failures"] = int(it.get("failures", 0)) + int(it.get("design_retry_count", 0))
+                    it["design_retry_count"] = 0
+                else:
+                    it["status"] = "design_working"  # 打回修订
+                    it["design_retry_count"] = int(it.get("design_retry_count", 0)) + 1
+                    it["design_review_feedback"] = norm_product(product)
+                    if int(it.get("design_retry_count", 0)) >= 3:
+                        it["status"] = "blocked"
+                        with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                            f.write(f"[BLOCKED] 模块 {project}/{module} 迭代 {iter_n} 设计第 {it['design_retry_count']} 次评审仍 FAIL，已停止，请人工介入。\n")
                 it["claimed"] = False
+                it["design_review_claimed"] = False
+                it["design_review_claimed_pid"] = 0
             else:
                 print("design 结论必须为 DONE/PASS/FAIL", file=sys.stderr)
                 return 1
@@ -1242,6 +1277,8 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
                 print(f"review 需 dev_reviewing + PASS/FAIL（当前 {status}）", file=sys.stderr)
                 return 1
             it.setdefault("reviews", []).append(norm_product(product))
+            it["review_claimed"] = False  # 检视完成清 claim
+            it["review_claimed_pid"] = 0
             if conclusion == "PASS":
                 it["status"] = "it_working"
                 it["claimed"] = False
@@ -1256,6 +1293,8 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
                     it["status"] = "blocked"
                     with open(ALARM_FILE, "a", encoding="utf-8") as f:
                         f.write(f"[BLOCKED] 模块 {project}/{module} 迭代 {iter_n} 检视第 {it['retry_count']} 次仍 FAIL，已停止，请人工介入。\n")
+            it["review_claimed"] = False
+            it["review_claimed_pid"] = 0
         elif action == "case":
             if conclusion not in ("PASS", "FAIL"):
                 print("case 结论必须为 PASS/FAIL", file=sys.stderr)
@@ -1389,9 +1428,8 @@ def _issue_stale_watch(project: str, alarms: list) -> None:
 
 
 def _dep_cycle(md: dict, module: str) -> list:
-    """检测模块依赖环：从 module 出发 DFS，返回环路径（空 = 无环）。"""
-    path = []
-
+    """检测模块依赖环：从 module 出发 DFS，返回环路径（空 = 无环）。
+    注意：初始 stack 为空（不含起点）——否则所有模块都误报'自己→自己'成环。"""
     def dfs(cur, stack):
         if cur in stack:
             i = stack.index(cur)
@@ -1401,8 +1439,7 @@ def _dep_cycle(md: dict, module: str) -> list:
             if r:
                 return r
         return []
-
-    return dfs(module, [module])
+    return dfs(module, [])
 
 
 def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: list) -> None:
@@ -1455,6 +1492,24 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                     it["claimed_pid"] = pid
                     log(f"SPAWN-MDE {project}/{m['name']} iter-{it['n']} pid={pid}")
                     alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入设计（MDE pid={pid}）")
+                elif status == "design_working":
+                    # 设计打回修订（SE 评审 FAIL → MDE 带意见修订；首次设计由 design_pending 进入）
+                    fb = f"\n设计评审反馈（请先阅读并修订）：{it.get('design_review_feedback')}\n" if it.get("design_review_feedback") else ""
+                    out = f"{project}/design/{m['name']}/"
+                    query = (
+                        f"你是本流水线的【MDE（模块设计）】。严格遵循 roles/mde.md 修订模块 {m['name']} "
+                        f"（版本 {v['name']} 迭代 {it['n']}）功能模块设计。\n"
+                        f"架构设计：{v.get('architecture')}\n既有设计：{m['design'].get('product')}\n{fb}"
+                        f"任务：1. 按评审意见修订设计（或重写），更新到 {out}；\n"
+                        f"2. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} DONE；\n"
+                        f"3. 完成后无需汇报。"
+                    )
+                    it["claimed"] = True
+                    it["claimed_pid"] = 0
+                    pid = spawn_worker("mde", f"{project}/__mderev-{m['name']}-it{it['n']}", 1, query)
+                    it["claimed_pid"] = pid
+                    log(f"SPAWN-MDE-REV {project}/{m['name']} iter-{it['n']} pid={pid}")
+                    alarms.append(f"模块 {m['name']} 迭代 {it['n']} 设计修订（MDE pid={pid}）")
                 elif status == "design_reviewing":
                     # SE 评审模块设计（评审缺失修复）
                     if not it.get("design_review_claimed"):
@@ -1473,6 +1528,26 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                         it["design_review_claimed_pid"] = pid
                         log(f"SPAWN-DREV {project}/{m['name']} iter-{it['n']} worker=se pid={pid}")
                         alarms.append(f"模块 {m['name']} 迭代 {it['n']} 设计待 SE 评审（pid={pid}）")
+                elif status == "design_working":
+                    # MDE 修订设计（SE 评审 FAIL 打回；首轮由 design_pending 分支置位并 spawn，此分支只处理打回轮）
+                    rev = (m["design"].get("reviews") or [])
+                    fb = f"\nSE 评审意见（请先阅读并逐条修订）：{rev[-1]}\n" if rev else ""
+                    out = f"{project}/design/{m['name']}/"
+                    query = (
+                        f"你是本流水线的【MDE（模块设计）】。严格遵循 roles/mde.md 为模块 {m['name']} "
+                        f"（版本 {v['name']} 迭代 {it['n']}）修订功能模块设计（按 SE 评审意见）。\n"
+                        f"架构设计：{v.get('architecture')}\n模块需求规格：\n{_module_inputs(project, m, st)}\n"
+                        f"{fb}"
+                        f"任务：1. 阅读 SE 评审意见并逐条修订，输出更新后的功能模块设计文档到 {out}；\n"
+                        f"2. 运行 python3 scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} DONE；\n"
+                        f"3. 完成后无需汇报。"
+                    )
+                    it["claimed"] = True
+                    it["claimed_pid"] = 0
+                    pid = spawn_worker("mde", f"{project}/__mde-{m['name']}-it{it['n']}", 1, query)
+                    it["claimed_pid"] = pid
+                    log(f"SPAWN-MDE-REV {project}/{m['name']} iter-{it['n']} pid={pid}（SE 意见修订设计）")
+                    alarms.append(f"模块 {m['name']} 迭代 {it['n']} MDE 按评审意见修订设计（pid={pid}）")
                 elif status == "dev_working":
                     out = f"{project}/code/{m['name']}/iter-{it['n']}/"
                     fb = f"\n检视反馈（请先阅读并修复）：{it.get('review_feedback')}\n" if it.get("review_feedback") else ""
@@ -1528,6 +1603,79 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                         it["claimed_pid"] = pid
                         log(f"SPAWN-MTO {project}/{m['name']} iter-{it['n']} pid={pid}")
                         alarms.append(f"模块 {m['name']} 迭代 {it['n']} 进入 IT（MTO pid={pid}）")
+                    elif it.get("waiting_issues"):
+                        # 问题单闭环（v2 §7.2）：open → FO 修复（issue fix）；全 fixed → MTO 复测（issue close）；全 closed → it_passed
+                        isdir = issues_dir(project)
+                        def _istate(iid: str) -> str:
+                            p = os.path.join(isdir, f"{iid}.md")
+                            if not os.path.exists(p):
+                                return "closed"
+                            c = open(p, encoding="utf-8").read()
+                            if "状态：open" in c:
+                                return "open"
+                            if "状态：fixed" in c:
+                                return "fixed"
+                            return "closed"
+                        opens = [iid for iid in it["waiting_issues"] if _istate(iid) == "open"]
+                        fixeds = [iid for iid in it["waiting_issues"] if _istate(iid) == "fixed"]
+                        # stale 兜底：修复/复测 worker 死亡 → 清 claim 重试（防 claim 残留卡死）
+                        if it.get("fix_claimed") and not pid_alive(it.get("fix_claimed_pid")):
+                            it["fix_claimed"] = False
+                            log(f"MODULE_FIX_STALE {project}/{m['name']} iter-{it['n']} 修复 worker 死亡，重置")
+                            alarms.append(f"模块 {m['name']} 迭代 {it['n']} 修复 worker 死亡已重置")
+                        if it.get("retest_claimed") and not pid_alive(it.get("retest_claimed_pid")):
+                            it["retest_claimed"] = False
+                            log(f"MODULE_RETEST_STALE {project}/{m['name']} iter-{it['n']} 复测 worker 死亡，重置")
+                            alarms.append(f"模块 {m['name']} 迭代 {it['n']} 复测 worker 死亡已重置")
+                        # 全部 closed → 自动收口 it_passed
+                        if not opens and not fixeds:
+                            it["status"] = "it_passed"
+                            it["waiting_issues"] = []
+                            it["fix_claimed"] = False
+                            it["retest_claimed"] = False
+                            log(f"MODULE_IT {project}/{m['name']} iter-{it['n']} 问题单全部闭环 -> it_passed")
+                            alarms.append(f"模块 {m['name']} 迭代 {it['n']} 问题单闭环，IT 通过")
+                        if opens and not it.get("fix_claimed"):
+                            # FO 修复 open 问题单
+                            it["fix_claimed"] = True
+                            out = f"{project}/code/{m['name']}/iter-{it['n']}/"
+                            iss_list = "\n".join(f"- {iid}: {open(os.path.join(isdir, f'{iid}.md'), encoding='utf-8').read()[:2000]}"
+                                                 for iid in opens)
+                            fix_cmds = "\n".join(f"python3 scripts/statectl.py issue {project} fix {iid}" for iid in opens)
+                            query = (
+                                f"你是本流水线的【FO（开发者）】。严格遵循 roles/fo.md 为模块 {m['name']} "
+                                f"（版本 {v['name']} 迭代 {it['n']}）修复问题单。\\n"
+                                f"模块设计：{m['design'].get('product')}；代码：{it.get('dev_product')}\\n"
+                                f"open 问题单（必须全部修复）：\\n{iss_list}\\n"
+                                f"任务：1. 逐一修复问题单描述缺陷，修改代码到 {out}；\\n"
+                                f"2. 每个修复完成执行：\\n{fix_cmds}\\n"
+                                f"3. 全部修复后无需汇报。"
+                            )
+                            pid = spawn_worker("fo", f"{project}/__fix-{m['name']}-it{it['n']}", 1, query)
+                            it["fix_claimed_pid"] = pid
+                            log(f"SPAWN-FIX {project}/{m['name']} iter-{it['n']} pid={pid}（问题单修复）")
+                            alarms.append(f"模块 {m['name']} 迭代 {it['n']} FO 修复问题单（pid={pid}）")
+                        elif fixeds and not it.get("retest_claimed"):
+                            # 提单人（MTO）复测 fixed 问题单
+                            it["retest_claimed"] = True
+                            out = f"{project}/it/{m['name']}/iter-{it['n']}/"
+                            iss_list = "\n".join(f"- {iid}: {open(os.path.join(isdir, f'{iid}.md'), encoding='utf-8').read()[:2000]}"
+                                                 for iid in fixeds)
+                            close_cmds = "\n".join(f"python3 scripts/statectl.py issue {project} close {iid}" for iid in fixeds)
+                            query = (
+                                f"你是本流水线的【MTO（提单人，复测）】。严格遵循 roles/mto.md 复测模块 {m['name']} "
+                                f"（版本 {v['name']} 迭代 {it['n']}）已修复问题单。\\n"
+                                f"模块设计：{m['design'].get('product')}；代码：{it.get('dev_product')}\\n"
+                                f"fixed 问题单（逐一复测）：\\n{iss_list}\\n"
+                                f"任务：1. 逐一复测修复是否解决（可跑测试代码），复测记录写入问题单文件；\\n"
+                                f"2. 复测通过执行：\\n{close_cmds}\\n"
+                                f"3. 复测不通过将问题单改回 open（编辑文件 状态：fixed→状态：open）并说明原因；\\n"
+                                f"4. 全部处理后无需汇报。"
+                            )
+                            pid = spawn_worker("mto", f"{project}/__retest-{m['name']}-it{it['n']}", 1, query)
+                            it["retest_claimed_pid"] = pid
+                            log(f"SPAWN-RETEST {project}/{m['name']} iter-{it['n']} pid={pid}（问题单复测）")
+                            alarms.append(f"模块 {m['name']} 迭代 {it['n']} MTO 复测问题单（pid={pid}）")
     write_modules(project, md)
 
 
@@ -1773,6 +1921,129 @@ def cmd_change_request(rid: str, action: str, desc: str) -> int:
             write_status(st)
             log(f"CHANGE_REMOVE {rid} -> removed（从版本/模块移除，依赖自动解锁）")
     return 0
+
+
+def _module_unblock(project: str, module: str, iter_n: str) -> int:
+    """模块 unblock（工具缺口 #10）：blocked 迭代 → 回 design_pending（重跑），清 failures/retry/claim。
+    无锁纯逻辑——调用方（cmd_module/tick）负责持锁（防嵌套 flock 死锁）。"""
+    m, it = _get_mod_iter(project, module, iter_n)
+    if not m:
+        return 1
+    if it.get("status") != "blocked":
+        print(f"模块 {module} 迭代 {iter_n} 非 blocked（当前 {it.get('status')}），无需 unblock", file=sys.stderr)
+        return 1
+    for k in ("claimed", "claimed_pid", "fix_claimed", "fix_claimed_pid", "retest_claimed",
+              "retest_claimed_pid", "design_review_claimed", "design_review_claimed_pid",
+              "review_claimed", "review_claimed_pid", "review_feedback", "design_review_feedback",
+              "waiting_issues", "blocked_reason"):
+        it.pop(k, None)
+    it["status"] = "design_pending"
+    it["failures"] = 0
+    it["retry_count"] = 0
+    it["design_retry_count"] = 0
+    it["case_retry_count"] = 0
+    md = read_modules(project)
+    mm = next(x for x in md["modules"] if x["name"] == module)
+    ii = next(x for x in mm["iterations"] if str(x.get("n")) == str(iter_n))
+    mm["design"] = m["design"]
+    for k, val in it.items():
+        ii[k] = val
+    write_modules(project, md)
+    log(f"MODULE_UNBLOCK {project}/{module} iter-{iter_n} -> design_pending（人工/资源恢复）")
+    return 0
+
+
+def _version_unblock(project: str, version: str) -> int:
+    """版本 unblock：blocked 版本 → 回 planning（重来），清 failures/claim。无锁纯逻辑（调用方持锁）。"""
+    vd = read_versions(project)
+    v = next((x for x in vd["versions"] if x["name"] == version), None)
+    if not v:
+        print(f"版本 {version} 不存在", file=sys.stderr)
+        return 1
+    if v.get("status") != "blocked":
+        print(f"版本 {version} 非 blocked（当前 {v.get('status')}）", file=sys.stderr)
+        return 1
+    for k in ("arch_claimed", "arch_claimed_pid", "arch_review_claimed", "arch_review_claimed_pid",
+              "test_plan_claimed", "test_plan_claimed_pid", "testplan_review_claimed",
+              "testplan_review_claimed_pid", "st_claimed", "st_claimed_pid",
+              "qa_claimed", "qa_claimed_pid", "blocked_reason"):
+        v.pop(k, None)
+    v["status"] = "planning"
+    v["failures"] = 0
+    write_versions(project, vd)
+    log(f"VERSION_UNBLOCK {project}/{version} -> planning（人工/资源恢复）")
+    return 0
+
+
+def _resource_blocked_reason(project: str, it_or_v: dict, key: str) -> str:
+    """判定 blocked 原因：先看已标记 blocked_reason；未标 → 扫关联 worker 日志尾部（429/配额 → resource:minimax）。
+    其他 → 'other'（人工介入）。"""
+    r = it_or_v.get("blocked_reason") or ""
+    if r:
+        return r
+    # 扫项目 worker 日志（key 关联）+ errors.log 尾部
+    tail_buf = []
+    for d in (project_dir(project), os.path.join(project_dir(project), "logs"), LOG_DIR):
+        if not os.path.isdir(d):
+            continue
+        try:
+            for fn in sorted(os.listdir(d)):
+                if key.replace("/", "-") in fn or fn == "errors.log" or "errors" in fn:
+                    fp = os.path.join(d, fn)
+                    if os.path.getsize(fp) < 50 * 1024 * 1024:
+                        tail_buf.append(open(fp, encoding="utf-8", errors="replace").read()[-8000:])
+        except Exception:
+            continue
+    blob = " ".join(tail_buf).lower()
+    if any(w in blob for w in ("429", "quota", "配额已耗尽", "rate limit", "insufficient_quota")):
+        it_or_v["blocked_reason"] = "resource:minimax"
+        return "resource:minimax"
+    it_or_v["blocked_reason"] = "other"
+    return "other"
+
+
+def _resource_unblock(project: str, md: dict, vd: dict, alarms: list) -> None:
+    """资源感知自动恢复（用户需求）：blocked 且原因=资源限制 → 检查资源 → 恢复后自动 unblock（zbot 通知）。
+    其他原因 blocked 保持人工。"""
+    for m in md.get("modules", []):
+        for it in m.get("iterations", []):
+            if it.get("status") != "blocked":
+                continue
+            reason = _resource_blocked_reason(project, it, f"{m['name']}-{it['n']}")
+            if reason != "resource:minimax":
+                continue
+            if _minimax_quota_ok():
+                _module_unblock(project, m["name"], str(it["n"]))
+                with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"[RESOURCE_RECOVERED] 模块 {project}/{m['name']} iter-{it['n']} MiniMax 配额恢复，已自动 unblock 重跑。\n")
+                alarms.append(f"模块 {m['name']} 迭代 {it['n']} 配额恢复自动恢复")
+    for v in vd.get("versions", []):
+        if v.get("status") != "blocked":
+            continue
+        if _resource_blocked_reason(project, v, v["name"]) != "resource:minimax":
+            continue
+        if _minimax_quota_ok():
+            _version_unblock(project, v["name"])
+            with open(ALARM_FILE, "a", encoding="utf-8") as f:
+                f.write(f"[RESOURCE_RECOVERED] 版本 {project}/{v['name']} MiniMax 配额恢复，已自动 unblock 重跑。\n")
+            alarms.append(f"版本 {v['name']} 配额恢复自动恢复")
+
+
+def _minimax_quota_ok() -> bool:
+    """MiniMax 配额检查（5h 滚动窗口）：scripts/check_minimax_quota.py 判定。
+    脚本不可用/无配置时返回 True（不阻塞自动恢复的保守策略？——不：资源未知时应保持人工——
+    返回 True 仅在明确有配额时；异常 → False 保守）。"""
+    qs = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "scripts", "check_minimax_quota.py")
+    try:
+        import subprocess as _sp
+        r = _sp.run(["python3", qs], capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            out = (r.stdout + r.stderr).lower()
+            # 脚本语义：配额充足返回 0（输出含 available/充足/ok 等）——按脚本实际输出判定
+            return not any(w in out for w in ("429", "quota exhausted", "配额已耗尽", "insufficient"))
+        return False
+    except Exception:
+        return False
 
 
 def cmd_versions(project: str = None) -> int:
@@ -2524,6 +2795,7 @@ def _tick_common() -> int:
             _module_stale_recovery(proj, md, alarms)  # 模块 worker 死亡兜底
             _version_stale_recovery(proj, vd, alarms)  # 版本 worker 死亡兜底
             _issue_stale_watch(proj, alarms)  # 问题单长期 open 告警
+            _resource_unblock(proj, md, vd, alarms)  # 资源限制 blocked → 配额恢复自动 unblock
             _schedule_module_iter(proj, vd, md, pst, alarms)  # v2 模块迭代链（MDE→FO→MTO）
             _schedule_st_qa(proj, vd, md, pst, alarms)  # v2 版本 ST（STO）/ QA 发布
             found = find_claimable(pst)  # 任意角色（一次认领一个，防唤醒风暴）
@@ -3641,6 +3913,9 @@ def main(argv) -> int:
             return cmd_module(rest[0], rest[1], rest[2:])
         if cmd == "issue":
             return cmd_issue(rest[0], rest[1], rest[2:])
+        if cmd == "unblock":
+            with acquire_lock() as _:  # main 无锁上下文，包锁（_version_unblock 为纯逻辑）
+                return _version_unblock(rest[0], rest[1])
         if cmd == "confirm":
             return cmd_confirm(rest[0])
         if cmd == "reject":

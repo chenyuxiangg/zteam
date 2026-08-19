@@ -1,0 +1,87 @@
+  ┊ review diff
+a/workspace/snake-linux/review/code/game-app/iter-2/snake-linux-game-app-code-iter2-r1.md → b/workspace/snake-linux/review/code/game-app/iter-2/snake-linux-game-app-code-iter2-r1.md
+@@ -0,0 +1,226 @@
++# 模块代码检视意见：game-app（snake-linux v2.0.0 迭代 2）r1
++
++> **检视者**：MDE
++> **检视视角**：模块内实现（数据结构 / 实现细节 / 可测试性 / 鲁棒性）
++> **检视依据**：模块设计 `snake-linux/design/game-app/设计-iter2-r2.md`（r2，SE r1 评审 FAIL 已全消化）
++> **检视对象**：`snake-linux/code/game-app/iter-1/`（iter-2 增量落在 iter-1 既有代码目录，未新建 iter-2 子目录，与设计 §0/§4.9 决策一致）
++> **检视时间**：2026-08-14
++> **结论**：**PASS**
++
++---
++
++## 1. 检视清单核对
++
++| # | 检视项 | 结论 | 证据 |
++|---|---|---|---|
++| 1 | 实现与模块设计一致（数据结构/接口/流程） | ✅ PASS | 见 §2 |
++| 2 | 实现细节质量（边界/异常/资源释放） | ✅ PASS | 见 §3 |
++| 3 | 可测试性（UT 可写可跑） | ✅ PASS | 见 §4 |
++| 4 | 代码风格符合架构约定 | ✅ PASS | 见 §5 |
++
++---
++
++## 2. 检视项 1：实现与设计一致性
++
++### 2.1 数据结构对齐
++
++| 设计项 | 设计位置 | 实现位置 | 对齐状态 |
++|--------|---------|---------|---------|
++| `App` 字段（screen/_difficulty/game_state/_renderer/_storage/_high_score/_tick_accumulator_ms/_running/_menu_title_font/_menu_body_font/clock） | §3.4 描述 | `app.py:103-117` | ✅ 字段名严格一致；`_storage` 类型注解为 `Optional[Any]`（隐式 duck typing 让 UT 用 fake_storage；类型提示可改进但不影响功能） |
++| `AppScreen` 枚举 4 态（MENU/PLAYING/PAUSED/GAME_OVER） | §3.2 | `screens.py:11-16` | ✅ 完全一致 |
++| `InputAction` 枚举 13 项（含 G2-3/4/7 新增 RESET_HIGHSCORE/BACK_TO_MENU/UNFOCUS/ESCAPE） | §3.3 | `input.py:35-52` | ✅ 完全一致（含 P1-2 ESCAPE 独立 action） |
++| `AppConfig` frozen + `__post_init__` 校验 | §3.1（G2-R-N1） | `config.py:13-33` | ✅ `fps_cap <= 0` 与 `window_w < min_window_w` 两条校验与设计一致 |
++| `AppError`/子类（新增 `StorageUnavailableError`） | §3.6 | `errors.py:11-28` | ✅ `StorageUnavailableError(AppError)` 与设计一致 |
++| `_DIFFICULTY_LABEL` / `_STATUS_LABEL`（三态含 PAUSED） | §4.10 第 9 条 | `app.py:76-86` | ✅ RUN/PAUSED/OVER 三态全覆盖 |
++
++### 2.2 屏态同步方案 A（P0-1 修订）落地
++
++设计 §0.0 修订摘要要求"屏态同步唯一发生在 _dispatch_* 内"，§1.4 INV-11 单点方案 A。代码核对：
++
++| 屏态迁移 | 设计位置 | 实现位置 | 对齐 |
++|---------|---------|---------|------|
++| PLAYING→PAUSED（TOGGLE_PAUSE） | §4.4 + §1.4 INV-11 | `app.py:281-283` | ✅ `toggle_pause()` 后**显式** `self.screen = AppScreen.PAUSED` |
++| PLAYING→PAUSED（UNFOCUS） | §4.4 | `app.py:284-287` | ✅ 同上（含 `status == RUN` 守卫，与 §4.4 一致） |
++| PAUSED→PLAYING（TOGGLE_PAUSE） | §4.4 | `app.py:294-296` | ✅ `toggle_pause()` 后**显式** `self.screen = AppScreen.PLAYING` |
++| _new_game→PLAYING | §4.6 | `app.py:339-340` | ✅ `screen=PLAYING` |
++| _tick OVER→GAME_OVER | §4.5 | `app.py:361-362` | ✅ OVER 自动转 |
++| GAME_OVER→MENU（BACK_TO_MENU） | §4.4 | `app.py:304-306` | ✅ 含 INV-7 重置 `game_state=None` |
++
++**P0-1 死代码已剔除**：`_tick` 内不再有 `elif new_status == PAUSED` 分支（grep 验证：`app.py:360-363` 仅 OVER 分支），与 §4.5 设计一致。§6.4 UT P-8（AST 源码检查）尚未在测试代码中找到——属于 **轻量 nits**（设计 §6.4 P-8 要求 inspect.getsource 检测），见 §6.2。
++
++### 2.3 G2-2 storage / G2-3 score_callback（P0-2 修订）落地
++
++| 设计项 | 设计位置 | 实现位置 | 对齐 |
++|--------|---------|---------|------|
++| `create_storage()` 包装 HighScoreStore | §3.8 / §4.7 | `storage.py:18-31` | ✅ 签名 `create_storage(path: Optional[Path] = None) -> HighScoreStore`，异常注释清晰 |
++| `_init_pygame` 内构造 storage 并捕获双类型 | §4.7 P1-1 | `app.py:167-172` | ✅ `if self._storage is None:` 守卫（P1-3）；`except (StorageError, OSError)` 双类型捕获，与设计完全一致 |
++| `_new_game` 注册 score_callback 闭包 | §4.6 权威实现 | `app.py:322-331` | ✅ 闭包持有 `_storage` 局部引用；`try/except StorageError → StorageUnavailableError` 与设计一致 |
++| **P0-2 INV-13 直接写实例字段** | §4.6 / §1.4 INV-13 | `app.py:328` | ✅ `self._high_score = max(self._high_score, score)` 直接写实例字段，未走 nonlocal / 外部容器，与 P0-2 修订完全一致 |
++| `_dispatch_menu(RESET_HIGHSCORE)` 包 StorageUnavailableError | §4.4 | `app.py:253-259` | ✅ 转换链正确；`_storage is not None` 守卫与设计一致 |
++
++### 2.4 G2-4 失焦自动暂停 / G2-5 遮罩 / G2-6 high_score / G2-7 BACK_TO_MENU（P1-2 修订）落地
++
++| 设计项 | 设计位置 | 实现位置 | 对齐 |
++|--------|---------|---------|------|
++| `_drain_events` 仅 PLAYING 态检测失焦 | §4.4 G2-4 | `app.py:225-231` | ✅ `if self.screen == AppScreen.PLAYING:` 守卫；`try/except Exception → focused=True` 兜底与设计一致 |
++| GAME_OVER 态 ESC → BACK_TO_MENU（仅 ESC；Q 仍 QUIT 直通） | §4.4 G2-7 / P1-2 | `app.py:218-220` | ✅ 仅 `action == InputAction.ESCAPE` 被覆盖；Q 与 BACKSPACE 不被覆盖 |
++| `_drain_events` MENU 屏态兜底（None/非保留键 → START） | §4.4 R3-1 | `app.py:213-217` | ✅ ESCAPE 不在 `_MENU_RESERVED_ACTIONS` 中（input.py:62-63 注释 + 列表），与 P1-2 一致 |
++| `_render` PAUSED 路径（先 renderer.render 后 draw_pause_overlay） | §4.8 / §3.4 | `app.py:399-406` | ✅ 顺序正确，先画底图再叠加遮罩；`assert _renderer and game_state is not None` 守卫合理 |
++| `draw_pause_overlay` 形参与步骤 | §3.7 / §4.8 P2-6 | `menu.py:123-156` | ✅ 无废代码；常量走 `_constants.py:22-25`；使用 `pygame.SRCALPHA` 走 fake_pygame fixture 提供的属性 |
++| `draw_menu` / `draw_game_over` 加 high_score 形参 | §3.7 / §4.8 G2-6 | `menu.py:28, 88` | ✅ 默认值 0 保持向后兼容 |
++| ESCAPE / Backspace → BACK_TO_MENU 映射 | §4.3 G2-7 | `input.py:95-98` | ✅ ESCAPE 与 BACKSPACE 分别按 P1-2 / P2-1 走不同路径 |
++
++### 2.5 CJK 字体回退链 / 字段命名约束（R3 沿用）
++
++| 项 | 设计 | 实现 | 对齐 |
++|----|------|------|------|
++| 字段命名统一 `_difficulty` / `_high_score` | §4.10 R3-4 | `app.py:106, 110` | ✅ |
++| `App.__init__` 仅置字段 | §3.4 / §4.10 R3-10 | `app.py:92-117` | ✅ 不构造 Renderer / HighScoreStore（构造在 `_init_pygame`） |
+… omitted 148 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_152032_0f45f5
+状态已迁移 `dev_reviewing → it_working`，检视意见落盘 `snake-linux/review/code/game-app/iter-2/snake-linux-game-app-code-iter2-r1.md`，retry_count=0。
+
+任务完成。

@@ -134,6 +134,8 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 - 版本前置：`release_arch {p} {v} {产物} DONE|PASS|FAIL`（SE 产出/PM 评审）、`release_testplan_v2 ...`（TE 产出/SE 评审）
 - 模块迭代：`release_module {p} {模块} {迭代} design|code|review|case|it {产物} [DONE|PASS|FAIL]`
 - 版本收尾：`release_st_v2 ... DONE`（STO）、`release_qa ... DONE`（QA）、`confirm_guide {p} {v}`（用户确认指南→released）
+- 解除阻塞：`module {项目} unblock {模块} {迭代}`（模块 blocked → design_pending）/ `unblock {项目} {版本}`（版本 blocked → planning）——**资源限制 blocked（blocked_reason=resource:minimax）在配额恢复后由巡检自动 unblock**，其他原因保持人工
+- 问题单复测不通过：`issue {项目} reopen {iid} <原因>`（回 open 重试）
 - 变更：`change_request {req_id} modify|remove <描述>`（修改→重细化全链重跑 / 删除→忽略+解锁；released 版本冻结）
 - 版本串行：同项目仅 1 活跃版本；released 后才能开新版本架构
 - 查看：`versions [项目]`（版本/模块/迭代聚合视图）

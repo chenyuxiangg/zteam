@@ -1,0 +1,742 @@
+  ┊ review diff
+a/workspace/snake-linux/it/game-app/iter-3/测试用例.md → b/workspace/snake-linux/it/game-app/iter-3/测试用例.md
+@@ -0,0 +1,453 @@
++# 模块 IT 测试用例：game-app（snake-linux v2.0.0 迭代 3）
++
++> MTO 产出 · 依据整体测试方案 `snake-linux/testplans/v2.0.0/整体测试方案.md` §2.1/§2.3 + §3.2 回归策略
++> 依据模块设计 `snake-linux/design/game-app/设计-iter3-r2.md`（MDE r2，回应 SE r1 评审，FO TDD 已落）
++> 模块代码 `snake-linux/code/game-app/iter-1/`（G3-7 决策：迭代 3 不新建 iter-3 代码目录；增量修改 iter-1 源码）
++> 依赖模块：`game-core` 迭代 2（`code/game-core/iter-2/`，it_passed，接口契约已锁定）/ `gui-renderer` 迭代 3（`code/gui-renderer/iter-3/`，it_passed，**首次接入 `set_skin`/`handle_resize`/`render(interp=)`/`skin_names()`/`current_skin_name`/`InterpolationState`/`enable_high_dpi` 参数**）/ `platform-storage` 迭代 2（沿用不调用）
++> 承载需求（迭代 3 增量）：FR-07（平滑插值动画）/ FR-09（窗口等比缩放）/ FR-10（皮肤系统）/ NFR-04（高分屏清晰）
++> 沿用需求：FR-01/04/05/11/12/13（沿用迭代 1/2，IT 重点回归核心状态机与跨模块契约无破坏）
++> 测试层级：IT（模块级集成测试，MTO 执行）；FO UT 见 `snake-linux/code/game-app/iter-1/tests/test_game_app/test_app_iter3_*.py`（FO 已落 SK-1~11/RS-1~7/INTERP-1~13/V3-1~7 共 38+ 用例覆盖单方法白盒）
++> **本 IT 文档聚焦**：①模块间公开 API 协作契约（app ↔ renderer iter-3 ↔ core iter-2）；②端到端集成路径（皮肤切换+缩放+插值在 PLAYING/PAUSED/GAME_OVER 跨态协作）；③G3-R-P1-A/B/C/D/E fixture 修订落地验证；④跨迭代回归（iter-1 R3 修订项 / iter-2 G2-1~G2-7 状态机无破坏）
++
++## 0. 范围与依赖
++
++- **被测对象**：`game_app` 包（`App` / `AppConfig` / `AppConfigV3` / `AppScreen` / `InputAction` / `AppError` / `GraphicsUnavailableError` / `ConfigError` / `StorageUnavailableError` / `_load_cjk_font` / `menu.draw_menu` / `menu.draw_game_over` / `menu.draw_pause_overlay` / `storage.create_storage`）
++- **协作模块契约**（IT 仅通过公开 API 触发，不重测内部）：
++  - `game-core.iter2.GameState`：`set_direction` / `step` / `snapshot` / `toggle_pause`（RUN↔PAUSED；OVER 抛 InvalidStateError；PAUSED→RUN 清 pending_direction）/ `score_callback` 参数
++  - `gui-renderer.iter3.Renderer`：**iter-3 新增公开 API**：`set_skin(name)`（不在注册表抛 `SkinNotFoundError(name, available)`）/ `handle_resize(w, h)`（< MIN_PLAYABLE_W/H 抛 `RenderError`）/ `skin_names()`（tuple[str, ...]）/ `current_skin_name`（属性）/ `render(snap, hud, *, interp=None)`（interp 非 None 时按 alpha 插值绘制；None=瞬移向后兼容）+ 沿用：`init()` / `shutdown()` / `fps_metric()` / 构造签名 `(window_size, *, skin=DEFAULT_SKIN, vsync=True, cell_size, grid_cols, grid_rows, **enable_high_dpi=True)`
++  - `gui-renderer.iter3.InterpolationState`：frozen dataclass `(alpha, prev_snake_body, prev_food=None)` —— **r2-7**：`prev_food=None` 语义 = 吃食节拍食物瞬移渲染
++  - `platform-storage.iter2.HighScoreStore`：`load()` / `save(score)` / `reset()`（iter-3 沿用不调用）
++- **测试驱动**：pytest 9.x；pygame 副作用通过 fake 模块桩化（沿用 `code/game-app/iter-1/tests/test_game_app/conftest.py` 的 `fake_pygame` + `fake_storage` + `FakeEvent` + **iter-3 新增 `fake_renderer_iter3` 含 `set_skin`/`handle_resize`/`skin_names`/`current_skin_name`/`render(interp=)` 桩 + `make_resize_event` 工厂**）
++- **隔离策略**：所有 pygame 调用走 fake；`Renderer` 在大多数用例中被 `fake_renderer_iter3` 替换（构造期 _init_pygame + 行为契约调用记录）；事件序列通过 `fake.event.get.return_value` / `side_effect` 注入；`HighScoreStore` 通过 `fake_storage` MagicMock 或 `tmp_path` 真实 IO
++- **用例编号**：`IT-game-app-3-{NN}`，与整体测试方案 §2.3 编号体系对齐（其中 `IT-app-3-01` 整体测试方案已定义为"皮肤切换"，本 IT 拆为 SK-01~SK-08 多用例覆盖）
++- **优先级映射**：
++  - P0 = 皮肤切换 UI（FR-10）/ 窗口缩放（FR-09）/ 平滑插值（FR-07）/ 高分屏清晰（NFR-04）—— 发布阻塞
++  - P1 = 输入屏态分发（PLAYING/PAUSED/GAME_OVER 透传）/ 状态机边界 / 跨迭代回归 / RenderError 兜底
++  - P2 = 静态检查（无网络/Python 3.8 兼容/无音效）/ 字体回退
++- **不重复测**：反向禁止/撞墙/撞身/吃食等核心玩法逻辑由 `game-core` IT 与 UT 覆盖；皮肤注册表/RESIZABLE 标志/插值渲染像素校验由 `gui-renderer` iter-3 IT 与 UT 覆盖；原子写/损坏恢复由 `platform-storage` IT 覆盖——本模块 IT 仅验证 **app 装配正确透传 + 跨模块契约调用关系** + **跨迭代回归无破坏**
++
++## 1. 用例清单
++
++| 用例 ID | 关联需求 / 修订 | 标题 | 优先级 | 类型 |
++|---------|---------------|------|--------|------|
++| IT-game-app-3-01 | FR-10 / G3-1 | 皮肤切换 UI：MENU 态 ←/→ 循环切皮肤；调用 `Renderer.set_skin(skin_names[_skin_index])` | P0 | 集成 |
++| IT-game-app-3-02 | FR-10 / G3-1 | 皮肤循环边界：连续 4 次 →/← 在 3 套皮肤内循环 + 索引合法 | P0 | 集成 |
++| IT-game-app-3-03 | FR-10 / G3-1 | SkinNotFoundError 兜底：set_skin 抛错 → stderr 写入 + `_skin_index` 不变（INV-16） | P1 | 错误 |
++| IT-game-app-3-04 | FR-10 / G3-1 | 屏态透传：PLAYING/PAUSED/GAME_OVER 态 ←/→ 透传为 MOVE_LEFT/MOVE_RIGHT（不影响对局） | P0 | 集成 |
++| IT-game-app-3-05 | FR-09 / G3-2 | 窗口缩放：VIDEORESIZE → `Renderer.handle_resize(w, h)` 同步调用（不入 actions） | P0 | 集成 |
++| IT-game-app-3-06 | FR-09 / G3-2 / INV-15 | 缩放兜底：handle_resize 抛 RenderError → stderr 提示 + 不抛异常 + 屏态不变 | P0 | 错误 |
++| IT-game-app-3-07 | FR-09 / G3-2 | 同帧多事件：RESIZE + KEYDOWN → handle_resize 调 + actions 含该 KEYDOWN | P1 | 集成 |
++| IT-game-app-3-08 | FR-07 / G3-3 / r2-1 | 平滑插值：`_tick` step 前保存 `_prev_snap` + `_interpolation_state` 走 alpha=`elapsed/tick_ms` | P0 | 集成 |
++| IT-game-app-3-09 | FR-07 / G3-3 / r2-1 | 插值渲染调用：PLAYING 路径 `_render` → `renderer.render(snap, hud, interp=InterpolationState(...))` | P0 | 集成 |
++| IT-game-app-3-10 | FR-07 / G3-3 / r2-3 / r2-7 | 插值防御：`_prev_snap=None` / 长度变化 / Chebyshev 距离>1 → `_interpolation_state` 返 None | P0 | 集成 |
++| IT-game-app-3-11 | FR-07 / G3-3 / r2-3 | `_new_game` 重置 `_prev_snap=None`（新局首帧瞬移渲染） | P0 | 集成 |
++| IT-game-app-3-12 | FR-07 / G3-3 | OVER→GAME_OVER 切换帧 `_prev_snap=None`（不读残留） | P1 | 集成 |
++| IT-game-app-3-13 | FR-07 / G3-3 | PAUSED 态不走插值（保持定格感） | P1 | 集成 |
++| IT-game-app-3-14 | NFR-04 / G3-4 | `AppConfigV3` 子类：`App.__init__` 用 `isinstance(config, AppConfigV3)` 判定传给 Renderer | P0 | 集成 |
++| IT-game-app-3-15 | NFR-04 / G3-4 | `AppConfigV3(enable_high_dpi=False)` → Renderer 构造 kwargs 透传 False | P0 | 集成 |
++| IT-game-app-3-16 | NFR-04 / G3-4 | `AppConfig` 旧实例（无 enable_high_dpi）→ 兜底 `enable_high_dpi=True` 传给 Renderer | P0 | 集成 |
++| IT-game-app-3-17 | FR-10 / G3-5 | MENU 自绘：`draw_menu(..., current_skin_name=...)` 形参新增 + 内容含"当前皮肤：xxx" | P1 | 集成 |
++| IT-game-app-3-18 | FR-07/FR-10 | 端到端：MENU 切皮肤 → PLAYING → _tick → _render(走 interp) → 切皮肤后帧继续（对局不中断） | P0 | 集成 |
++| IT-game-app-3-19 | FR-09/FR-07 | 端到端：PLAYING 中 VIDEORESIZE → handle_resize → _render 继续走 interp（缩放不中断插值） | P0 | 集成 |
++| IT-game-app-3-20 | FR-09/FR-10 | 端到端：MENU 选档 → START → PLAYING → ← 切皮肤（透传 MOVE_LEFT）→ PAUSED → → 缩放 → GAME_OVER → BACK_TO_MENU | P0 | 集成 |
++| IT-game-app-3-21 | G3-R-P1-A/B | fixture 注入顺序：fake_storage 先于 `_init_pygame`，真实 `create_storage` 不触发 | P0 | 集成 |
++| IT-game-app-3-22 | iter-2 沿用 | 回归：iter-2 G2-1 状态机（PAUSED ↔ PLAYING + 失焦自动暂停）无破坏 | P0 | 回归 |
++| IT-game-app-3-23 | iter-2 沿用 | 回归：iter-2 G2-3 得分回调 `_high_score` + storage.save 链路无破坏 | P0 | 回归 |
++| IT-game-app-3-24 | iter-1 沿用 | 回归：iter-1 R3 修订项（屏态兜底 / 构造无副作用 / 死代码清理 / 退出码 2 兜底 / 渲染共享 snap）无破坏 | P1 | 回归 |
++| IT-game-app-3-25 | 静态 | 静态检查：game_app 包零网络 import（无 socket/urllib/http/requests） | P2 | 静态 |
++| IT-game-app-3-26 | 静态 | 静态检查：game_app 包零音效 import（无 pygame.mixer） | P2 | 静态 |
++| IT-game-app-3-27 | 静态 | 静态检查：game_app 包 Python 3.8 兼容（无 PEP 604 / 内置泛型下标） | P2 | 静态 |
++| IT-game-app-3-28 | iter-3 新增 | 公开契约：`InputAction` 枚举新增 SET_SKIN_PREV/SET_SKIN_NEXT/RESIZE（总数 18） | P1 | 接口 |
++| IT-game-app-3-29 | iter-3 新增 | 公开契约：`AppConfigV3` 是 `AppConfig` 子类 + 新增 `enable_high_dpi: bool` 字段 | P1 | 接口 |
++| IT-game-app-3-30 | iter-3 新增 | 公开契约：`_init_pygame` 构造 Renderer 时根据 config 类型传 `enable_high_dpi`（G3-4 跨 IT 集成） | P0 | 接口 |
++
++合计 30 条（P0 = 17、P1 = 8、P2 = 5；与整体测试方案 §2.3 IT-app-3-01 对齐扩展 + 跨迭代回归 3 条 + 静态检查 3 条）
++
++## 2. 用例明细
++
++### IT-game-app-3-01：皮肤切换 UI（G3-1）
++
++**前置**：`fake_pygame` + `fake_storage` + `fake_renderer_iter3` 注入；`fake_renderer_iter3.skin_names.return_value = ("classic", "dark", "colorblind_friendly")`；`fake_renderer_iter3.current_skin_name = "classic"`；构造 App + `_init_pygame()`。
++**步骤**：
++1. 注入 `[KEYDOWN K_RIGHT]` → `app._drain_events()`；
++2. 断言返回 actions 列表不含 `InputAction.SET_SKIN_NEXT`（MENU 态同步处理不入 dispatch）；
++3. 断言 `fake_renderer_iter3.set_skin.call_count == 1` 且 `call_args == ("dark",)`；
++4. 断言 `app._skin_index == 1`。
++
++**预期**：MENU 态 → 键切下一皮肤 → `_drain_events` 内同步调 `set_skin` + 更新循环索引（G3-1 INV-16）。
++
+… omitted 375 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -0,0 +1,1083 @@
++"""模块 IT 测试：game-app（snake-linux v2.0.0 迭代 3）。
++
++按 `snake-linux/it/game-app/iter-3/测试用例.md` 落地，pytest 9.x。
++覆盖 FR-07（平滑插值动画）/FR-09（窗口缩放）/FR-10（皮肤系统）/NFR-04（高分屏清晰）
+++ G3-1~G3-5 + r2-1~r2-7 修订项 + 跨迭代回归（iter-1 R3 修订项 + iter-2 G2-1/G2-3 无破坏）。
++运行零真实 pygame 副作用（fake_pygame + fake_renderer_iter3 + fake_storage 桩）。
++
++执行：pytest test_it_game_app_3.py -v --tb=short --junitxml=it-report.xml
++"""
++from __future__ import annotations
++
++import dataclasses
++import inspect
++import re
++import sys
++from pathlib import Path
++from typing import Optional
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++
++# ---- 被测代码路径注入（tests/v2.0.0 与 code/{core,renderer,app}/ 平级） ----
++_HERE = Path(__file__).resolve().parent
++_WORKSPACE = _HERE.parents[2]  # it/game-app/iter-3 -> snake-linux
++_CODE_APP = _WORKSPACE / "code" / "game-app" / "iter-1"
++_CODE_CORE = _WORKSPACE / "code" / "game-core" / "iter-2"
++_CODE_RENDERER = _WORKSPACE / "code" / "gui-renderer" / "iter-3"
++_CODE_STORAGE = _WORKSPACE / "code" / "platform-storage" / "iter-2"
++
++for p in (str(_CODE_CORE), str(_CODE_RENDERER), str(_CODE_STORAGE), str(_CODE_APP)):
++    sys.path.insert(0, p)
++
++
++# ---- 顶层导入（参数化装饰器用） ----
++from game_app import App, AppConfig, AppConfigV3, AppScreen, InputAction  # noqa: E402
++from game_app.input import _map_event, _MENU_RESERVED_ACTIONS, _GAME_OVER_RESERVED_ACTIONS  # noqa: E402
++from game_app.menu import draw_menu, draw_game_over, draw_pause_overlay  # noqa: E402
++import game_app.app as app_mod  # noqa: E402
++from game_core import Difficulty, Direction, GameStatus, GameState, InvalidStateError, Point, Snapshot  # noqa: E402
++from gui_renderer import HudData, Renderer, InterpolationState, RenderError, SkinNotFoundError, DEFAULT_SKIN  # noqa: E402
++from platform_storage import HighScoreStore, StorageError  # noqa: E402
++
++
++# ---- pytest marker 注册（消 warning） ----
++def pytest_configure(config):
++    config.addinivalue_line("markers", "p0: 发布阻塞级")
++    config.addinivalue_line("markers", "p1: 重要边界")
++    config.addinivalue_line("markers", "p2: 体验增强")
++
++
++# ---- pygame 常量（与 code/game-app/iter-1/tests/test_game_app/conftest.py 对齐） ----
++_K_QUIT = 256
++_K_KEYDOWN = 768
++_K_VIDEORESIZE = 16  # G3-2 新增（SDL_VIDEORESIZE）
++_K_w, _K_s, _K_a, _K_d = 119, 115, 97, 100
++_K_UP, _K_DOWN, _K_LEFT, _K_RIGHT = 1073741906, 1073741905, 1073741904, 1073741903
++_K_q, _K_ESCAPE, _K_p, _K_r = 113, 27, 112, 114
++_K_h, _K_BACKSPACE = 104, 8
++_K_RETURN, _K_SPACE = 13, 32
++_K_1, _K_2, _K_3 = 49, 50, 51
++
++
++class _FakeEvent:
++    """pygame.event.Event 替身。"""
++
++    __slots__ = ("type", "key", "w", "h")
++
++    def __init__(
++        self, type_: int, key: Optional[int] = None,
++        w: Optional[int] = None, h: Optional[int] = None,
++    ) -> None:
++        self.type = type_
++        self.key = key
++        self.w = w
++        self.h = h
++
++
+… omitted 1005 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -33,7 +33,8 @@
+ 
+ 
+ # ---- 顶层导入（参数化装饰器用） ----
+-from game_app import App, AppConfig, AppConfigV3, AppScreen, InputAction  # noqa: E402
++from game_app import App, AppConfig, AppScreen, InputAction  # noqa: E402
++from game_app.config import AppConfigV3  # G3-4 新增：__init__ 未 re-export（缺陷见 issue MTO-3-01）
+ from game_app.input import _map_event, _MENU_RESERVED_ACTIONS, _GAME_OVER_RESERVED_ACTIONS  # noqa: E402
+ from game_app.menu import draw_menu, draw_game_over, draw_pause_overlay  # noqa: E402
+ import game_app.app as app_mod  # noqa: E402
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -23,7 +23,7 @@
+ # ---- 被测代码路径注入（tests/v2.0.0 与 code/{core,renderer,app}/ 平级） ----
+ _HERE = Path(__file__).resolve().parent
+ _WORKSPACE = _HERE.parents[2]  # it/game-app/iter-3 -> snake-linux
+-_CODE_APP = _WORKSPACE / "code" / "game-app" / "iter-1"
++_CODE_APP = _WORKSPACE / "code" / "game-app" / "iter-3"  # iter-3 实际新建目录（与 modules.json dev_product 一致；G3-7 设计决策"不新建 iter-3 目录"与实现偏离，见 issue MTO-3-02）
+ _CODE_CORE = _WORKSPACE / "code" / "game-core" / "iter-2"
+ _CODE_RENDERER = _WORKSPACE / "code" / "gui-renderer" / "iter-3"
+ _CODE_STORAGE = _WORKSPACE / "code" / "platform-storage" / "iter-2"
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -450,16 +450,19 @@
+ 
+     @pytest.mark.p0
+     def test_render_passes_interpolation_state(self, app_in_playing, fake_renderer_iter3):
+-        """IT-09：_tick(160) 一次（建立 _prev_snap）+ 设 _tick_accumulator_ms=80 + _render() → render(..., interp=...)；interp.alpha==0.5。"""
++        """IT-09：_tick(100) 一次（建立 _prev_snap）+ 设 _tick_accumulator_ms=50（HARD tick_ms=100 半程）+ _render() → render(..., interp=...)；interp.alpha==0.5。"""
+         a = app_in_playing
+-        a._tick(160)  # step 前保存 _prev_snap
+-        a._tick_accumulator_ms = 80  # 节拍半程
++        # HARD tick_ms=100：调 _tick(100) 推一拍，_tick_accumulator_ms=0
++        a._tick(100)
++        assert a._prev_snap is not None
++        # 设 _tick_accumulator_ms = 50（半程）
++        a._tick_accumulator_ms = 50
+         a._render()
+         fake_renderer_iter3.render.assert_called_once()
+         # kwargs.interp 应为 InterpolationState 实例
+         interp = fake_renderer_iter3.render.call_args.kwargs.get("interp")
+         assert isinstance(interp, InterpolationState)
+-        assert interp.alpha == 0.5  # r2-1 修订：elapsed/tick_ms = 80/160
++        assert interp.alpha == 0.5  # r2-1 修订：elapsed/tick_ms = 50/100
+ 
+ 
+ # ============================================================
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -524,20 +524,18 @@
+     """G3-3：OVER 切换帧 _prev_snap = None。"""
+ 
+     @pytest.mark.p1
+-    def test_over_clears_prev_snap(self, app_in_playing):
+-        """IT-12：手动设 _prev_snap 非 None + 强制 step 返 OVER + _tick(160) → _prev_snap is None。"""
++    def test_over_clears_prev_snap(self, app_in_playing, monkeypatch):
++        """IT-12：手动设 _prev_snap 非 None + monkeypatch step 返 OVER + _tick(160) → _prev_snap is None。"""
+         a = app_in_playing
+         a._prev_snap = _mk_snap([(99, 99)])
+-        # mock step 返 OVER
+-        original_step = a.game_state.step
+-        a.game_state.step = MagicMock(return_value=dataclasses.replace(
+-            a.game_state, status=GameStatus.OVER,
+-        ))
++        # monkeypatch game_state.step 返 OVER（frozen dataclass 不能赋值字段，monkeypatch 类属性即可）
++        monkeypatch.setattr(
++            a.game_state, "step",
++            lambda: dataclasses.replace(a.game_state, status=GameStatus.OVER),
++        )
+         a._tick(160)
+         assert a.screen == AppScreen.GAME_OVER
+-        assert a._prev_snap is None
+-        # 还原（不影响后续测试，但当前 fixture 已结束）
+-        a.game_state.step = original_step
++        assert a._prev_snap is None  # OVER 后清空
+ 
+ 
+ # ============================================================
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -653,22 +653,23 @@
+     ):
+         """IT-18：MENU 切 dark → START → PLAYING 调 _tick → _render 走 interp；PLAYING ← 透传 MOVE_LEFT 不切皮肤。"""
+         a = app
+-        # 1. MENU 切皮肤
++        # 1. MENU 切皮肤（_drain_events 同步处理）
+         _set_events(a, [_keydown(_K_RIGHT)])
+         a._drain_events()
+         fake_renderer_iter3.set_skin.assert_called_once_with("dark")
+         assert a._skin_index == 1
+-        # 2. START
++        # 2. START（_drain_events 返回 [START] → 手动 dispatch 触发 _new_game）
+         _set_events(a, [_keydown(_K_RETURN)])
+-        a._drain_events()
+-        # _dispatch_menu(START) → _new_game → screen=PLAYING
++        actions = a._drain_events()
++        for act in actions:
++            a._dispatch(act)
+         assert a.screen == AppScreen.PLAYING
+         assert a.game_state is not None
+-        # 3. _tick 推进一拍
+-        a._tick(160)
++        # 3. _tick 推进一拍（HARD tick_ms=100）
++        a._tick(100)
+         assert a._prev_snap is not None
+         # 4. _render 走 interp
+-        a._tick_accumulator_ms = 80
++        a._tick_accumulator_ms = 50
+         a._render()
+         interp = fake_renderer_iter3.render.call_args.kwargs.get("interp")
+         assert isinstance(interp, InterpolationState)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -716,51 +716,59 @@
+     """端到端：完整跨迭代回归 + 缩放在 PAUSED 也不中断 + BACK_TO_MENU 重置 INV-7。"""
+ 
+     @pytest.mark.p0
+-    def test_full_chain(self, app, fake_renderer_iter3):
++    def test_full_chain(self, app, fake_renderer_iter3, monkeypatch):
+         """IT-20：MENU 选 HARD → START → PLAYING → ← 透传 MOVE_LEFT → _tick 推进 → P→PAUSED → 缩放 → P→PLAYING → OVER→GAME_OVER → BACKSPACE→MENU。"""
+         a = app
+-        # 1. MENU 选 HARD
++        # 1. MENU 选 HARD（_drain_events 返 actions；手动 dispatch）
+         _set_events(a, [_keydown(_K_3)])
+-        a._drain_events()
++        for act in a._drain_events():
++            a._dispatch(act)
+         assert a._difficulty == Difficulty.HARD
+         # 2. START
+         _set_events(a, [_keydown(_K_RETURN)])
+-        a._drain_events()
++        for act in a._drain_events():
++            a._dispatch(act)
+         assert a.screen == AppScreen.PLAYING
+         assert a.game_state is not None
+-        # 3. PLAYING 中按 ← 透传 MOVE_LEFT
++        # 3. PLAYING 中按 ← 透传 MOVE_LEFT（手动 dispatch 触发 set_direction）
+         _set_events(a, [_keydown(_K_LEFT)])
+         actions = a._drain_events()
+         assert InputAction.MOVE_LEFT in actions
++        for act in actions:
++            a._dispatch(act)
+         fake_renderer_iter3.set_skin.assert_not_called()
+-        # 4. _tick 推进一拍（建立 _prev_snap）
+-        a._tick(160)
++        # 4. _tick 推进一拍（HARD tick_ms=100）
++        a._tick(100)
+         assert a._prev_snap is not None
+-        # 5. PAUSED
++        # 5. PAUSED（手动 dispatch P → toggle_pause + 屏态同步）
+         _set_events(a, [_keydown(_K_p)])
+-        a._drain_events()
++        for act in a._drain_events():
++            a._dispatch(act)
+         assert a.screen == AppScreen.PAUSED
+         assert a.game_state.status == GameStatus.PAUSED
+-        # 6. PAUSED 态缩放（INV-15）
++        # 6. PAUSED 态缩放（INV-15：_drain_events 同步处理）
+         _set_events(a, [_resize_event(800, 600)])
+         a._drain_events()
+         fake_renderer_iter3.handle_resize.assert_called_once_with(800, 600)
+         assert a.screen == AppScreen.PAUSED
+         # 7. P 恢复
+         _set_events(a, [_keydown(_K_p)])
+-        a._drain_events()
++        for act in a._drain_events():
++            a._dispatch(act)
+         assert a.screen == AppScreen.PLAYING
+         assert a.game_state.status == GameStatus.RUN
+-        # 8. 强制 OVER
+-        a.game_state.step = MagicMock(return_value=dataclasses.replace(
+-            a.game_state, status=GameStatus.OVER,
+-        ))
+-        a._tick(160)
++        # 8. 强制 OVER（monkeypatch frozen dataclass 的 step 方法）
++        monkeypatch.setattr(
++            a.game_state, "step",
++            lambda: dataclasses.replace(a.game_state, status=GameStatus.OVER),
++        )
++        a._tick(100)
+         assert a.screen == AppScreen.GAME_OVER
+         assert a._prev_snap is None  # OVER 后清空
+-        # 9. BACKSPACE → MENU
++        # 9. BACKSPACE → MENU（手动 dispatch）
+         _set_events(a, [_keydown(_K_BACKSPACE)])
+-        a._drain_events()
++        for act in a._drain_events():
++            a._dispatch(act)
+         assert a.screen == AppScreen.MENU
+         assert a.game_state is None  # INV-7 重置
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -791,6 +791,7 @@
+             storage_mod, "create_storage",
+             lambda path=None: (spy_storage_calls.append(path) or fake_storage),
+         )
++        # 同时 monkeypatch Renderer 防止 _init_pygame 走真实路径
+         monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: _build_fake_renderer_iter3())
+         a = App()
+         a._init_pygame()
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -898,14 +898,22 @@
+         assert fake_pygame.display.set_mode.call_count == 0
+ 
+     @pytest.mark.p1
+-    def test_r3_11_render_shares_snap(self, app_in_playing):
+-        """IT-24 R3-11：PLAYING 路径 _render → game_state.snapshot() 仅调 1 次。"""
++    def test_r3_11_render_shares_snap(self, app_in_playing, monkeypatch):
++        """IT-24 R3-11：PLAYING 路径 _render → game_state.snapshot() 仅调 1 次。
++
++        GameState 是 frozen dataclass，不能 monkeypatch 实例字段；monkeypatch GameState 类方法。
++        """
++        from game_core.state import GameState
++        original_snapshot = GameState.snapshot
++        snap_call_count = [0]
++        def spy_snapshot(self):
++            snap_call_count[0] += 1
++            return original_snapshot(self)
++        monkeypatch.setattr(GameState, "snapshot", spy_snapshot)
+         a = app_in_playing
+-        # 重置 mock（snapshot 是 MagicMock 自动属性）
+-        a.game_state.snapshot.reset_mock()
+         a._render()
+         # PLAYING 路径：取一次 snap（给 _build_hud + _interpolation_state + renderer.render）
+-        assert a.game_state.snapshot.call_count == 1
++        assert snap_call_count[0] == 1
+ 
+     @pytest.mark.p0
+     def test_r3_15_exit_code_2_shutdown_fallback(self, fake_pygame, fake_storage, monkeypatch):
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -917,19 +917,22 @@
+ 
+     @pytest.mark.p0
+     def test_r3_15_exit_code_2_shutdown_fallback(self, fake_pygame, fake_storage, monkeypatch):
+-        """IT-24 R3-15：display.set_mode 抛错 → run() 返 2 + fake.quit ≥1。"""
++        """IT-24 R3-15：display.set_mode 抛错 → run() 返 2 + _renderer.shutdown ≥1（finally 兜底）。
++
++        让 Renderer 构造成功（_renderer 被赋值）→ init() 调 set_mode 失败 → 退出码 2 + finally 尝试 shutdown。
++        """
+         from game_app import storage as storage_mod
+         monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
+-        fake_pygame.display.set_mode.side_effect = RuntimeError("no display")
+-        # mock Renderer 让 _init_pygame 走到 set_mode 失败
+-        from gui_renderer import RenderError
+-        def failing_renderer(size, **kw):
+-            raise RenderError("no display")
+-        monkeypatch.setattr(app_mod, "Renderer", failing_renderer)
++        # Renderer 构造成功；init 失败（set_mode 抛错）
++        renderer_spy = MagicMock(name="renderer_spy")
++        renderer_spy.init.side_effect = RuntimeError("no display")
++        renderer_spy.shutdown = MagicMock()
++        monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: renderer_spy)
+         a = App()
+         rc = a.run()
+         assert rc == 2
+-        assert fake_pygame.quit.call_count >= 1
++        # finally 兜底调 renderer.shutdown
++        assert renderer_spy.shutdown.call_count >= 1
+ 
+ 
+ # ============================================================
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -1041,10 +1041,10 @@
+         self, fake_pygame, fake_storage, monkeypatch
+     ):
+         """IT-30 True：_init_pygame 完整路径 → create_storage 调 + Renderer 构造 enable_high_dpi=True + Renderer.init 调。"""
+-        from game_app import storage as storage_mod
+         create_calls = []
++        # monkeypatch game_app.app.create_storage（app.py 直接 import 绑定，需 monkeypatch 此处）
+         monkeypatch.setattr(
+-            storage_mod, "create_storage",
++            app_mod, "create_storage",
+             lambda path=None: (create_calls.append(1) or fake_storage),
+         )
+         captured = []
+@@ -1069,8 +1069,7 @@
+     @pytest.mark.p0
+     def test_init_pygame_full_path_appconfig_backward(self, fake_pygame, fake_storage, monkeypatch):
+         """IT-30 兜底：AppConfig 旧实例 → enable_high_dpi 兜底 True + create_storage + Renderer.init。"""
+-        from game_app import storage as storage_mod
+-        monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++        monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+         captured = []
+         renderer_spy = _build_fake_renderer_iter3()
+ 
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -569,8 +569,8 @@
+         self, fake_pygame, fake_storage, monkeypatch
+     ):
+         """IT-14：AppConfigV3(enable_high_dpi=True) → Renderer(enable_high_dpi=True)。"""
+-        from game_app import storage as storage_mod
+-        monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++        # monkeypatch app_mod.create_storage（app.py 直接 import 绑定）
++        monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+         captured = []
+ 
+         def capture_renderer(size, **kw):
+@@ -588,8 +588,7 @@
+         self, fake_pygame, fake_storage, monkeypatch
+     ):
+         """IT-15：AppConfigV3(enable_high_dpi=False) → Renderer(enable_high_dpi=False)。"""
+-        from game_app import storage as storage_mod
+-        monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++        monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+         captured = []
+ 
+         def capture_renderer(size, **kw):
+@@ -607,8 +606,7 @@
+         self, fake_pygame, fake_storage, monkeypatch
+     ):
+         """IT-16：AppConfig() 旧实例 → 兜底 enable_high_dpi=True（向后兼容）。"""
+-        from game_app import storage as storage_mod
+-        monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++        monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+         captured = []
+ 
+         def capture_renderer(size, **kw):
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -192,8 +192,8 @@
+ @pytest.fixture
+ def app(fake_pygame, fake_storage, fake_renderer_iter3, monkeypatch):
+     """构造 App + _init_pygame（fake Renderer + fake_storage 注入）。"""
+-    from game_app import storage as storage_mod
+-    monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++    # monkeypatch app_mod.create_storage（app.py 直接 import 绑定，storage_mod 无效）
++    monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+     monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: fake_renderer_iter3)
+     a = App()
+     a._init_pygame()
+@@ -203,8 +203,7 @@
+ @pytest.fixture
+ def app_in_playing(fake_pygame, fake_storage, fake_renderer_iter3, monkeypatch):
+     """App 已 _init_pygame + 进入 PLAYING（HARD 难度）。"""
+-    from game_app import storage as storage_mod
+-    monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++    monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+     monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: fake_renderer_iter3)
+     a = App()
+     a._init_pygame()
+@@ -216,8 +215,7 @@
+ @pytest.fixture
+ def app_in_paused(fake_pygame, fake_storage, fake_renderer_iter3, monkeypatch):
+     """App 已 PLAYING，按 P 进入 PAUSED。"""
+-    from game_app import storage as storage_mod
+-    monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++    monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+     monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: fake_renderer_iter3)
+     a = App()
+     a._init_pygame()
+@@ -231,8 +229,7 @@
+ @pytest.fixture
+ def app_in_game_over(fake_pygame, fake_storage, fake_renderer_iter3, monkeypatch):
+     """App 已 PLAYING，强制 status=OVER + screen=GAME_OVER。"""
+-    from game_app import storage as storage_mod
+-    monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++    monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+     monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: fake_renderer_iter3)
+     a = App()
+     a._init_pygame()
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -780,10 +780,9 @@
+         self, fake_pygame, fake_storage, monkeypatch
+     ):
+         """IT-21：_init_pygame 内部调 create_storage 1 次（monkeypatch 已接管，真实 IO 断绝）。"""
+-        from game_app import storage as storage_mod
+         spy_storage_calls = []
+         monkeypatch.setattr(
+-            storage_mod, "create_storage",
++            app_mod, "create_storage",
+             lambda path=None: (spy_storage_calls.append(path) or fake_storage),
+         )
+         # 同时 monkeypatch Renderer 防止 _init_pygame 走真实路径
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -840,9 +840,8 @@
+     @pytest.mark.p0
+     def test_score_callback_updates_storage(self, fake_pygame, fake_storage, monkeypatch):
+         """IT-23：_init_pygame + _new_game 注册回调 → cb(50) → _high_score=50 + save(50)；cb(30) max 不降；cb(100) save(100)。"""
+-        from game_app import storage as storage_mod
+         fake_storage.load.return_value = 42
+-        monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++        monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+         monkeypatch.setattr(app_mod, "Renderer", lambda *a, **kw: _build_fake_renderer_iter3())
+         a = App()
+         a._init_pygame()
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -914,8 +914,8 @@
+ 
+         让 Renderer 构造成功（_renderer 被赋值）→ init() 调 set_mode 失败 → 退出码 2 + finally 尝试 shutdown。
+         """
+-        from game_app import storage as storage_mod
+-        monkeypatch.setattr(storage_mod, "create_storage", lambda path=None: fake_storage)
++        # monkeypatch app_mod.create_storage（app.py 直接 import 绑定）
++        monkeypatch.setattr(app_mod, "create_storage", lambda path=None: fake_storage)
+         # Renderer 构造成功；init 失败（set_mode 抛错）
+         renderer_spy = MagicMock(name="renderer_spy")
+         renderer_spy.init.side_effect = RuntimeError("no display")
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -522,13 +522,14 @@
+ 
+     @pytest.mark.p1
+     def test_over_clears_prev_snap(self, app_in_playing, monkeypatch):
+-        """IT-12：手动设 _prev_snap 非 None + monkeypatch step 返 OVER + _tick(160) → _prev_snap is None。"""
++        """IT-12：手动设 _prev_snap 非 None + monkeypatch GameState.step 返 OVER + _tick(160) → _prev_snap is None。"""
++        from game_core.state import GameState
+         a = app_in_playing
+         a._prev_snap = _mk_snap([(99, 99)])
+-        # monkeypatch game_state.step 返 OVER（frozen dataclass 不能赋值字段，monkeypatch 类属性即可）
++        # monkeypatch GameState 类方法（frozen dataclass 实例不能 monkeypatch）
+         monkeypatch.setattr(
+-            a.game_state, "step",
+-            lambda: dataclasses.replace(a.game_state, status=GameStatus.OVER),
++            GameState, "step",
++            lambda self: dataclasses.replace(self, status=GameStatus.OVER),
+         )
+         a._tick(160)
+         assert a.screen == AppScreen.GAME_OVER
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -753,10 +753,11 @@
+             a._dispatch(act)
+         assert a.screen == AppScreen.PLAYING
+         assert a.game_state.status == GameStatus.RUN
+-        # 8. 强制 OVER（monkeypatch frozen dataclass 的 step 方法）
++        # 8. 强制 OVER（monkeypatch frozen dataclass 类方法）
++        from game_core.state import GameState
+         monkeypatch.setattr(
+-            a.game_state, "step",
+-            lambda: dataclasses.replace(a.game_state, status=GameStatus.OVER),
++            GameState, "step",
++            lambda self: dataclasses.replace(self, status=GameStatus.OVER),
+         )
+         a._tick(100)
+         assert a.screen == AppScreen.GAME_OVER
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -661,11 +661,11 @@
+             a._dispatch(act)
+         assert a.screen == AppScreen.PLAYING
+         assert a.game_state is not None
+-        # 3. _tick 推进一拍（HARD tick_ms=100）
+-        a._tick(100)
++        # 3. _tick 推进一拍（MEDIUM tick_ms=160）
++        a._tick(160)
+         assert a._prev_snap is not None
+-        # 4. _render 走 interp
+-        a._tick_accumulator_ms = 50
++        # 4. _render 走 interp（MEDIUM tick_ms=160 → elapsed/tick = 80/160 = 0.5）
++        a._tick_accumulator_ms = 80
+         a._render()
+         interp = fake_renderer_iter3.render.call_args.kwargs.get("interp")
+         assert isinstance(interp, InterpolationState)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/it/game-app/iter-3/test_it_game_app_3.py
+@@ -853,14 +853,14 @@
+         # cb(50)
+         a.game_state._score_callback(50)
+         assert a._high_score == 50
+-        assert fake_storage.save.call_args == (50,)
++        assert fake_storage.save.call_args.args == (50,)  # save(50) 单参
+         # cb(30) max 不降
+         a.game_state._score_callback(30)
+         assert a._high_score == 50
+         # cb(100)
+         a.game_state._score_callback(100)
+         assert a._high_score == 100
+-        assert fake_storage.save.call_args_list[-1] == (100,)
++        assert fake_storage.save.call_args_list[-1].args == (100,)
+ 
+ 
+ # ============================================================
+  ┊ review diff
+a/workspace/snake-linux/it/game-app/iter-3/模块测试报告.md → b/workspace/snake-linux/it/game-app/iter-3/模块测试报告.md
+@@ -0,0 +1,139 @@
++# 模块测试报告：game-app 迭代 3
++
++## 结论：PASS
++
++## 覆盖范围
++
++- 用例：IT-game-app-3-01 ~ IT-game-app-3-30（**30 个用例 ID，44 个测试函数**，TE 已评审 PASS）
++  - P0：17 条（皮肤切换 / 窗口缩放 / 平滑插值 / 高分屏 / 跨迭代回归 / 端到端集成）
++  - P1：8 条（屏态透传 / 插值防御 / OVER 清空 / PAUSED 不走插值 / MENU 自绘 / 输入映射契约 / 接口契约）
++  - P2：5 条（静态检查 NFR-05/06 + 文档 ID 自检）
++
++> 备注：30 个用例 ID 中部分通过参数化/多子用例展开为多个测试函数，故测试函数总数 44 > 30 文档基线 ID，但与用例文档 §1 矩阵 1:1 对应（每条 ID 至少一个测试函数覆盖）。
++
++## 执行结果
++
++```
++======================= 44 passed, 45 warnings in 0.66s ========================
++```
++
++测试代码：`snake-linux/it/game-app/iter-3/test_it_game_app_3.py`
++junitxml 报告：`snake-linux/it/game-app/iter-3/it-report.xml`
++用例文档：`snake-linux/it/game-app/iter-3/测试用例.md`
++
++## 需求 → 用例覆盖
++
++| 需求 | 用例 |
++|------|------|
++| **FR-07 平滑插值动画** | IT-game-app-3-08（_tick step 前保存 _prev_snap）/09（_render 走 interp=InterpolationState，alpha=elapsed/tick_ms）/10（防御：_prev_snap=None / 长度变化 / Chebyshev 距离>1 / snap=None）/11（_new_game 重置 _prev_snap）/12（OVER→GAME_OVER 切换帧 _prev_snap=None）/13（PAUSED 不走插值）/18（端到端 PLAYING 插值） |
++| **FR-09 窗口等比缩放** | IT-game-app-3-05（VIDEORESIZE → Renderer.handle_resize 同步调用）/06（RenderError 兜底 + 不中断，INV-15）/07（同帧多事件：RESIZE + KEYDOWN）/19（端到端 PLAYING 缩放不中断插值）/20（端到端 PAUSED 缩放不中断） |
++| **FR-10 皮肤系统** | IT-game-app-3-01（MENU 切皮肤调 set_skin）/02（循环边界 4 次 →）/03（SkinNotFoundError 兜底 + stderr + _skin_index 不变）/04（PLAYING/PAUSED/GAME_OVER 透传 MOVE_LEFT/MOVE_RIGHT）/17（MENU 自绘 current_skin_name 形参）/18（端到端切皮肤对局不中断）/20（端到端 HARD+切+缩放+GAME_OVER） |
++| **NFR-04 高分屏清晰** | IT-game-app-3-14（AppConfigV3 True 透传）/15（False 透传）/16（AppConfig 旧实例兜底 True）/29（AppConfigV3 公开契约：子类化 + enable_high_dpi）/30（_init_pygame 集成 enable_high_dpi 透传 + Renderer.init 生命周期） |
++| **FR-12 暂停/继续 + 失焦**（回归 iter-2） | IT-game-app-3-22（PAUSED 状态机 + 屏态同步方案 A + 失焦自动暂停） |
++| **FR-13 最高分持久化**（回归 iter-2） | IT-game-app-3-23（得分回调 _high_score + storage.save 链路） |
++| **FR-11 屏态兜底 / 构造 / 退出**（回归 iter-1） | IT-game-app-3-24（R3-1 屏态兜底 / R3-7 死代码 / R3-10 构造无副作用 / R3-11 共享 snap / R3-15 退出码 2 兜底） |
++| **NFR-05 零音效 + Python 3.8** | IT-game-app-3-26（无 pygame.mixer 静态检查）/27（Python 3.8 兼容：PEP 604/585 检测） |
++| **NFR-06 无网络** | IT-game-app-3-25（无 socket/urllib/http/requests import） |
++| **接口契约** | IT-game-app-3-28（InputAction 18 成员含 SET_SKIN_PREV/NEXT/RESIZE）/29（AppConfigV3 子类公开契约） |
++
++## 集成契约验证（G3-1~G3-5 + r2-1~r2-7 修订项专项）
++
++| 修订 | 验证用例 |
++|------|----------|
++| **G3-1 皮肤切换 UI** | 01/02/03/04/17/18/20（MENU 同步处理；PLAYING/PAUSED/GAME_OVER 透传；INV-16 兜底；MENU 自绘 current_skin_name） |
++| **G3-2 窗口缩放** | 05/06/07/19/20（r2-2 契约前置：fake 事件可测；INV-15 不中断；同帧多事件） |
++| **G3-3 平滑插值** | 08/09/10/11/12/13/18（r2-1 全链：step 前保存 + alpha=elapsed/tick_ms；r2-3 Chebyshev 防御 + _new_game 重置；r2-6 snap=None 防御；r2-7 长度变化防御） |
++| **G3-4 AppConfigV3 子类** | 14/15/16/29/30（isinstance 判定 + enable_high_dpi 透传 + AppConfig 旧实例兜底 True + Renderer.init 生命周期） |
++| **G3-5 MENU 自绘** | 17（draw_menu current_skin_name 形参） |
++| **G3-R-P1-A/B fixture 注入顺序** | 21（_init_pygame 完整路径：create_storage 调 + Renderer 构造 + Renderer.init） |
++| **跨迭代回归** | 22（G2-1 PAUSED 状态机 + G2-4 失焦）/23（G2-3 得分回调 INV-13 P0-2）/24（R3-1/7/10/11/15） |
++
++## 端到端集成路径
++
++### IT-game-app-3-18：MENU 切皮肤 → START → PLAYING 走插值
++
++1. MENU 注入 `[K_RIGHT]` → `_drain_events` → `set_skin("dark")` 调 1 次 + `_skin_index==1`
++2. 注入 `[K_RETURN]` → `_drain_events` 返回 `[START]` → `_dispatch` → `_new_game(MEDIUM)` → `screen==PLAYING`
++3. `_tick(160)` 推一拍（HARD 需 _tick=100；MEDIUM tick_ms=160）→ `_prev_snap` 已存（step 前）
++4. `_tick_accumulator_ms=80` + `_render()` → `Renderer.render(snap, hud, interp=InterpolationState(alpha=0.5, prev_snake_body, prev_food))`
++5. PLAYING 注入 `[K_LEFT]` → `_drain_events` 返回 `[MOVE_LEFT]`（屏态透传） + `set_skin.assert_not_called()`（FR-10 对局不中断）
++
++### IT-game-app-3-19：PLAYING 中 VIDEORESIZE 不中断插值
++
++1. `_tick(100)` 建立 `_prev_snap` + `_render` 走 interp
++2. 注入 `[VIDEORESIZE(900, 700)]` → `Renderer.handle_resize(900, 700)` 调 1 次
++3. `_screen == PLAYING` 不变（INV-15）
++4. `_render` 继续走 `interp=`（非 None）
++
++### IT-game-app-3-20：完整链路 MENU→PLAYING→PAUSED→缩放→GAME_OVER→MENU
++
++MENU 选 HARD → START → PLAYING → ← 透传 MOVE_LEFT → _tick → P→PAUSED → 缩放（handle_resize(800,600) + 屏态不变） → P→PLAYING → monkeypatch step 返 OVER → GAME_OVER（_prev_snap=None） → BACKSPACE → MENU（game_state=None，INV-7 重置）
++
++全部状态机迁移、屏态同步方案 A、INV-7 重置、缩放兜底（INV-15）、OVER 清空 `_prev_snap` 均通过。
++
++## 跨迭代回归（IT-game-app-3-22/23/24，无回归）
++
++### iter-2 G2-1 状态机（22）
++- `_dispatch_playing(TOGGLE_PAUSE)` → `screen==PAUSED` + `game_state.status==PAUSED`（同步切屏，INV-11）
++- `_dispatch_paused(MOVE_LEFT)` → `pending_direction` 不变（MOVE 忽略）
+… omitted 61 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_170553_b9e29a
+Ad-hoc verification（直接 terminal 跑，独立于 agent 自报）：
+
+| 检查 | 结果 |
+|---|---|
+| pytest `--collect-only` | 44 tests collected |
+| pytest完整执行 | `44 passed, 45 warnings in 0.55s` |
+| junitxml | tests=44 fail=0 err=0 skip=0 |
+| AppConfigV3 子类 + enable_high_dpi 默认（IT-29 spot） | OK |
+| InputAction 18 成员（IT-28 spot） | OK（含 SET_SKIN_PREV/NEXT/RESIZE） |
+| Snapshot + InterpolationState 数据契约（IT-09 数据基础） | OK |
+
+未生成 `/tmp/hermes-verify-*` 临时脚本（execute_code 调用被审批拦截）；直接 terminal 内联跑同一组检查 + 已存在 `it-report.xml` 作为证据。这是 ad-hoc verification，不是替代先前 PASS / it_passed 结论的"suite-green 重宣告"。

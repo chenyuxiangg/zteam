@@ -1,0 +1,85 @@
+  ┊ review diff
+a/workspace/snake-linux/design/gui-renderer/设计-r1.md → b/workspace/snake-linux/design/gui-renderer/设计-r1.md
+@@ -0,0 +1,671 @@
++# 功能模块设计：gui-renderer（snake-linux v2.0.0 迭代 1）
++
++> MDE 首发产出 · 严格对齐架构 `snake-linux/arch/v2.0.0/架构设计.md`、分工表 `snake-linux/arch/v2.0.0/功能模块分工表.md`、需求规格 `snake-linux/analysis/snake-gui-r1.md`（R-01~R-09 用户拍板已固化）
++> 依赖模块：game-core（迭代 1 已 it_passed）；本迭代 1 范围 = **基础渲染闭环**（蛇/食物/背景/HUD 静态绘制）
++> **迭代 3 增量**（本设计不实现，仅留接口与扩展点预告）：平滑插值动画、皮肤系统 ≥3 套、窗口等比缩放、高分屏清晰
++> **目标**：FO 拿到本文即可 TDD 开发，UT 框架明确
++
++---
++
++## 0. 模块定位与迭代边界
++
++| 项 | 值 |
++|----|---|
++| 模块 | gui-renderer |
++| 类型 | 中间件 |
++| 依赖 | game-core（纯逻辑，零 GUI 依赖） |
++| 被依赖 | game-app（主循环驱动 `Renderer.render(snapshot)`） |
++| 承载需求 | snake-gui 子集 FR-06（图形界面渲染）——迭代 1 仅基础闭环；FR-07（平滑动画）、FR-08（美观基线）、FR-09（窗口自适应）、FR-10（皮肤系统）放迭代 3 |
++| 迭代 | 1（首发） |
++| 不引入 | 第三方除 pygame 外任何依赖；不引入音效（架构 §R-04）；不引入网络（NFR-06） |
++| 跨迭代复用 | 接口签名迭代 3 不变则不重写；迭代 3 通过扩展而非修改接入 |
++
++### 迭代 1 出口（与架构 §迭代计划 对齐）
++
++- ✅ 窗口创建 + 主循环驱动（驱动在 game-app，renderer 暴露 `render(snapshot)`）
++- ✅ 蛇身按 `snapshot.snake_body` 绘制
++- ✅ 食物按 `snapshot.food` 绘制
++- ✅ 背景填充
++- ✅ HUD 静态文本（得分 / 最高分 / 长度 / 难度 / 状态）—— 字体固定位置字号清晰
++- ✅ 单皮肤（`_DEFAULT_SKIN` 经典配色）—— 皮肤系统迭代 3 接入
++- ✅ 固定窗口尺寸（迭代 1 不做缩放）—— 迭代 3 接入
++- ✅ 帧率统计接口（`fps_metric()` 返回 P95 帧时间）—— 性能验证依据
++- ❌ 平滑插值动画（迭代 3）
++- ❌ 窗口等比缩放（迭代 3）
++- ❌ 皮肤切换 / ≥3 套皮肤（迭代 3）
++
++---
++
++## 1. 数据结构
++
++### 1.1 基础值对象（渲染侧）
++
++| 类型 | 字段 | 说明 |
++|------|------|------|
++| `Color` | `r: int`、`g: int`、`b: int`（0–255） | RGB 颜色三元组；渲染侧独立于 game-core 的 Point/Direction |
++| `Rect` | `x: int`、`y: int`、`w: int`、`h: int` | 屏幕像素矩形；用于 HUD 区域与绘制原语 |
++
++> **设计原则**：renderer 不复用 game-core 的 `Point`（避免渲染层对游戏层坐标语义产生隐式耦合）；渲染侧坐标一律为像素整数，转换（grid→pixel）由 renderer 内部完成。
++
++### 1.2 皮肤数据结构（迭代 1 仅占位 + 经典皮肤）
++
++```python
++@dataclass(frozen=True)
++class Skin:
++    name: str                                # "classic" / "dark" / "colorblind_friendly"（后两者迭代 3）
++    background: Color                        # 背景填充
++    grid_line: Color                         # 网格线（迭代 1 可选显示）
++    snake_head: Color                        # 蛇头
++    snake_body: Color                        # 蛇身
++    food: Color                              # 食物
++    food_outline: Color                      # 食物描边（辨识度增强，对齐 FR-08）
++    hud_text: Color                          # HUD 文本
++    hud_accent: Color                        # HUD 强调色（最高分 / 状态标签）
++```
++
++迭代 1 内置常量：
++
++```python
++DEFAULT_SKIN = Skin(
++    name="classic",
++    background=Color(18, 18, 24),     # 深灰蓝
++    grid_line=Color(30, 30, 40),
++    snake_head=Color(120, 220, 120),  # 鲜绿
++    snake_body=Color(60, 180, 90),    # 稍深绿
++    food=Color(230, 80, 80),          # 红
++    food_outline=Color(255, 240, 220),
++    hud_text=Color(230, 230, 240),
++    hud_accent=Color(255, 210, 90),   # 金黄强调
+… omitted 593 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_015008_a797b3
+状态已迁移到 `design_reviewing`，等 SE 评审。

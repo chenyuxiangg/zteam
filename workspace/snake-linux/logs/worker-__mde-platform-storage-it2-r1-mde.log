@@ -1,0 +1,179 @@
+  ┊ review diff
+a/workspace/snake-linux/design/platform-storage/r1.md → b/workspace/snake-linux/design/platform-storage/r1.md
+@@ -0,0 +1,336 @@
++# 功能模块设计：platform-storage（snake-linux v2.0.0 迭代 2）
++
++> MDE 产出 · 依据架构设计 `snake-linux/arch/v2.0.0/架构设计.md`（SE 已评审通过）
++> 与模块分工 `snake-linux/arch/v2.0.0/功能模块分工表.md` 一致
++> 跨迭代复用：本设计文档为迭代 2 首发版本，迭代 N≥3 仅增量更新（接口不变则不重写）
++
++## 0. 模块定位
++
++| 项 | 值 |
++|----|----|
++| 模块 | platform-storage |
++| 类型 | 中间件 |
++| 依赖 | 无（叶子模块，仅标准库依赖） |
++| 被依赖 | game-app（最高分加载/保存、重置入口） |
++| 承载需求 | snake-gui 子集 FR-13（最高分持久化、重置入口）；FR-14（用户数据目录，不写安装路径） |
++| 迭代 | 2（首发） |
++| 文件路径 | `workspace/snake-linux/code/platform-storage/`（FO 落地路径，参考) |
++
++## 1. 数据结构
++
++### 1.1 用户数据目录路径（运行期派生，不落盘常量）
++
++| 字段 | 类型 | 来源/规则 |
++|------|------|-----------|
++| OS 判定 | `sys.platform` ∈ {"win32", "darwin", "linux"/"linux2"} | Python 标准库；启动时一次性确定，不重复探测 |
++| Windows | `os.environ["APPDATA"]` 或 `Path.home() / "AppData/Roaming"` | `%APPDATA%`（win32 必有），缺失则 fallback |
++| macOS | `Path.home() / "Library/Application Support"` | XDG 不适用 |
++| Linux/Unix | `os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))` | XDG Base Directory 规范 |
++| 应用子目录 | `"SnakeGui"` | 固定名（与 v1.x 终端版 "Snake" 不复用——产品名升级） |
++| 完整路径 | `{用户数据目录}/SnakeGui/` | mkdir(parents=True, exist_ok=True) 幂等 |
++
++### 1.2 数据文件
++
++**最高分文件 `highscore.json`**：
++
++```json
++{
++  "schema_version": 1,
++  "high_score": 1234
++}
++```
++
++| 字段 | 类型 | 必填 | 说明 |
++|------|------|------|------|
++| schema_version | int | 是 | 数据格式版本号；当前 = 1（FO 写常量） |
++| high_score | int | 是 | 最高分；≥0；无历史时 = 0 |
++
++**偏好文件 `preferences.json`**（预留，本迭代不写，读则返回空字典；迭代 3 皮肤系统使用）：
++
++```json
++{
++  "schema_version": 1,
++  "skin": "classic"
++}
++```
++
++> 本迭代 2 仅落地 `highscore.json`；`preferences.json` 的接口预留由 storage 模块提供（load/save/reset），但 game-app 暂不调用。
++
++### 1.3 内存缓存模型（运行时）
++
++| 对象 | 字段 | 类型 | 说明 |
++|------|------|------|------|
++| `HighScoreStore` | path | Path | JSON 文件绝对路径（构造期计算并 mkdir） |
++| HighScoreStore | _cache | int | 内存中的最高分（构造期 load 一次；save 后更新） |
++| HighScoreStore | _dirty | bool | True=有未持久化变更；进程崩溃兜底参考 |
++| HighScoreStore | _lock_path | Path | 同目录下的 `.highscore.lock`（同进程内互斥，不需要 fcntl 跨进程） |
++
++## 2. 数据传递方式
++
++| 场景 | 方式 | 说明 |
++|------|------|------|
++| 路径获取 | 函数返回值 `Path` | `get_user_data_dir()` → `Path`；调用方 `str()` 转字符串 |
++| 最高分加载 | 同步函数 `int` 返回值 | `HighScoreStore.load() -> int`；缺文件/损坏返回 0 |
++| 最高分保存 | 同步函数 None | `HighScoreStore.save(score: int)`；内部原子写 |
++| 重置 | 同步函数 None | `HighScoreStore.reset()`；删除文件并清缓存 |
++| 错误反馈 | 自定义异常 | `StorageError`(IO/JSON/路径)；让 game-app 走 NFR-03 可读错误提示路径 |
++| 进程内互斥 | 模块级 `threading.RLock`（预留）；本迭代单线程不实装 | 迭代 2 单线程不需要；预留 import 行不报错 |
++
+… omitted 258 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_003121_1cc0e7
+设计文档落盘 +状态已迁移至 design_reviewing 等 SE 评审。
+  ┊ review diff
+a/workspace/snake-linux/design/platform-storage/r2.md → b/workspace/snake-linux/design/platform-storage/r2.md
+@@ -0,0 +1,385 @@
++# 功能模块设计：platform-storage（snake-linux v2.0.0 迭代 2）
++
++> MDE 修订版（r2）· 依据 SE 评审意见 `snake-linux/review/design/platform-storage/iter-2/snake-linux-platform-storage-it2-design-r1.md` 逐条修订
++> 与架构设计 `snake-linux/arch/v2.0.0/架构设计.md`（SE 已评审通过）一致
++> 与模块分工 `snake-linux/arch/v2.0.0/功能模块分工表.md` 一致
++> 跨迭代复用：本设计文档为迭代 2 首发版本，迭代 N≥3 仅增量更新（接口不变则不重写）
++
++## 修订对照（r1 → r2）
++
++| ID | 评审意见（r1 失败项） | 修订落点 |
++|----|----------------------|----------|
++| P1 | RLock 声明"不实装"与流程/用例自相矛盾 | §2 删除"不实装"表述，明确"迭代 2 实装 RLock"；§4.2/§4.3/§4.4 流程保留 `with self._lock:`；§7.4/§7.5-14 并发断言与用例 14 保留 |
++| P2 | schema_version 校验承诺与 load() 流程矛盾 | §4.3 load() 增加 `schema_version != 1` 校验分支（备份 + 返回 0）；§5.2 鲁棒性表已含此承诺（保留）；§7.5 test_highscore 补用例 16"schema_version 不识别" |
++| P3 | __init__ 行为定义不全（构造期 .tmp 清理无流程） | §3.2 __init__ 语义补充"清理残留 .tmp"；§4 新增 §4.0 __init__ 流程（mkdir → 清理 .tmp → load）；§7.5 用例 15 已含"构造期清理残留 .tmp"（保留） |
++| P4（建议） | §0 FR-14 引用错误 | §0 承载需求改为"FR-13 + NFR-06/07" |
++| P5（建议） | preferences.json 预留接口未定义签名 | §3.4 新增"偏好接口预留（迭代 3 实装）"，给出签名占位与不实现承诺；§1.2 表述调整 |
++
++---
++
++## 0. 模块定位
++
++| 项 | 值 |
++|----|----|
++| 模块 | platform-storage |
++| 类型 | 中间件 |
++| 依赖 | 无（叶子模块，仅标准库依赖） |
++| 被依赖 | game-app（最高分加载/保存、重置入口） |
++| 承载需求 | snake-gui 子集 FR-13（最高分持久化、重置入口）；NFR-06（无网络行为）；NFR-07（便携式，不写安装路径） |
++| 迭代 | 2（首发） |
++| 文件路径 | `workspace/snake-linux/code/platform-storage/`（FO 落地路径，参考) |
++
++## 1. 数据结构
++
++### 1.1 用户数据目录路径（运行期派生，不落盘常量）
++
++| 字段 | 类型 | 来源/规则 |
++|------|------|-----------|
++| OS 判定 | `sys.platform` ∈ {"win32", "darwin", "linux"/"linux2"} | Python 标准库；启动时一次性确定，不重复探测 |
++| Windows | `os.environ["APPDATA"]` 或 `Path.home() / "AppData/Roaming"` | `%APPDATA%`（win32 必有），缺失则 fallback |
++| macOS | `Path.home() / "Library/Application Support"` | XDG 不适用 |
++| Linux/Unix | `os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))` | XDG Base Directory 规范 |
++| 应用子目录 | `"SnakeGui"` | 固定名（与 v1.x 终端版 "Snake" 不复用——产品名升级） |
++| 完整路径 | `{用户数据目录}/SnakeGui/` | mkdir(parents=True, exist_ok=True) 幂等 |
++
++### 1.2 数据文件
++
++**最高分文件 `highscore.json`**：
++
++```json
++{
++  "schema_version": 1,
++  "high_score": 1234
++}
++```
++
++| 字段 | 类型 | 必填 | 说明 |
++|------|------|------|------|
++| schema_version | int | 是 | 数据格式版本号；当前 = 1（FO 写常量）；不识别版本视为损坏 |
++| high_score | int | 是 | 最高分；≥0；无历史时 = 0 |
++
++**偏好文件 `preferences.json`**（预留，本迭代不写不读，接口占位；迭代 3 皮肤系统使用）：
++
++```json
++{
++  "schema_version": 1,
++  "skin": "classic"
++}
++```
++
++> 本迭代 2 仅落地 `highscore.json`；`preferences.json` 的接口签名见 §3.4（占位声明），本迭代不提供可调用实现，迭代 3 设计时定义完整行为并由 FO 落地。
++
++### 1.3 内存缓存模型（运行时）
++
++| 对象 | 字段 | 类型 | 说明 |
++|------|------|------|------|
++| `HighScoreStore` | path | Path | JSON 文件绝对路径（构造期计算并 mkdir） |
++| HighScoreStore | _cache | int | 内存中的最高分（构造期 load 一次；save 后更新） |
++| HighScoreStore | _dirty | bool | True=有未持久化变更；进程崩溃兜底参考 |
+… omitted 307 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_011131_524fd2
+已完成。
+
+修订版设计落盘 `snake-linux/design/platform-storage/r2.md`，按 SE 评审意见逐条处理：
+- P1：§2 删除"不实装"，明确迭代 2 实装 RLock；§4.2/§4.3/§4.4 流程保留 `with self._lock:`；§7.5 用例 14 保留并发断言
+- P2：§4.3 load() 增加 `schema_version != 1` 校验分支（备份+返回0）；§7.5 补用例 16-18（不识别/缺字段/类型错）
+- P3：§4.0 新增 `__init__` 流程（mkdir → 清理同名 .tmp → 创建锁 → load）；§3.2 语义同步补充
+- P4（建议）：§0 承载需求改为 FR-13 + NFR-06/07
+- P5（建议）：§3.4 新增偏好接口签名占位 + 承诺"本迭代不导出、不实现"
+
+`release_module` 已执行：`design_working → design_reviewing`，等待 SE 复审。

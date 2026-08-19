@@ -1,0 +1,433 @@
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -37,10 +37,21 @@
+     SKIN_REGISTRY,
+ )
+ from .errors import RenderError, SkinNotFoundError
+-from .types import FpsMetric, HudData, InterpolationState, Skin
++from .types import Color, FpsMetric, HudData, InterpolationState, Skin
+ 
+ 
+ # ---- 工具函数（设计 §4.4 修订 P2-1）----
++
++def _pygame_color(c) -> Tuple[int, int, int]:
++    """把 gui_renderer.Color dataclass 转 pygame 接受的 tuple (r, g, b)。
++
++    修复 MTO-4-01：pygame Surface.fill()/draw 系列/font.render 仅接受
++    tuple/str/pygame.Color，不接受自定义 Color dataclass（真实集成首帧
++    TypeError）。已传 tuple/str/pygame.Color 时原样返回（幂等兼容）。
++    """
++    if isinstance(c, Color):
++        return (c.r, c.g, c.b)
++    return c
+ 
+ def _interpolate_position(
+     prev: Tuple[int, int], current: Tuple[int, int], alpha: float
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -344,8 +344,8 @@
+         screen = self._screen
+         t0 = pygame.time.get_ticks()
+ 
+-        # 1. 背景填充
+-        screen.fill(self._skin.background)
++        # 1. 背景填充（MTO-4-01：Color dataclass → tuple）
++        screen.fill(_pygame_color(self._skin.background))
+ 
+         # 2. 插值上下文（默认 alpha=1.0 = 无插值）
+         alpha = 1.0
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -365,7 +365,7 @@
+             px, py = self._grid_to_pixel(cur)
+             px_i, py_i = int(round(px)), int(round(py))
+             color = self._skin.snake_head if i == 0 else self._skin.snake_body
+-            pygame.draw.rect(screen, color, (px_i, py_i, cell_draw, cell_draw))
++            pygame.draw.rect(screen, _pygame_color(color), (px_i, py_i, cell_draw, cell_draw))
+ 
+         # 4. 食物绘制（修订 P2-1：prev_food=None 或距离 >1 格 → 跳过插值）
+         food_cur = (snapshot.food.x, snapshot.food.y)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -390,43 +390,43 @@
+         """
+         pattern = self._skin.food_pattern
+         if pattern == "solid":
+-            pygame.draw.rect(screen, self._skin.food, (x, y, size, size))
+-            pygame.draw.rect(
+-                screen, self._skin.food_outline, (x, y, size, size), width=1
++            pygame.draw.rect(screen, _pygame_color(self._skin.food), (x, y, size, size))
++            pygame.draw.rect(
++                screen, _pygame_color(self._skin.food_outline), (x, y, size, size), width=1
+             )
+         elif pattern == "ringed":
+             # 内部实心 + 镂空 + 外圈双线
+-            pygame.draw.rect(screen, self._skin.food, (x, y, size, size))
++            pygame.draw.rect(screen, _pygame_color(self._skin.food), (x, y, size, size))
+             inner = size // 4
+             pygame.draw.rect(
+                 screen,
+-                self._skin.background,
++                _pygame_color(self._skin.background),
+                 (x + inner, y + inner, size - 2 * inner, size - 2 * inner),
+             )
+             pygame.draw.rect(
+-                screen, self._skin.food_outline, (x, y, size, size), width=2
++                screen, _pygame_color(self._skin.food_outline), (x, y, size, size), width=2
+             )
+         elif pattern == "checkered":
+             # 4 子格：左上+右下 food 色；右上+左下 outline 色；外加 1 outline
+             half = size // 2
+-            pygame.draw.rect(screen, self._skin.food, (x, y, half, half))
+-            pygame.draw.rect(
+-                screen, self._skin.food_outline, (x + half, y, half, half)
+-            )
+-            pygame.draw.rect(
+-                screen, self._skin.food_outline, (x, y + half, half, half)
+-            )
+-            pygame.draw.rect(
+-                screen, self._skin.food, (x + half, y + half, half, half)
+-            )
+-            pygame.draw.rect(
+-                screen, self._skin.food_outline, (x, y, size, size), width=1
++            pygame.draw.rect(screen, _pygame_color(self._skin.food), (x, y, half, half))
++            pygame.draw.rect(
++                screen, _pygame_color(self._skin.food_outline), (x + half, y, half, half)
++            )
++            pygame.draw.rect(
++                screen, _pygame_color(self._skin.food_outline), (x, y + half, half, half)
++            )
++            pygame.draw.rect(
++                screen, _pygame_color(self._skin.food), (x + half, y + half, half, half)
++            )
++            pygame.draw.rect(
++                screen, _pygame_color(self._skin.food_outline), (x, y, size, size), width=1
+             )
+         else:
+             # 防御：_validate_skin 已校验，但 fallback 仍画 solid
+-            pygame.draw.rect(screen, self._skin.food, (x, y, size, size))
+-            pygame.draw.rect(
+-                screen, self._skin.food_outline, (x, y, size, size), width=1
++            pygame.draw.rect(screen, _pygame_color(self._skin.food), (x, y, size, size))
++            pygame.draw.rect(
++                screen, _pygame_color(self._skin.food_outline), (x, y, size, size), width=1
+             )
+ 
+     def _draw_hud(self, hud: HudData) -> None:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -443,13 +443,13 @@
+ 
+         # ---- 第 1 行：Score / High / Length ----
+         line1_score = self._font.render(
+-            f"Score: {hud.score}", True, self._skin.hud_text
++            f"Score: {hud.score}", True, _pygame_color(self._skin.hud_text)
+         )
+         line1_high = self._font.render(
+-            f"High: {hud.high_score}", True, self._skin.hud_accent
++            f"High: {hud.high_score}", True, _pygame_color(self._skin.hud_accent)
+         )
+         line1_length = self._font.render(
+-            f"Length: {hud.length}", True, self._skin.hud_text
++            f"Length: {hud.length}", True, _pygame_color(self._skin.hud_text)
+         )
+         # Score：偏移 + 主版
+         self._screen.blit(line1_score, (16 + SHADOW_OFFSET, HUD_FIRST_LINE_Y + SHADOW_OFFSET))
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -463,7 +463,7 @@
+ 
+         # ---- 第 2 行：Difficulty / Status ----
+         line2_diff = self._font.render(
+-            f"Difficulty: {hud.difficulty_label}", True, self._skin.hud_text
++            f"Difficulty: {hud.difficulty_label}", True, _pygame_color(self._skin.hud_text)
+         )
+         # OVER 时状态文字用 accent 高亮（修订 P1-1 显式要求保留：与迭代 1 既有断言一致）
+         status_color = (
+@@ -472,7 +472,7 @@
+             else self._skin.hud_text
+         )
+         line2_status = self._font.render(
+-            f"Status: {hud.status_label}", True, status_color
++            f"Status: {hud.status_label}", True, _pygame_color(status_color)
+         )
+         # Difficulty：偏移 + 主版
+         self._screen.blit(line2_diff, (16 + SHADOW_OFFSET, HUD_SECOND_LINE_Y + SHADOW_OFFSET))
+  ┊ review diff
+a//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py → b//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py
+@@ -50,6 +50,7 @@
+ from game_app.perf import (  # noqa: E402
+     MEMORY_PEAK_MB_MAX,
+     BENCH_DURATION_SECONDS,
++    BENCH_AI_DIRECTION_SWITCH_INTERVAL_S,
+ )
+ 
+ DEFAULT_DURATION: int = BENCH_DURATION_SECONDS
+  ┊ review diff
+a//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py → b//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py
+@@ -84,9 +84,15 @@
+ 
+ 
+ def run_benchmark(duration: int) -> dict:
+-    """运行 NFR-02 内存基准测试（需真实显示环境）。"""
++    """运行 NFR-02 内存基准测试（需真实显示环境）。
++
++    修复 MTO-4-01（影响面 NFR-02）：与 bench_fps 一致，按
++    BENCH_AI_DIRECTION_SWITCH_INTERVAL_S 周期切换移动方向，避免 HARD 难度
++    下蛇直行撞墙 OVER → _tick 入口断言崩溃（此前颜色崩溃掩盖了该缺陷，
++    颜色修复后暴露）。
++    """
+     from game_app import App, AppConfigV3
+-    from game_core import Difficulty
++    from game_core import Difficulty, Direction
+ 
+     app = App(AppConfigV3(enable_high_dpi=True))
+     app._init_pygame()
+@@ -95,8 +101,21 @@
+ 
+     memory_samples: List[float] = []
+     start_time = time.perf_counter()
++    direction_cycle = 0
++    direction_map = {
++        "up": Direction.UP,
++        "down": Direction.DOWN,
++        "left": Direction.LEFT,
++        "right": Direction.RIGHT,
++    }
+ 
+     while time.perf_counter() - start_time < duration:
++        # 模拟按键（每 0.5 秒切一次方向，防撞墙 OVER）
++        if time.perf_counter() - start_time > direction_cycle * BENCH_AI_DIRECTION_SWITCH_INTERVAL_S:
++            direction_cycle += 1
++            direction = ["up", "down", "left", "right"][direction_cycle % 4]
++            app.game_state = app.game_state.set_direction(direction_map[direction])
++
+         app._tick(16)  # 60 FPS
+         app._render()
+         memory_samples.append(get_memory_mb())
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py
+@@ -59,13 +59,15 @@
+ 
+ 
+ def test_render_calls_surface_fill_with_background(fake_pygame, renderer):
+-    """渲染 1 次 → screen.fill(background) 被调用。"""
++    """渲染 1 次 → screen.fill(background) 被调用（MTO-4-01：pygame 收到 tuple）。"""
+     r = renderer
+     snap = _snapshot(3)
+     hud = _hud()
+     r.render(snap, hud)
+     assert len(r._screen.fill_calls) == 1
+-    assert r._screen.fill_calls[0][0] == r.skin.background
++    # MTO-4-01 修复：pygame API 只接受 tuple/str/pygame.Color → 断言 tuple 值
++    bg = r.skin.background
++    assert r._screen.fill_calls[0][0] == (bg.r, bg.g, bg.b)
+ 
+ 
+ def test_render_snake_len_3_calls_draw_rect_3_times(fake_pygame, renderer):
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py
+@@ -132,7 +132,9 @@
+     font = r._font
+     status_text_call = next((c for c in font.render_calls if "Status" in c[0]), None)
+     assert status_text_call is not None
+-    assert status_text_call[2] == r.skin.hud_accent
++    # MTO-4-01 修复：pygame 收到 tuple
++    accent = r.skin.hud_accent
++    assert status_text_call[2] == (accent.r, accent.g, accent.b)
+ 
+ 
+ def test_render_rejects_empty_snake_body(fake_pygame, renderer):
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py
+@@ -342,7 +342,9 @@
+     font = r._font
+     status_call = next((c for c in font.render_calls if "Status" in c[0]), None)
+     assert status_call is not None
+-    assert status_call[2] == r.skin.hud_accent
++    # MTO-4-01 修复：pygame 收到 tuple
++    accent = r.skin.hud_accent
++    assert status_call[2] == (accent.r, accent.g, accent.b)
+ 
+ 
+ def test_render_with_prev_food_none_uses_snap_food(fake_pygame, renderer, prev_snapshot):
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_skin.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_skin.py
+@@ -92,5 +92,6 @@
+     dark_snake_color = _pg_module.draw_calls.records[0][0]
+ 
+     assert classic_snake_color != dark_snake_color
+-    # dark 皮肤的蛇头 = Color(140, 255, 200)
+-    assert dark_snake_color == DARK_SKIN.snake_head
++    # dark 皮肤的蛇头 = (140, 255, 200)（MTO-4-01 修复：pygame 收到 tuple）
++    head = DARK_SKIN.snake_head
++    assert dark_snake_color == (head.r, head.g, head.b)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md
+@@ -9,4 +9,11 @@
+ 
+ ## 修复记录
+ 
++- 2026-08-15 FO 修复：
++  1. **根因**：gui_renderer.types.Color 是自定义 frozen dataclass，pygame Surface.fill()/draw 系列/font.render 仅接受 tuple/str/pygame.Color。
++  2. **修改（gui-renderer iter-3，最小侵入）**：`code/gui-renderer/iter-3/gui_renderer/renderer.py` 新增 `_pygame_color()` 工具函数（Color dataclass → tuple (r,g,b)，已传 tuple/str/pygame.Color 幂等原样返回），并应用到全部传给 pygame API 的颜色参数：背景填充 screen.fill、蛇头/蛇身 draw.rect、食物三形态（solid/ringed/checkered）与 outline/镂空、HUD font.render（hud_text/hud_accent/status_color）。
++  3. **连带缺陷（同问题单影响面 NFR-02）**：`snake-linux/scripts/bench_memory.py` run_benchmark 用 HARD 难度且无方向切换，2 秒内蛇必撞墙 OVER → `_tick` 入口断言崩溃（此前被颜色崩溃掩盖，颜色修复后暴露）。已对齐 bench_fps：按 BENCH_AI_DIRECTION_SWITCH_INTERVAL_S 周期切换方向。
++  4. **断言同步**：gui-renderer UT（4 处）+ IT（21 处）中"传给 pygame 的颜色 == Skin.Color"断言更新为 tuple 值比较（行为变更：pygame 收到 tuple）。
++  5. **验证**：gui-renderer UT 99 passed / IT 53 passed；game-app UT 186 passed / IT 28 passed（含真实渲染闭环 test_04_02、bench_fps/bench_memory 真实执行）；三皮肤×三食物形态×插值×resize 真实渲染冒烟通过。
++
+ ## 复测记录
+
+session_id: 20260815_095356_f8cfb7
+全部完成。改动落盘确认：
+
+- **数据层**（workspace/snake-linux/）：`code/gui-renderer/iter-3/gui_renderer/renderer.py`（根因修复）、gui-renderer UT/IT 断言同步、`issues/MTO-4-01.md`（修复记录）
+- **资产层**（snake-linux/scripts/）：`bench_memory.py`（NFR-02 连带缺陷）
+- game-app/iter-4 代码本身无缺陷（自绘全用 tuple 常量），无需修改
+
+---
+
+MTO-4-01 修复完成，一句话结论：根因是 gui_renderer 把自定义 `Color` dataclass 直接传给 pygame（pygame 只收 tuple/str/pygame.Color），已按问题单建议在 renderer.py 加 `_pygame_color()` 转换并应用到全部 15 处调用点。
+
+修复内容：
+1. **renderer.py**：背景 fill / 蛇头蛇身 / 食物三形态（solid/ringed/checkered）+outline+镂空 / HUD 全部颜色参数 → tuple 转换
+2. **连带缺陷**：bench_memory.py 用 HARD 难度且无方向切换，2 秒内蛇必撞墙 OVER 触发 `_tick` 断言崩（颜色修复后暴露）——已对齐 bench_fps 加周期方向切换
+3. **断言同步**：gui-renderer UT 4 处 + IT 21 处"颜色 == Skin.Color"断言改为 tuple 值比较
+
+验证（全部真实执行）：
+- gui-renderer UT 99 passed / IT 53 passed
+- game-app UT 186 passed / IT 28 passed（含真实渲染闭环、bench_fps/bench_memory 真实执行）
+- 三皮肤×三食物形态×插值×resize 真实渲染冒烟通过
+
+`statectl issue fix` 已执行，MTO-4-01 状态：**fixed**（等待 MTO 复测 close）。
+  ┊ review diff
+a//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py → b//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py
+@@ -54,6 +54,13 @@
+ )
+ 
+ DEFAULT_DURATION: int = BENCH_DURATION_SECONDS
++
++# MTO-4-01 修复（连带缺陷 NFR-02）：方向切换序列**必须无反向项**。
++# game_core.set_direction 对反向输入（蛇长≥2）静默忽略（架构设计，UT #9a 固化），
++# 旧序列 ["up","down","left","right"] 中 down 是 up 的反向、right 是 left 的反向，
++# 被忽略后蛇只沿 up/left 直行 → HARD 下撞墙 OVER → _tick 入口断言崩溃。
++# 改用相邻项均正交（永不反向）的循环：up→left→down→right→up→... 蛇走矩形回路不撞墙。
++BENCH_DIRECTION_CYCLE: List[str] = ["up", "left", "down", "right"]
+ 
+ 
+ def get_memory_mb() -> float:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py → b//home/zyzs/cyx/zteam/snake-linux/scripts/bench_memory.py
+@@ -120,7 +120,7 @@
+         # 模拟按键（每 0.5 秒切一次方向，防撞墙 OVER）
+         if time.perf_counter() - start_time > direction_cycle * BENCH_AI_DIRECTION_SWITCH_INTERVAL_S:
+             direction_cycle += 1
+-            direction = ["up", "down", "left", "right"][direction_cycle % 4]
++            direction = BENCH_DIRECTION_CYCLE[direction_cycle % len(BENCH_DIRECTION_CYCLE)]
+             app.game_state = app.game_state.set_direction(direction_map[direction])
+ 
+         app._tick(16)  # 60 FPS
+  ┊ review diff
+a//home/zyzs/cyx/zteam/snake-linux/scripts/bench_fps.py → b//home/zyzs/cyx/zteam/snake-linux/scripts/bench_fps.py
+@@ -62,6 +62,13 @@
+ 
+ DEFAULT_DURATION: int = BENCH_DURATION_SECONDS
+ DIFFICULTY_CHOICES: List[str] = ["easy", "medium", "hard"]
++
++# MTO-4-01 修复（连带缺陷 NFR-01，与 bench_memory 同根因）：方向切换序列**必须无反向项**。
++# game_core.set_direction 对反向输入（蛇长≥2）静默忽略（架构设计，UT #9a 固化），
++# 旧序列 ["up","down","left","right"] 中 down 是 up 的反向、right 是 left 的反向，
++# 被忽略后蛇只沿 up/left 直行 → HARD 下撞墙 OVER → _tick 入口断言崩溃。
++# 改用相邻项均正交（永不反向）的循环：up→left→down→right→up→... 蛇走矩形回路不撞墙。
++BENCH_DIRECTION_CYCLE: List[str] = ["up", "left", "down", "right"]
+ 
+ 
+ def judge_fps(avg_fps: float, p95_frame_ms: float) -> str:
+  ┊ review diff
+a//home/zyzs/cyx/zteam/snake-linux/scripts/bench_fps.py → b//home/zyzs/cyx/zteam/snake-linux/scripts/bench_fps.py
+@@ -124,7 +124,7 @@
+         # 模拟按键（每 0.5 秒切一次方向）
+         if time.perf_counter() - start_time > direction_cycle * BENCH_AI_DIRECTION_SWITCH_INTERVAL_S:
+             direction_cycle += 1
+-            direction = ["up", "down", "left", "right"][direction_cycle % 4]
++            direction = BENCH_DIRECTION_CYCLE[direction_cycle % len(BENCH_DIRECTION_CYCLE)]
+             input_time = time.perf_counter()
+             app.game_state = app.game_state.set_direction(direction_map[direction])
+             input_latency = (time.perf_counter() - input_time) * 1000
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/game-app/iter-4/tests/test_game_app/test_app_iter4_bench.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/game-app/iter-4/tests/test_game_app/test_app_iter4_bench.py
+@@ -68,6 +68,22 @@
+         from game_app.perf import BENCH_DURATION_SECONDS
+         assert bench_fps.DEFAULT_DURATION == BENCH_DURATION_SECONDS
+ 
++    def test_direction_cycle_no_reversal(self, bench_fps):
++        """MTO-4-01 回归：方向切换序列相邻项必须互不为反向。
++
++        game_core.set_direction 对反向输入（蛇长≥2）静默忽略（UT #9a 固化），
++        序列含反向项会让蛇只沿部分方向直行 → HARD 撞墙 OVER → _tick 断言崩溃
++        （NFR-01 基准无法跑完）。
++        """
++        cycle = bench_fps.BENCH_DIRECTION_CYCLE
++        assert len(cycle) >= 2
++        opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
++        for i, d in enumerate(cycle):
++            assert d in opposites, f"非法方向: {d}"
++            assert opposites[d] != cycle[(i + 1) % len(cycle)], (
++                f"序列第 {i} 项 {d} 与下一项 {cycle[(i + 1) % len(cycle)]} 互为反向"
++            )
++
+     def test_cli_difficulty_choices(self, bench_fps):
+         """CLI --difficulty 只接受 easy/medium/hard。"""
+         assert bench_fps.DIFFICULTY_CHOICES == ["easy", "medium", "hard"]
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/game-app/iter-4/tests/test_game_app/test_app_iter4_bench.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/game-app/iter-4/tests/test_game_app/test_app_iter4_bench.py
+@@ -120,3 +120,19 @@
+         """--duration 默认值 = BENCH_DURATION_SECONDS。"""
+         from game_app.perf import BENCH_DURATION_SECONDS
+         assert bench_memory.DEFAULT_DURATION == BENCH_DURATION_SECONDS
++
++    def test_direction_cycle_no_reversal(self, bench_memory):
++        """MTO-4-01 回归：方向切换序列相邻项必须互不为反向（同 bench_fps）。
++
++        旧序列 ["up","down","left","right"] 含反向项（down 是 up 的反向、right 是 left
++        的反向），被 set_direction 静默忽略后蛇只沿 up/left 直行 → HARD 撞墙 OVER →
++        _tick 断言崩溃，NFR-02 基准 --duration 3 必崩（MTO 复测实测复现）。
++        """
++        cycle = bench_memory.BENCH_DIRECTION_CYCLE
++        assert len(cycle) >= 2
++        opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
++        for i, d in enumerate(cycle):
++            assert d in opposites, f"非法方向: {d}"
++            assert opposites[d] != cycle[(i + 1) % len(cycle)], (
++                f"序列第 {i} 项 {d} 与下一项 {cycle[(i + 1) % len(cycle)]} 互为反向"
++            )
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md → b//home/zyzs/cyx/zteam/workspace/snake-linux/issues/MTO-4-01.md
+@@ -16,6 +16,12 @@
+   4. **断言同步**：gui-renderer UT（4 处）+ IT（21 处）中"传给 pygame 的颜色 == Skin.Color"断言更新为 tuple 值比较（行为变更：pygame 收到 tuple）。
+   5. **验证**：gui-renderer UT 99 passed / IT 53 passed；game-app UT 186 passed / IT 28 passed（含真实渲染闭环 test_04_02、bench_fps/bench_memory 真实执行）；三皮肤×三食物形态×插值×resize 真实渲染冒烟通过。
+ 
++- 2026-08-15 FO 二次修复（MTO 复测驳回：连带缺陷修复不彻底，NFR-02 仍无法实测）：
++  1. **根因**：bench_memory.py（及同序列的 bench_fps.py）方向切换序列 `["up","down","left","right"]` 含反向项——`down` 是 `up` 的反向、`right` 是 `left` 的反向；game_core `set_direction` 对反向输入（蛇长≥2）静默忽略（架构设计，game-core UT #9a 固化）→ 蛇实际只沿 up/left 直行 → HARD 下撞墙 OVER → `_tick` 入口断言（app.py:618-620）崩溃。实测复现：`--duration 3` 必崩（AssertionError，与 MTO 复测一致）。
++  2. **修改（最小侵入）**：两脚本方向序列改为无反向项循环 `["up","left","down","right"]`（相邻项均正交，永不触发反向忽略；蛇走矩形回路不撞墙），抽为模块级常量 `BENCH_DIRECTION_CYCLE`，切换处改用 `BENCH_DIRECTION_CYCLE[direction_cycle % len(...)]`，并注明根因注释。涉及 `snake-linux/scripts/bench_memory.py`（NFR-02）与 `snake-linux/scripts/bench_fps.py`（NFR-01，同序列同病，一并修复）。
++  3. **防回归 UT**：`tests/test_game_app/test_app_iter4_bench.py` 两测试类各新增 `test_direction_cycle_no_reversal`，断言序列相邻项（含首尾）互不为反向——旧序列必失败，防再次回退。
++  4. **验证**：game-app UT 188 passed（+2 新防回归）；IT 28 passed；真实执行 bench_memory `--duration 3`（MTO 复测标准）与 `--duration 10` 均 PASS（峰值 144MB）；bench_fps `--duration 3` / `--duration 10` 均 PASS（P95≈2-3ms）。
++
+ ## 复测记录
+ - 2026-08-15T10:07:28Z FO 修复完成
+ - 2026-08-15T12:10:00Z MTO 复测：**不通过，改回 open**。主缺陷（Color dataclass → pygame 颜色 TypeError）确认已修复：gui-renderer UT 99 passed / IT 53 passed；game-app UT 186 passed / IT 28 passed；真实集成冒烟（3 皮肤 × 20 帧真实渲染闭环）通过。但**连带缺陷修复不彻底（影响面 NFR-02）**：`scripts/bench_memory.py` 的方向切换序列 `["up","down","left","right"]` 含反向项——`down` 是 `up` 的反向、`right` 是 `left` 的反向，而 game_core `set_direction` 对反向（蛇长≥2）静默忽略 → 蛇实际直行，HARD 难度下撞墙 OVER → `_tick` 入口断言崩溃。**实测：`--duration 2`（IT 用例参数）侥幸通过；`--duration 3` 必崩（AssertionError @ app.py:618，复跑 2/2 复现）；脚本默认 `BENCH_DURATION_SECONDS=60` 默认运行必崩 → NFR-02 仍无法实测**。IT 用例 test_04_15 用 2s 恰好绕过崩溃窗口，未暴露。修复方向：方向切换序列改用无反向项循环（如 up→left→down→right）或每次切换后跳过反向项。
+
+session_id: 20260815_120707_6d32e7
+MTO-4-01 已修复并置为 fixed。
+
+一句话结论：驳回点是 bench_memory.py 方向切换序列含反向项导致蛇直行撞墙崩 `_tick` 断言，已改无反向序列并连带修复同病的 bench_fps.py。
+
+改动（snake-linux/scripts/）：
+- bench_memory.py + bench_fps.py：方向序列 ["up","down","left","right"] → ["up","left","down","right"]（相邻项均正交，永不触发 set_direction 反向忽略；抽为常量 BENCH_DIRECTION_CYCLE）
+- tests/test_game_app/test_app_iter4_bench.py：新增 2 个防回归 UT（断言序列相邻项互不为反向，旧序列必失败）
+
+实测：
+- game-app UT 188 passed（+2 新）/ IT 28 passed
+- bench_memory --duration 3（MTO 复测标准）与 --duration 10 均 PASS（峰值 144MB）
+- bench_fps --duration 3 / 10 均 PASS（P95≈2-3ms）
+
+问题单已追加二次修复记录，`issue fix` 已执行（状态 fixed，等 MTO 复测关闭）。

@@ -1,0 +1,177 @@
+  ┊ review diff
+a/snake-linux/design/game-app/设计-iter4-r1.md → b/snake-linux/design/game-app/设计-iter4-r1.md
+@@ -0,0 +1,1802 @@
++# 功能模块设计：game-app（snake-linux v2.0.0 迭代 4）r1（首发）
++
++> MDE r1 · 跨迭代复用基线：
++>   - 迭代 3 设计 `snake-linux/design/game-app/设计-iter3-r2.md`（**SE 评审 PASS**，r2-1/r2-2/r2-3 全链修订落地）
++>   - 迭代 3 实际代码：`snake-linux/code/game-app/iter-3/game_app/`（it_passed，**实核确认沿用 iter-1 源码目录 + iter-3 增量**——参见 modules.json 中 iter-3.dev_product）
++>   - 迭代 2 设计 `snake-linux/design/game-app/设计-iter2-r2.md`（PASS）+ 迭代 1 设计 `snake-linux/design/game-app/设计-r3.md`（PASS）
++> 依据：
++>   - 架构设计 `snake-linux/arch/v2.0.0/架构设计.md` §迭代计划迭代 4
++>   - 功能模块分工表 `snake-linux/arch/v2.0.0/功能模块分工表.md` §迭代 4
++>   - 需求规格 `snake-linux/analysis/snake-gui-r1.md` FR-14/FR-15/FR-16/NFR-01/NFR-02/NFR-03/NFR-04/NFR-07 + R-04~R-06 拍板固化
++> 依赖模块实核契约（**全部 it_passed，契约已锁定**）：
++>   - **game-core 迭代 2** `code/game-core/iter-2/game_core/`：快照接口 + 难度参数 + 反向禁止 + 加速曲线 + set_score_callback（沿用）
++>   - **gui-renderer 迭代 3** `code/gui-renderer/iter-3/gui_renderer/`：`Renderer` 构造 + `init`/`shutdown`/`render(snap, hud, *, interp)` + `set_skin` + `handle_resize` + `skin_names`/`current_skin_name` + `fps_metric()` + `SKIN_REGISTRY` 3 套（经典/深色/色盲友好）+ **r2-2 契约前置**：`init`/`handle_resize` 必须带 `pygame.RESIZABLE` 标志
++>   - **platform-storage 迭代 2** `code/platform-storage/iter-2/platform_storage/`：`create_storage()` + `HighScoreStore` 原子写 + 三平台用户数据目录（沿用）
++> **目标**：FO 拿到本文即可 TDD 开发；迭代 4 **不新建 iter-4 代码目录**，所有增量落在 `code/game-app/iter-3/game_app/`（同 v2.0.0 一个发布单元）；PyInstaller 三平台打包矩阵 + 错误提示完善 + 性能 profile + 用户指南 + 发布物清单
++> **关键决策**：
++> 1. **打包矩阵三平台原生构建**（G4-1）：PyInstaller `--onefile --windowed --name snake-gui` + Linux ELF / Windows .exe / macOS .app（含 Intel + Apple Silicon 双架构）；**不支持交叉打包**——各平台在对应原生系统构建；`.spec` 文件 + `scripts/build/` 平台脚本 + CI 三平台矩阵
++> 2. **错误提示多层降级**（G4-2）：SDL 缺失 → 友好 stderr；HiDPI 缩放异常 → stderr warning + 自动降级；CJK 字体全失败 → 英文兜底；窗口事件源（RESIZABLE）失效 → 不阻塞启动（FR-09 仅失去，不致命）
++> 3. **性能回归脚本**（G4-3）：`scripts/bench_fps.py` + `scripts/bench_memory.py`，NFR-01 ≥60FPS / NFR-02 ≤300MB 实测留档；调用 `Renderer.fps_metric()` 已有接口
++> 4. **打包内置字体**（G4-5）：`_load_cjk_font` 走 `sys._MEIPASS`/`__file__` 邻近路径查找内置字体文件（如 `SourceHanSansCN-Regular.otf`），避免 Linux 字体版本差异导致中文字形缺失
++> 5. **用户指南五节齐全**（G4-4，FR-16）：下载与运行 / 键位表 / 难度 / 皮肤 / 暂停 / 平台差异 / 已知限制——与 v1 终端版 README 同构
++
++---
++
++## 0. 模块定位与迭代边界
++
++| 项 | 值 |
++|----|---|
++| 模块 | game-app |
++| 类型 | 上层应用 |
++| 依赖 | game-core（iter-2 it_passed）、gui-renderer（iter-3 it_passed + r2-2 RESIZABLE 契约前置）、platform-storage（iter-2 it_passed） |
++| 被依赖 | 无（顶层装配） |
++| 承载需求 | snake-gui **主体**（FR-01~16 + NFR-01~07）—— 本迭代 4 范围 = **FR-14 三平台打包** + **FR-15 跨平台一致** + **FR-16 用户指南** + **NFR-01/02 性能** + **NFR-03 错误提示完善** + **NFR-07 发布物** |
++| 迭代 | 4（交付打磨） |
++| 不引入 | 第三方除 pygame + PyInstaller 外任何依赖；不引入音效（R-04）；不引入网络（R-05/NFR-06）；不引入 config 文件（架构 §配置模型） |
++| 跨迭代复用 | 主循环骨架 / 状态机 / 输入映射 / 错误处理框架 / AppConfigV3 / CJK 字体 / 退出码 1-4 迭代复用；迭代 4 通过**新增错误类型 + 错误处理器 + 打包脚本 + 用户指南 + 性能脚本**接入，不重写主循环 |
++| PyInstaller 入口 | `snake-linux/code/game-app/iter-3/game_app/__main__.py`（沿用 iter-3：`if __name__ == "__main__": main()`） |
++| 输出打包资源 | `dist/`：`snake-gui`（Linux ELF）+ `snake-gui.exe`（Windows）+ `snake-gui.app`（macOS，含 Intel + Apple Silicon 双架构）+ `SHA256SUMS` + `RELEASE_NOTES.md` + `USER_GUIDE.md` + 内置字体 `SourceHanSansCN-Regular.otf` |
++
++### 迭代 4 出口（与架构 §迭代计划对齐）
++
++- ✅ **三平台 PyInstaller 打包矩阵**（G4-1，FR-14）：`.spec` 文件 + `scripts/build_linux.sh` + `scripts/build_windows.bat` + `scripts/build_macos.sh`；Linux ELF / Windows .exe / macOS .app（双架构）
++- ✅ **发布物 SHA256SUMS**（G4-1，NFR-07）：三平台包校验和
++- ✅ **可读错误提示完善**（G4-2，NFR-03）：SDL 驱动缺失 / HiDPI 异常 / CJK 字体全失败 / 平台不兼容（macOS <12 / Windows <10） / 用户数据目录不可写 等可预见失败均输出人类可读 stderr
++- ✅ **错误退出码扩展**（G4-2）：0 正常 / 1 app 异常 / 2 图形环境不可用 / 3 用户数据目录不可写（新增，区分错误类型便于用户/脚本判断）
++- ✅ **性能 profile 脚本**（G4-3，NFR-01/02）：`scripts/bench_fps.py` + `scripts/bench_memory.py`，跑 60 秒基准，记录 P95 帧时间 / 平均 FPS / 内存峰值留档
++- ✅ **用户指南**（G4-4，FR-16）：`snake-linux/release/USER_GUIDE.md`（五节齐全：下载运行 / 键位表 / 难度 / 皮肤 / 暂停 / 平台差异 / 已知限制）
++- ✅ **打包内置字体**（G4-5）：`SourceHanSansCN-Regular.otf`（或同源开源中文字体，license 兼容——优先选用 OFL 协议）打包进 `game_app/fonts/` 模块目录；`_load_cjk_font` 优先查内置文件 → 失败再走 `pygame.font.match_font` 回退链
++- ✅ **发布说明**（G4-6）：`snake-linux/release/RELEASE_NOTES.md`（v2.0.0 changelog + 三平台下载链接 + 校验和）
++- ✅ **回归全模块**（G4-7）：game-app iter-4 测试用例覆盖错误路径 + 打包脚本冒烟测试 + 用户指南字段完备性
++- ✅ **跨迭代沿用**：主循环骨架 / 状态机 / 输入映射 / 错误处理框架 / AppConfigV3 / CJK 字体 / 退出码 1-4 迭代复用
++
++### 迭代 4 已知技术约束（FO 实现必读）
++
++1. **Python 3.8 兼容**：与架构 §代码风格约定一致；不引入 3.9+ 新语法。
++2. **零配置**：不读 ini/env/YAML/JSON 配置；难度/皮肤通过游戏内 UI 选择。
++3. **无网络**：全模块不 `import socket` / `import urllib` / `import http` / `import requests`；UT 与打包脚本不发起网络。
++4. **无音效**：不 `import pygame.mixer` 或任何音频模块。
++5. **依赖边界**：game-app 可 import pygame + PyInstaller；不侵入 game-core / gui-renderer / platform-storage 内部（仅公开 API）。
++6. **打包专用目录**：`snake-linux/code/game-app/iter-3/game_app/fonts/` 内置字体文件（PyInstaller `--add-data` 注入）；`snake-linux/scripts/build_*.{sh,bat}` 构建脚本；`snake-linux/spec/snake-gui.spec` PyInstaller 配置。
++7. **r2-2 VIDEORESIZE 契约前置**（沿用 iter-3）：gui-renderer iter-3 `init()`/`handle_resize` 必须带 `pygame.RESIZABLE` 标志——iter-4 不重写此契约，仅在用户指南"已知限制"小节提及"窗口缩放事件流失效时 FR-09 验收不可达"。
++8. **macOS 双架构**：PyInstaller `--target-arch universal2` 或分别在 Intel / Apple Silicon 构建机上分别构建；产物命名 `snake-gui-intel.app` / `snake-gui-arm64.app`（或合并为 `snake-gui.app` + `lipo` 合成）。
++9. **PyInstaller 版本**：≥5.13（支持 Python 3.10+ 打包；>=5.0 已稳定支持 `--onefile --windowed`）。
++10. **退出码语义**（G4-2 新增退出码 3）：
++    - 0 = 正常退出（用户主动退出 / 游戏结束自然退出）
++    - 1 = app 异常（ConfigError / StorageError / 未捕获异常 / 数据损坏）
++    - 2 = 图形环境不可用（Renderer.init 失败 / SDL 缺失 / pygame.error）
++    - 3 = 用户数据目录不可写（HighScoreStore mkdir 失败 / disk full / 权限拒绝）
++11. **打包体积**：单文件打包预期 20-40MB（pygame SDL2 运行时占大头）；iter-4 不优化体积（架构未要求）。
++12. **签名与公证**（**架构未要求，iter-4 不实施**）：Windows 代码签名 / macOS 苹果公证（notarization）—— 留给后续版本；用户在用户指南"已知限制"小节明确"未签名可能在 Windows SmartScreen / macOS Gatekeeper 触发警告，点击'仍要运行'即可"。
++
++---
++
++## 1. 数据结构
++
++### 1.1 错误类型（**G4-2 新增退出码 3 + 错误子类扩展**）
++
++```python
+… omitted 1724 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_172505_3aa701
+迭代4 设计状态已迁移到 `design_reviewing`，产物路径已记录。
+  ┊ review diff
+a/workspace/snake-linux/design/game-app/设计-iter4-r2.md → b/workspace/snake-linux/design/game-app/设计-iter4-r2.md
+@@ -0,0 +1,1958 @@
++# 功能模块设计：game-app（snake-linux v2.0.0 迭代 4）r2（SE 评审修订版）
++
++> MDE r2 · 跨迭代复用基线：
++>   - 迭代 4 设计 r1 `snake-linux/design/game-app/设计-iter4-r1.md`（**SE 评审 FAIL**：4×P0 + 4×P1 + 6×P2）
++>   - 迭代 3 设计 `snake-linux/design/game-app/设计-iter3-r2.md`（**SE 评审 PASS**，r2-1/r2-2/r2-3 全链修订落地）
++>   - 迭代 3 实际代码：`snake-linux/code/game-app/iter-3/game_app/`（it_passed，**实核确认沿用 iter-1 源码目录 + iter-3 增量**——参见 modules.json 中 iter-3.dev_product）
++>   - 迭代 2 设计 `snake-linux/design/game-app/设计-iter2-r2.md`（PASS）+ 迭代 1 设计 `snake-linux/design/game-app/设计-r3.md`（PASS）
++> 依据：
++>   - 架构设计 `snake-linux/arch/v2.0.0/架构设计.md` §迭代计划迭代 4
++>   - 功能模块分工表 `snake-linux/arch/v2.0.0/功能模块分工表.md` §迭代 4
++>   - 需求规格 `snake-linux/analysis/snake-gui-r1.md` FR-14/FR-15/FR-16/NFR-01/NFR-02/NFR-03/NFR-04/NFR-07 + R-04~R-06 拍板固化
++>   - SE 评审 `snake-linux/review/design/game-app/iter-4/snake-linux-game-app-design-iter4-r1.md`（**r2 本版逐条 P0/P1/P2 修订**）
++> 依赖模块实核契约（**全部 it_passed，契约已锁定**）：
++>   - **game-core 迭代 2** `code/game-core/iter-2/game_core/`：快照接口 + 难度参数 + 反向禁止 + 加速曲线 + set_score_callback（沿用）
++>   - **gui-renderer 迭代 3** `code/gui-renderer/iter-3/gui_renderer/`：`Renderer` 构造 + `init`/`shutdown`/`render(snap, hud, *, interp)` + `set_skin` + `handle_resize` + `skin_names`/`current_skin_name` + `fps_metric()` + `SKIN_REGISTRY` 3 套（经典/深色/色盲友好）+ **r2-2 契约前置**：`init`/`handle_resize` 必须带 `pygame.RESIZABLE` 标志
++>   - **platform-storage 迭代 2** `code/platform-storage/iter-2/platform_storage/`：`create_storage()` + `HighScoreStore` 原子写 + 三平台用户数据目录（沿用）
++> **目标**：FO 拿到本文即可 TDD 开发；迭代 4 **不新建 iter-4 代码目录**，所有增量落在 `code/game-app/iter-3/game_app/`（同 v2.0.0 一个发布单元）；PyInstaller 三平台打包矩阵 + 错误提示完善 + 性能 profile + 用户指南 + 发布物清单
++> **关键决策**：
++> 1. **打包矩阵三平台原生构建**（G4-1）：PyInstaller `--onefile --windowed --name snake-gui` + Linux ELF / Windows .exe / macOS .app（含 Intel + Apple Silicon 双架构）；**不支持交叉打包**——各平台在对应原生系统构建；`.spec` 文件 + `scripts/build/` 平台脚本 + CI 三平台矩阵
++> 2. **错误提示多层降级**（G4-2）：SDL 缺失 → 友好 stderr；HiDPI 缩放异常 → stderr warning + 自动降级；CJK 字体全失败 → 英文兜底；窗口事件源（RESIZABLE）失效 → 不阻塞启动（FR-09 仅失去，不致命）
++> 3. **性能回归脚本**（G4-3）：`scripts/bench_fps.py` + `scripts/bench_memory.py`，NFR-01 ≥60FPS / NFR-02 ≤300MB 实测留档；调用 `Renderer.fps_metric()` 已有接口
++> 4. **打包内置字体**（G4-5）：`_load_cjk_font` 走 `sys._MEIPASS/fonts/` 与 `__file__/fonts/` 双候选路径（**r2 修订**：与 spec `datas` 目标目录 `fonts/` 一致）查找内置字体文件（如 `SourceHanSansCN-Regular.otf`），避免 Linux 字体版本差异导致中文字形缺失
++> 5. **用户指南五节齐全**（G4-4，FR-16）：下载与运行 / 键位表 / 难度 / 皮肤 / 暂停 / 平台差异 / 已知限制——与 v1 终端版 README 同构
++
++---
++
++## 0. 模块定位与迭代边界
++
++| 项 | 值 |
++|----|---|
++| 模块 | game-app |
++| 类型 | 上层应用 |
++| 依赖 | game-core（iter-2 it_passed）、gui-renderer（iter-3 it_passed + r2-2 RESIZABLE 契约前置）、platform-storage（iter-2 it_passed） |
++| 被依赖 | 无（顶层装配） |
++| 承载需求 | snake-gui **主体**（FR-01~16 + NFR-01~07）—— 本迭代 4 范围 = **FR-14 三平台打包** + **FR-15 跨平台一致** + **FR-16 用户指南** + **NFR-01/02 性能** + **NFR-03 错误提示完善** + **NFR-07 发布物** |
++| 迭代 | 4（交付打磨） |
++| 不引入 | 第三方除 pygame + PyInstaller 外任何依赖；不引入音效（R-04）；不引入网络（R-05/NFR-06）；不引入 config 文件（架构 §配置模型） |
++| 跨迭代复用 | 主循环骨架 / 状态机 / 输入映射 / 错误处理框架 / AppConfigV3 / CJK 字体 / 退出码 1-4 迭代复用；迭代 4 通过**新增错误类型 + 错误处理器 + 打包脚本 + 用户指南 + 性能脚本**接入，不重写主循环 |
++| PyInstaller 入口 | `snake-linux/code/game-app/iter-3/game_app/__main__.py`（沿用 iter-3：`if __name__ == "__main__": main()`） |
++| 输出打包资源 | `dist/`：`snake-gui`（Linux ELF）+ `snake-gui.exe`（Windows）+ `snake-gui.app`（macOS，含 Intel + Apple Silicon 双架构）+ `SHA256SUMS` + `RELEASE_NOTES.md` + `USER_GUIDE.md` + 内置字体 `SourceHanSansCN-Regular.otf`（置于 `_MEIPASS/fonts/` 与 `game_app/fonts/`，**r2 修订**：统一 `fonts/` 子目录） |
++
++### 迭代 4 出口（与架构 §迭代计划对齐）
++
++- ✅ **三平台 PyInstaller 打包矩阵**（G4-1，FR-14）：`.spec` 文件 + `scripts/build_linux.sh` + `scripts/build_windows.bat` + `scripts/build_macos.sh`；Linux ELF / Windows .exe / macOS .app（双架构）
++- ✅ **发布物 SHA256SUMS**（G4-1，NFR-07）：三平台包校验和；**r2 修订**：仅由 `scripts/gen_sha256sums.sh` 统一生成，构建脚本只产包不产校验和
++- ✅ **可读错误提示完善**（G4-2，NFR-03）：SDL 驱动缺失 / HiDPI 异常 / CJK 字体全失败 / 平台不兼容（macOS <12 / Windows <10） / 用户数据目录不可写 等可预见失败均输出人类可读 stderr
++- ✅ **错误退出码扩展**（G4-2）：0 正常 / 1 app 异常 / 2 图形环境不可用 / 3 用户数据目录不可写（新增，区分错误类型便于用户/脚本判断）；**r2 修订**：精确子类优先映射（GraphicsUnavailableError → 2 优先于 AppError → 1；StorageUnavailableError → 3 优先于 AppError → 1）
++- ✅ **性能 profile 脚本**（G4-3，NFR-01/02）：`scripts/bench_fps.py` + `scripts/bench_memory.py`，跑 60 秒基准，记录 P95 帧时间 / 平均 FPS / 内存峰值留档；**r2 修订**：sys.path 补全三依赖包 + 经 `game_app.perf` re-export
++- ✅ **用户指南**（G4-4，FR-16）：`snake-linux/release/USER_GUIDE.md`（五节齐全：下载运行 / 键位表 / 难度 / 皮肤 / 暂停 / 平台差异 / 已知限制）；**r2 修订**：下载链接标注"发布时替换为真实下载地址"
++- ✅ **打包内置字体**（G4-5）：`SourceHanSansCN-Regular.otf`（或同源开源中文字体，license 兼容——优先选用 OFL 协议）打包进 `game_app/fonts/` 模块目录；`_load_cjk_font` 优先查内置文件 → 失败再走 `pygame.font.match_font` 回退链；**r2 修订**：`get_bundled_font_path()` 与 spec `datas` 统一为 `fonts/` 子目录
++- ✅ **发布说明**（G4-6）：`snake-linux/release/RELEASE_NOTES.md`（v2.0.0 changelog + 三平台下载链接 + 校验和）；**r2 修订**：下载链接标注"发布时替换为真实下载地址"
++- ✅ **回归全模块**（G4-7）：game-app iter-4 测试用例覆盖错误路径 + 打包脚本冒烟测试（含"产物可启动"断言）+ 用户指南字段完备性
++- ✅ **跨迭代沿用**：主循环骨架 / 状态机 / 输入映射 / 错误处理框架 / AppConfigV3 / CJK 字体 / 退出码 1-4 迭代复用
++
++### 迭代 4 已知技术约束（FO 实现必读）
++
++1. **Python 3.8 兼容**：与架构 §代码风格约定一致；不引入 3.9+ 新语法。
++2. **零配置**：不读 ini/env/YAML/JSON 配置；难度/皮肤通过游戏内 UI 选择。
++3. **无网络**：全模块不 `import socket` / `import urllib` / `import http` / `import requests`；UT 与打包脚本不发起网络。
++4. **无音效**：不 `import pygame.mixer` 或任何音频模块。
++5. **依赖边界**：game-app 可 import pygame + PyInstaller；不侵入 game-core / gui-renderer / platform-storage 内部（仅公开 API）。
++6. **打包专用目录**：`snake-linux/code/game-app/iter-3/game_app/fonts/` 内置字体文件（PyInstaller `--add-data` 注入到 `_MEIPASS/fonts/`，**r2 修订**：与源码 `fonts/` 同名）；`snake-linux/scripts/build_*.{sh,bat}` 构建脚本；`snake-linux/spec/snake-gui.spec` PyInstaller 配置。
++7. **r2-2 VIDEORESIZE 契约前置**（沿用 iter-3）：gui-renderer iter-3 `init()`/`handle_resize` 必须带 `pygame.RESIZABLE` 标志——iter-4 不重写此契约，仅在用户指南"已知限制"小节提及"窗口缩放事件流失效时 FR-09 验收不可达"。
++8. **macOS 双架构**：PyInstaller `--target-arch universal2` 或分别在 Intel / Apple Silicon 构建机上分别构建；产物命名 `snake-gui-intel.app` / `snake-gui-arm64.app`（或合并为 `snake-gui.app` + `lipo` 合成）。**r2 修订**：lipo 合并以 arm64 完整 `.app` 为基础，仅替换其中 `Contents/MacOS/snake-gui` 二进制，不重建 bundle。
++9. **PyInstaller 版本**：≥5.13（支持 Python 3.10+ 打包；>=5.0 已稳定支持 `--onefile --windowed`）。
++10. **退出码语义**（G4-2 新增退出码 3）：
++    - 0 = 正常退出（用户主动退出 / 游戏结束自然退出）
++    - 1 = app 异常（ConfigError / 未捕获异常 / 数据损坏）
++    - 2 = 图形环境不可用（Renderer.init 失败 / SDL 缺失 / pygame.error）
++    - 3 = 用户数据目录不可写（HighScoreStore mkdir 失败 / disk full / 权限拒绝 / score_callback 内 save 失败）
++11. **打包体积**：单文件打包预期 20-40MB（pygame SDL2 运行时占大头）；iter-4 不优化体积（架构未要求）。
++12. **签名与公证**（**架构未要求，iter-4 不实施**）：Windows 代码签名 / macOS 苹果公证（notarization）—— 留给后续版本；用户在用户指南"已知限制"小节明确"未签名可能在 Windows SmartScreen / macOS Gatekeeper 触发警告，点击'仍要运行'即可"。
++13. **r2 产物落盘位置**（P1-4 修订）：迭代 4 设计产物固定落 `workspace/snake-linux/design/game-app/`（与 modules.json `design.product = "snake-linux/design/game-app/"` 一致），git 跟踪；**禁止**再次误建 `zteam/snake-linux/` 顶层目录。
++
++---
++
++## 1. 数据结构
++
+… omitted 1880 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_174012_2ae965
+状态正确迁移：`design_working` → `design_reviewing`，`claimed=False`（待 SE 评审），产物路径与 modules.json 一致。
+
+完成。
+
+- 设计产物：`/home/zyzs/cyx/zteam/workspace/snake-linux/design/game-app/设计-iter4-r2.md`（1957 行，1957）
+- 状态：`design_working` → `design_reviewing`（等 SE 评审）
+- r2 已逐条修订 P0-1/P0-2/P0-3/P0-4 + P1-1/P1-2/P1-3/P1-4 + P2-1~6（见附录 D 修订对照表）
+- 修订要点：spec pathex 补 game-core/gui-renderer/platform-storage + fonts/ 子目录统一 + _EXIT_CODE_MAP 精确子类优先 + bench 脚本 sys.path 完整 + 主循环 StorageUnavailableError→3 + win32_ver()[0] + macOS lipo 替换 arm64 二进制 + 文档路径固化 + SHA256SUMS 仅 gen_sha256sums.sh 生成

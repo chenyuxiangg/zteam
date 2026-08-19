@@ -1,0 +1,1113 @@
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_types.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_types.py
+@@ -0,0 +1,212 @@
++"""types 模块测试：迭代 1 既有 + 迭代 3 增量（Skin 新字段 / InterpolationState）。
++
++修订 P2-1：hud_shadow 字段已删除 → 不校验 hud_shadow。
++修订 P2-2：InterpolatedCell 已删除 → 不测 InterpolatedCell。
++"""
++import pytest
++
++from gui_renderer.types import (
++    Color,
++    FpsMetric,
++    HudData,
++    InterpolationState,
++    Rect,
++    Skin,
++)
++
++
++# ========================================================================
++# 迭代 1 既有测试（保留）
++# ========================================================================
++
++
++def test_color_is_frozen():
++    """Color 是 frozen dataclass。"""
++    c = Color(10, 20, 30)
++    with pytest.raises(Exception):
++        c.r = 100  # type: ignore[misc]
++
++
++def test_rect_is_frozen():
++    """Rect 是 frozen dataclass。"""
++    r = Rect(1, 2, 3, 4)
++    with pytest.raises(Exception):
++        r.x = 99  # type: ignore[misc]
++
++
++def test_skin_is_frozen():
++    """Skin 是 frozen dataclass。"""
++    s = Skin(
++        name="x",
++        background=Color(0, 0, 0),
++        grid_line=Color(0, 0, 0),
++        snake_head=Color(0, 0, 0),
++        snake_body=Color(0, 0, 0),
++        food=Color(0, 0, 0),
++        food_outline=Color(0, 0, 0),
++        hud_text=Color(0, 0, 0),
++        hud_accent=Color(0, 0, 0),
++    )
++    with pytest.raises(Exception):
++        s.name = "y"  # type: ignore[misc]
++
++
++def test_huddata_field_access():
++    """HudData 字段可访问。"""
++    h = HudData(score=1, high_score=2, length=3, difficulty_label="EASY", status_label="RUN")
++    assert h.score == 1 and h.high_score == 2 and h.length == 3
++    assert h.difficulty_label == "EASY" and h.status_label == "RUN"
++
++
++def test_huddata_is_frozen():
++    """HudData 是 frozen dataclass。"""
++    h = HudData(0, 0, 0, "EASY", "RUN")
++    with pytest.raises(Exception):
++        h.score = 99  # type: ignore[misc]
++
++
++def test_fpsmetric_construct_with_samples():
++    """FpsMetric 构造后可访问 samples。"""
++    m = FpsMetric()
++    assert m.samples.maxlen == 120
++
++
++def test_fpsmetric_p95_uses_quantiles_when_samples_ge_20():
++    """样本数 >= 20 时 P95 = statistics.quantiles(...)[-1]。"""
++    import statistics
++
++    m = FpsMetric()
+… omitted 134 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_041041_e8b974
+API call failed after 3 retries: HTTP 429: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)
+
+session_id: 20260814_041542_5e7f7b
+API call failed after 3 retries: HTTP 429: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/conftest.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/conftest.py
+@@ -1,6 +1,13 @@
+ """pytest fixtures：fake_pygame 让 UT 在 headless 环境跑（CI 无显示器）。
+ 
+ 所有 pygame 调用通过模块顶层 import，UT 用 monkeypatch 替换为 fake_pygame 模块。
++
++迭代 3 增量（设计 §7.3 + §7.4）：
++  - fake_pygame 必须提供 SCALED 常量（修订 P1-1 方案①）
++  - FakeSurface 记录 blit 调用（修订 P1-1 断言 HUD 同色描边）
++  - fake.display.set_mode 记录调用（size/flags）→ 供 hidpi/resize 断言
++  - 增量 fixtures：renderer（enable_high_dpi=False）、renderer_high_dpi、prev_snapshot、
++    interp_half、interp_no_food
+ """
+ import os
+ import sys
+@@ -8,10 +15,10 @@
+ 
+ import pytest
+ 
+-# 把 game-core iter-1 的包目录加入 sys.path（gui-renderer 依赖 game-core.Snapshot 类型）
++# 把 game-core iter-1 的包目录加入 sys.path（gui-renderer 依赖 game-core 类型）
+ _GAMECORE_ROOT = os.path.abspath(
+     os.path.join(
+-        os.path.dirname(__file__),  # .../gui-renderer/iter-1/tests
++        os.path.dirname(__file__),  # .../gui-renderer/iter-3/tests
+         "..", "..", "..", "..", "code", "game-core", "iter-1",
+     )
+ )
+@@ -29,9 +36,13 @@
+     font: object
+     time: object
+     draw_calls: object
++    # 修订 P1-1 方案①：fake_pygame 必须提供 SCALED 常量
++    SCALED: int
+ 
+ 
+ _pg_module = FakePygameModule("fake_pygame")
++# 修订 P1-1 方案①：SCALED 常量（与 pygame 2.x 一致 0x40000000）
++_pg_module.SCALED = 0x40000000
+ 
+ 
+ class _DrawCalls:
+@@ -60,7 +71,10 @@
+ 
+ 
+ class FakeSurface:
+-    """pygame.Surface 的桩实现。"""
++    """pygame.Surface 的桩实现。
++
++    迭代 3 增量：记录 blit 调用（修订 P1-1 断言 HUD 同色描边）。
++    """
+ 
+     def __init__(self, size: tuple[int, int]) -> None:
+         self.size = size
+@@ -95,7 +109,17 @@
+ 
+ 
+ def _set_mode(size, *args, **kwargs):
++    """pygame.display.set_mode 桩。
++
++    迭代 3 增量：记录调用（size/flags）→ 供 hidpi/resize 断言。
++    返回 FakeSurface(size)。
++    """
++    flags = kwargs.get("flags", args[0] if args else 0)
++    _set_mode_calls.append((tuple(size), int(flags)))
+     return FakeSurface(size)
++
++
++_set_mode_calls: list = []
+ 
+ 
+ def _flip():
+@@ -145,6 +169,7 @@
+     flip=_flip,
+     quit=_display_quit,
+ )
++display_mod.set_mode_calls = _set_mode_calls
+ _pg_module.display = display_mod
+ 
+ draw_mod = types.SimpleNamespace(rect=_draw_rect)
+… omitted 97 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/README.md → b/workspace/snake-linux/code/gui-renderer/iter-3/README.md
+@@ -0,0 +1,49 @@
++# gui-renderer 迭代 3
++
++> snake-linux v2.0.0 迭代 3：FR-07 平滑插值动画 + FR-09 窗口等比缩放 + FR-10 皮肤系统 ≥3 套 + NFR-04 高分屏清晰。
++> 在迭代 1 已落地代码 `iter-1/gui_renderer/{types,constants,renderer,errors,__init__}.py`（已 it_passed）基础上增量接入。
++
++## 文件组织
++
++```
++iter-3/
++├── gui_renderer/
++│   ├── __init__.py            # 对外 re-export（增量 InterpolationState / DARK_SKIN / COLORBLIND_FRIENDLY_SKIN / SKIN_REGISTRY / CELL_SIZE_MIN / MIN_PLAYABLE_W / MIN_PLAYABLE_H）
++│   ├── types.py               # Color / Rect / Skin(+3字段：cell_gap/food_pattern/snake_pattern) / HudData / FpsMetric / InterpolationState
++│   ├── constants.py           # DEFAULT_SKIN + DARK_SKIN + COLORBLIND_FRIENDLY_SKIN + SKIN_REGISTRY + CELL_SIZE_MIN + MIN_PLAYABLE_W/H
++│   ├── renderer.py            # Renderer 类（增量 enable_high_dpi / SCALED 标志 / render(interp=...) / set_skin / handle_resize / skin_names / current_skin_name）
++│   └── errors.py              # RenderError / SkinNotFoundError(name, available)
++└── tests/                     # 迭代 1 既有 + 迭代 3 增量 UT
++```
++
++## 用法
++
++```python
++from gui_renderer import (
++    Renderer, HudData, InterpolationState,
++    DEFAULT_SKIN, DARK_SKIN, COLORBLIND_FRIENDLY_SKIN, SKIN_REGISTRY,
++)
++
++with Renderer((640, 480), enable_high_dpi=True) as r:
++    # 切皮肤（游戏中不中断，下一帧生效）
++    r.set_skin("dark")
++    # 缩放窗口（game-app 监听 WINDOWEVENT_RESIZED 调 handle_resize）
++    r.handle_resize(1024, 768)
++    # 渲染一帧（interp=None 与迭代 1 兼容；interp=InterpolationState(...) 启用插值）
++    r.render(snap, hud, interp=interp)
++    metric = r.fps_metric()
++    pygame.display.flip()
++```
++
++## 测试
++
++```bash
++cd workspace/snake-linux/code/gui-renderer/iter-3 && pytest tests/ -v
++```
++
++## 设计依据
++
++- `snake-linux/design/gui-renderer/设计-r4.md`（MDE 增量设计；SE 评审第三轮意见已落实）
++- `snake-linux/arch/v2.0.0/架构设计.md`（架构约束）
++- `snake-linux/arch/v2.0.0/功能模块分工表.md`（模块接口契约）
++- `snake-linux/analysis/snake-gui-r1.md`（需求规格，approved）
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_types.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_types.py
+@@ -143,6 +143,22 @@
+     assert s.snake_pattern == "striped"
+ 
+ 
++def test_skin_does_not_have_hud_shadow_field():
++    """修订 P2-1：hud_shadow 字段已删除（无消费点）。"""
++    s = Skin(
++        name="x",
++        background=Color(0, 0, 0),
++        grid_line=Color(0, 0, 0),
++        snake_head=Color(0, 0, 0),
++        snake_body=Color(0, 0, 0),
++        food=Color(0, 0, 0),
++        food_outline=Color(0, 0, 0),
++        hud_text=Color(0, 0, 0),
++        hud_accent=Color(0, 0, 0),
++    )
++    assert not hasattr(s, "hud_shadow")
++
++
+ # ========================================================================
+ # 迭代 3 增量：InterpolationState
+ # ========================================================================
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_constants.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_constants.py
+@@ -1,7 +1,7 @@
+ """constants 模块测试：迭代 1 既有 + 迭代 3 增量（DARK_SKIN / COLORBLIND_FRIENDLY_SKIN /
+ SKIN_REGISTRY / CELL_SIZE_MIN / MIN_PLAYABLE_W / MIN_PLAYABLE_H）。
+ 
+-修订 P2-1：hud_shadow 字段已删除 → 颜色+间隙+pattern 校验。
++修订 P2-1：hud_shadow 字段已删除 → 不校验 hud_shadow。
+ """
+ import pytest
+ 
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_skin_registry.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_skin_registry.py
+@@ -0,0 +1,67 @@
++"""SKIN_REGISTRY 完整性 + Renderer 切皮肤相关测试（设计 §7.6）。"""
++import pytest
++
++from gui_renderer import DEFAULT_SKIN, COLORBLIND_FRIENDLY_SKIN, DARK_SKIN, SKIN_REGISTRY
++from gui_renderer.errors import SkinNotFoundError
++
++
++# ========================================================================
++# 注册表完整性
++# ========================================================================
++
++
++def test_skin_registry_classic_is_default_skin():
++    """SKIN_REGISTRY['classic'] is DEFAULT_SKIN（同一对象）。"""
++    assert SKIN_REGISTRY["classic"] is DEFAULT_SKIN
++
++
++def test_skin_registry_dark_is_dark_skin():
++    """SKIN_REGISTRY['dark'] is DARK_SKIN。"""
++    assert SKIN_REGISTRY["dark"] is DARK_SKIN
++
++
++def test_skin_registry_colorblind_is_cb_skin():
++    """SKIN_REGISTRY['colorblind_friendly'] is COLORBLIND_FRIENDLY_SKIN。"""
++    assert SKIN_REGISTRY["colorblind_friendly"] is COLORBLIND_FRIENDLY_SKIN
++
++
++def test_skin_registry_all_skins_pass_validate_skin(renderer):
++    """注册表内所有 skin 通过 _validate_skin（构造 Renderer 时隐式校验）。"""
++    # 三个皮肤都通过 Renderer(skin=...) 走一遍校验，不抛即为通过
++    from gui_renderer import Renderer
++
++    for name, skin in SKIN_REGISTRY.items():
++        r = Renderer((640, 480), skin=skin, enable_high_dpi=False)
++        assert r.skin is skin
++
++
++def test_skin_names_returns_three_names(renderer):
++    """skin_names() 返回 3 元素 tuple（含 classic / dark / colorblind_friendly）。"""
++    names = renderer.skin_names()
++    assert isinstance(names, tuple)
++    assert len(names) == 3
++    assert "classic" in names
++    assert "dark" in names
++    assert "colorblind_friendly" in names
++
++
++# ========================================================================
++# SkinNotFoundError 构造（设计 §3.3 修订 P3-1）
++# ========================================================================
++
++
++def test_skinnotfounderror_structured_construction():
++    """SkinNotFoundError 构造参数 (name, available)（修订 P3-1）。"""
++    e = SkinNotFoundError(name="nope", available=("classic", "dark", "colorblind_friendly"))
++    assert e.name == "nope"
++    assert "classic" in e.available
++    assert "dark" in e.available
++    assert "colorblind_friendly" in e.available
++
++
++def test_skinnotfounderror_is_render_error():
++    """SkinNotFoundError 继承自 RenderError（异常层级一致）。"""
++    from gui_renderer import RenderError
++
++    e = SkinNotFoundError(name="x", available=())
++    assert isinstance(e, RenderError)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_init.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_init.py
+@@ -0,0 +1,186 @@
++"""Renderer 构造校验测试（迭代 1 既有 + 迭代 3 增量：enable_high_dpi）。
++
++迭代 1 既有用例 100% 保留（zero-modify 兼容）。
++"""
++import pytest
++
++from gui_renderer import Renderer
++from gui_renderer.errors import RenderError
++from gui_renderer.types import Color, Skin
++
++
++# ========================================================================
++# 迭代 1 既有用例（保留）
++# ========================================================================
++
++
++def test_renderer_constructs_with_minimal_window():
++    """最小可玩尺寸构造成功。"""
++    r = Renderer((640, 480))
++    assert r is not None
++
++
++def test_renderer_constructs_with_larger_window():
++    """更大窗口（设计默认 640×480）也构造成功。"""
++    r = Renderer((640, 480))
++    assert r is not None
++
++
++def test_renderer_rejects_too_small_window_width():
++    """窗口宽度过小 → RenderError（最小 = GRID_COLS * CELL_SIZE + 2 * PLAYFIELD_X）。"""
++    with pytest.raises(RenderError):
++        Renderer((100, 472))
++
++
++def test_renderer_rejects_too_small_window_height():
++    """窗口高度过小 → RenderError。"""
++    with pytest.raises(RenderError):
++        Renderer((640, 100))
++
++
++def test_renderer_accepts_custom_skin():
++    """自定义皮肤合法时构造成功。"""
++    custom = Skin(
++        name="custom",
++        background=Color(0, 0, 0),
++        grid_line=Color(10, 10, 10),
++        snake_head=Color(100, 100, 100),
++        snake_body=Color(80, 80, 80),
++        food=Color(200, 50, 50),
++        food_outline=Color(255, 255, 255),
++        hud_text=Color(200, 200, 200),
++        hud_accent=Color(255, 200, 0),
++    )
++    r = Renderer((640, 480), skin=custom)
++    assert r is not None
++
++
++def test_renderer_rejects_color_out_of_range():
++    """皮肤颜色 RGB 越界（r > 255） → RenderError。"""
++    bad = Skin(
++        name="bad",
++        background=Color(300, 0, 0),  # r 越界
++        grid_line=Color(0, 0, 0),
++        snake_head=Color(0, 0, 0),
++        snake_body=Color(0, 0, 0),
++        food=Color(0, 0, 0),
++        food_outline=Color(0, 0, 0),
++        hud_text=Color(0, 0, 0),
++        hud_accent=Color(0, 0, 0),
++    )
++    with pytest.raises(RenderError):
++        Renderer((640, 480), skin=bad)
++
++
++def test_renderer_rejects_negative_color():
++    """皮肤颜色 RGB < 0 → RenderError。"""
++    bad = Skin(
++        name="bad",
+… omitted 108 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_render.py
+@@ -0,0 +1,395 @@
++"""Renderer.render 行为测试（迭代 1 既有 + 迭代 3 增量）。
++
++迭代 1 既有用例 100% 保留（zero-modify 兼容；HUD 5 次 font.render 断言 + OVER hud_accent
++断言被设计 §0.1 修订 P1-1 显式要求保留 → 全部继续通过）。
++
++迭代 3 增量（设计 §7.6）：12 条用例覆盖 interp 插值 / food_pattern 分发 / 同色描边 blit /
++prev_food=None / 距离 >1 兜底 / render 未 init 抛 RenderError。
++"""
++import pytest
++
++from gui_renderer import HudData, Renderer
++from gui_renderer.constants import (
++    CELL_SIZE,
++    COLORBLIND_FRIENDLY_SKIN,
++    DARK_SKIN,
++    DEFAULT_SKIN,
++    PLAYFIELD_X,
++    PLAYFIELD_Y,
++    SKIN_REGISTRY,
++)
++from gui_renderer.errors import RenderError
++from tests.conftest import FakeSurface, _pg_module
++
++from game_core import Difficulty, GameStatus, Point, Snapshot
++
++
++# ========================================================================
++# 工具：构造 snapshot / hud
++# ========================================================================
++
++
++def _snapshot(snake_len: int = 3) -> Snapshot:
++    """构造测试用 Snapshot（蛇身长度 snake_len，蛇头在 (1,1)，食物在 (5,5)）。"""
++    body = tuple(Point(x=1 + i, y=1) for i in range(snake_len))
++    return Snapshot(
++        snake_body=body,
++        food=Point(5, 5),
++        score=10,
++        length=snake_len,
++        status=GameStatus.RUN,
++        difficulty=Difficulty.MEDIUM,
++        tick_ms=150,
++    )
++
++
++def _hud() -> HudData:
++    return HudData(
++        score=10,
++        high_score=100,
++        length=3,
++        difficulty_label="MEDIUM",
++        status_label="RUN",
++    )
++
++
++# ========================================================================
++# 迭代 1 既有用例（保留；修订 P1-1 显式要求）
++# ========================================================================
++
++
++def test_render_calls_surface_fill_with_background(fake_pygame, renderer):
++    """渲染 1 次 → screen.fill(background) 被调用。"""
++    r = renderer
++    snap = _snapshot(3)
++    hud = _hud()
++    r.render(snap, hud)
++    assert len(r._screen.fill_calls) == 1
++    assert r._screen.fill_calls[0][0] == r.skin.background
++
++
++def test_render_snake_len_3_calls_draw_rect_3_times(fake_pygame, renderer):
++    """蛇身长度 3 → snake_body 部分 draw.rect 调用 3 次（蛇头 1 + 蛇身 2）。"""
++    r = renderer
++    _pg_module.draw_calls.reset()
++    r.render(_snapshot(3), _hud())
++    snake_rects = [
++        c for c in _pg_module.draw_calls
++        if c[1] is not None and len(c[1]) == 4 and c[1][1] == PLAYFIELD_Y + 1 * CELL_SIZE
+… omitted 317 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_skin.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_skin.py
+@@ -0,0 +1,96 @@
++"""Renderer 切皮肤测试（设计 §7.6）。"""
++import pytest
++
++from gui_renderer import HudData, Renderer
++from gui_renderer.constants import (
++    COLORBLIND_FRIENDLY_SKIN,
++    DARK_SKIN,
++    DEFAULT_SKIN,
++    GRID_COLS,
++    GRID_ROWS,
++    PLAYFIELD_X,
++    PLAYFIELD_Y,
++    SKIN_REGISTRY,
++)
++from gui_renderer.errors import SkinNotFoundError
++from tests.conftest import _pg_module
++
++from game_core import Difficulty, GameStatus, Point, Snapshot
++
++
++def _snapshot() -> Snapshot:
++    body = tuple(Point(x=1 + i, y=1) for i in range(3))
++    return Snapshot(
++        snake_body=body,
++        food=Point(5, 5),
++        score=10,
++        length=3,
++        status=GameStatus.RUN,
++        difficulty=Difficulty.MEDIUM,
++        tick_ms=150,
++    )
++
++
++def _hud() -> HudData:
++    return HudData(10, 100, 3, "MEDIUM", "RUN")
++
++
++# ========================================================================
++# §7.6 test_renderer_skin.py 5 条
++# ========================================================================
++
++
++def test_set_skin_classic_is_idempotent(fake_pygame, renderer):
++    """set_skin('classic') 幂等。"""
++    r = renderer
++    r.set_skin("classic")
++    assert r.current_skin_name == "classic"
++    assert r.skin.name == "classic"
++
++
++def test_set_skin_multiple_switches(fake_pygame, renderer):
++    """多次切换皮肤：classic → dark → colorblind_friendly → classic。"""
++    r = renderer
++    r.set_skin("dark")
++    assert r.current_skin_name == "dark"
++    r.set_skin("colorblind_friendly")
++    assert r.current_skin_name == "colorblind_friendly"
++    r.set_skin("classic")
++    assert r.current_skin_name == "classic"
++
++
++def test_set_skin_unknown_raises_skin_not_found(fake_pygame, renderer):
++    """set_skin('nope') → SkinNotFoundError；e.name == 'nope' 且 e.available 包含 3 个 key。"""
++    r = renderer
++    with pytest.raises(SkinNotFoundError) as exc_info:
++        r.set_skin("nope")
++    e = exc_info.value
++    assert e.name == "nope"
++    assert "classic" in e.available
++    assert "dark" in e.available
++    assert "colorblind_friendly" in e.available
++    assert len(e.available) == 3
++
++
++def test_current_skin_name_defaults_to_classic(fake_pygame, renderer):
++    """current_skin_name 默认为 'classic'（DEFAULT_SKIN.name）。"""
++    r = renderer
++    assert r.current_skin_name == "classic"
+… omitted 18 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_resize.py → b/workspace/snake-linux/code/gui-renderer/iter-3/tests/test_renderer_resize.py
+@@ -0,0 +1,101 @@
++"""Renderer.handle_resize 测试（设计 §4.6 + §7.6）。"""
++import pytest
++
++from gui_renderer import HudData, Renderer
++from gui_renderer.constants import (
++    CELL_SIZE,
++    CELL_SIZE_MIN,
++    HUD_FONT_NAME,
++    HUD_FONT_SIZE,
++    MIN_PLAYABLE_H,
++    MIN_PLAYABLE_W,
++    PLAYFIELD_X,
++    PLAYFIELD_Y,
++)
++from gui_renderer.errors import RenderError
++
++
++# ========================================================================
++# §7.6 test_renderer_resize.py 8 条
++# ========================================================================
++
++
++def test_handle_resize_larger_window_increases_cell_size(fake_pygame, renderer):
++    """handle_resize(1024, 768) → cell_size 增大（> 24）。"""
++    r = renderer
++    initial = r.cell_size
++    r.handle_resize(1024, 768)
++    assert r.cell_size > initial
++    assert r.cell_size >= CELL_SIZE_MIN
++
++
++def test_handle_resize_same_size_keeps_cell_size(fake_pygame, renderer):
++    """handle_resize(640, 480) → cell_size 不变（24）。"""
++    r = renderer
++    r.handle_resize(640, 480)
++    assert r.cell_size == CELL_SIZE
++
++
++def test_handle_resize_below_min_raises_render_error(fake_pygame, renderer):
++    """handle_resize(< MIN_PLAYABLE_W, < MIN_PLAYABLE_H) → assertRaises(RenderError)（r2 P2-1 保留）。"""
++    r = renderer
++    # 任一维度 < MIN_PLAYABLE_W/H 即抛
++    with pytest.raises(RenderError):
++        r.handle_resize(100, 100)
++    with pytest.raises(RenderError):
++        r.handle_resize(MIN_PLAYABLE_W - 1, 480)
++    with pytest.raises(RenderError):
++        r.handle_resize(640, MIN_PLAYABLE_H - 1)
++
++
++def test_handle_resize_zero_size_raises_render_error(fake_pygame, renderer):
++    """handle_resize(0, 0) → RenderError（类型/正整数校验）。"""
++    r = renderer
++    with pytest.raises(RenderError):
++        r.handle_resize(0, 0)
++
++
++def test_handle_resize_negative_raises_render_error(fake_pygame, renderer):
++    """handle_resize(-1, 100) → RenderError。"""
++    r = renderer
++    with pytest.raises(RenderError):
++        r.handle_resize(-1, 100)
++
++
++def test_handle_resize_scales_font_proportionally(fake_pygame, renderer):
++    """handle_resize 后字体大小按 cell_size 比例缩放（new_font_size 变化）。"""
++    r = renderer
++    initial_font = r._font
++    initial_cell = r.cell_size
++    # 拉大窗口
++    r.handle_resize(1024, 768)
++    new_cell = r.cell_size
++    # 字体应按 cell_size 比例变大（或保持，下限保护）
++    if new_cell > initial_cell:
++        # new_font_size = max(10, int(round(HUD_FONT_SIZE * new_cell / CELL_SIZE)))
++        expected_size = max(10, int(round(HUD_FONT_SIZE * new_cell / CELL_SIZE)))
++        # FakeFont 不存储 font_size，但可间接验证 _font 已被替换
++        assert r._font is not initial_font
+… omitted 23 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/types.py → b/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/types.py
+@@ -0,0 +1,124 @@
++"""types 模块：渲染侧不可变值对象与派生属性。
++
++FR-06 图形渲染所需的最小值对象集。设计原则：renderer 不复用 game-core 的 Point/Direction，
++避免渲染层对游戏层坐标语义产生隐式耦合（见设计 §1.1）。
++
++迭代 3 增量（设计 §1.2 + §1.5）：
++  - Skin 新增 3 字段（cell_gap / food_pattern / snake_pattern）—— 全默认值，迭代 1 字面量构造兼容
++  - **修订 P2-1**：原 r3 hud_shadow 字段已删除（无消费点）
++  - 新增 InterpolationState frozen dataclass
++  - **修订 P2-2**：InterpolatedCell 已删除（无消费点，UT/实现均不引用）
++"""
++from collections import deque
++from dataclasses import dataclass, field
++from typing import Deque, Optional, Tuple
++
++
++@dataclass(frozen=True)
++class Color:
++    """RGB 颜色三元组；r/g/b ∈ [0, 255]。"""
++
++    r: int
++    g: int
++    b: int
++
++
++@dataclass(frozen=True)
++class Rect:
++    """屏幕像素矩形；迭代 1 公共类型，迭代 3 无新增消费点（设计 §1.4 修订 P2-2）。"""
++
++    x: int
++    y: int
++    w: int
++    h: int
++
++
++@dataclass(frozen=True)
++class Skin:
++    """皮肤数据结构（迭代 1 仅内置 DEFAULT_SKIN；迭代 3 接入 SkinRegistry，3 套皮肤）。
++
++    所有 Color 字段必须 r/g/b ∈ [0, 255]（由 Renderer.__init__ 在构造时校验）。
++    迭代 3 新增字段（cell_gap / food_pattern / snake_pattern）全部带默认值 → 迭代 1
++    DEFAULT_SKIN 字面量构造继续合法。
++    """
++
++    name: str
++    background: Color
++    grid_line: Color
++    snake_head: Color
++    snake_body: Color
++    food: Color
++    food_outline: Color
++    hud_text: Color
++    hud_accent: Color
++    # ---- 迭代 3 新增（默认值兼容迭代 1；修订 P2-1：hud_shadow 已删除）----
++    cell_gap: int = 1
++    food_pattern: str = "solid"
++    snake_pattern: str = "solid"
++
++
++@dataclass(frozen=True)
++class HudData:
++    """HUD 渲染输入（由 game-app 主循环构造并注入）。"""
++
++    score: int
++    high_score: int
++    length: int
++    difficulty_label: str
++    status_label: str
++
++
++@dataclass
++class FpsMetric:
++    """帧率统计：滚动窗口采样最近 120 帧渲染耗时（毫秒）。
++
++    p95_frame_ms / fps 是派生属性，按需计算。
++    """
++
++    samples: Deque[float] = field(default_factory=lambda: deque(maxlen=120))
+… omitted 46 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/constants.py → b/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/constants.py
+@@ -0,0 +1,122 @@
++"""constants 模块：默认皮肤与布局常量。
++
++迭代 1 内置经典皮肤；迭代 3 增量：深色 / 色盲友好 2 套新皮肤 + SKIN_REGISTRY +
++CELL_SIZE_MIN / MIN_PLAYABLE_W/H 缩放常量。
++
++设计 §1.3 / §4.3：所有 Color 字段走 `field(default_factory=lambda: Color(...))` 写法
++（r2 P3-3 保留，修订 P2-1 同步：hud_shadow 字段已删除）。
++"""
++from typing import Dict
++
++from .types import Color, Skin
++
++# ---- 布局常量（迭代 1 既有）----
++WINDOW_WIDTH = 640  # 窗口宽（像素）
++WINDOW_HEIGHT = 480  # 窗口高（像素）
++HUD_HEIGHT = 80  # 顶部 HUD 区域高
++PLAYFIELD_X = 16  # 游戏区左上角 X 偏移（边距）
++PLAYFIELD_Y = HUD_HEIGHT + 16  # 游戏区左上角 Y 偏移
++CELL_SIZE = 24  # 单格像素（20×15 网格 → 480×360，刚好放下）
++GRID_COLS = 20  # 与 game-core 默认一致
++GRID_ROWS = 15
++
++# 几何自洽校验（FO 实现时核对，FO 不允许破坏以下不变量）：
++# WINDOW_WIDTH  = 16 + 20*24 + 16 = 512（FO 在 renderer 校验最小可玩尺寸时取 512）
++# WINDOW_HEIGHT = 80 + 16 + 15*24 + 16 = 472
++
++# ---- 迭代 3 增量：缩放常量（设计 §4.3）----
++CELL_SIZE_MIN = 8  # 缩放下限（像素），防止网格过小无法辨识
++
++# 最小可玩尺寸（r2 P2-1 保留：与 handle_resize 校验口径一致）
++MIN_PLAYABLE_W = GRID_COLS * CELL_SIZE_MIN + 2 * PLAYFIELD_X
++MIN_PLAYABLE_H = GRID_ROWS * CELL_SIZE_MIN + PLAYFIELD_Y + PLAYFIELD_X
++
++# ---- 帧率采样 ----
++FPS_SAMPLES_CAPACITY = 120  # deque maxlen（约 2 秒 @ 60FPS）
++
++# ---- HUD 布局 ----
++HUD_LINE_HEIGHT = 28  # HUD 行高（像素）
++HUD_FIRST_LINE_Y = 12  # HUD 第一行 y
++HUD_SECOND_LINE_Y = 44  # HUD 第二行 y
++
++# ---- 字体 ----
++HUD_FONT_NAME = "Arial"  # pygame.font.SysFont 首选字体；失败回退 SDL 默认字体
++HUD_FONT_SIZE = 22
++
++# ---- 经典皮肤（DEFAULT_SKIN，迭代 1 既有）----
++DEFAULT_SKIN = Skin(
++    name="classic",
++    background=Color(18, 18, 24),  # 深灰蓝
++    grid_line=Color(30, 30, 40),
++    snake_head=Color(120, 220, 120),  # 鲜绿
++    snake_body=Color(60, 180, 90),  # 稍深绿
++    food=Color(230, 80, 80),  # 红
++    food_outline=Color(255, 240, 220),
++    hud_text=Color(230, 230, 240),
++    hud_accent=Color(255, 210, 90),  # 金黄强调
++    # 迭代 3 新增字段走默认值（cell_gap=1 / food_pattern="solid" / snake_pattern="solid"）
++)
++
++# ---- 迭代 3 增量：DARK_SKIN（设计 §4.3）----
++DARK_SKIN = Skin(
++    name="dark",
++    background=Color(8, 8, 14),  # 极深蓝
++    grid_line=Color(20, 20, 30),
++    snake_head=Color(140, 255, 200),  # 亮绿
++    snake_body=Color(80, 200, 140),  # 深绿
++    food=Color(255, 160, 80),  # 暖橙
++    food_outline=Color(255, 220, 180),
++    hud_text=Color(240, 240, 250),
++    hud_accent=Color(255, 230, 140),
++    cell_gap=2,
++    food_pattern="ringed",  # 食物描边强调（环形）
++    snake_pattern="solid",
++)
++
++# ---- 迭代 3 增量：COLORBLIND_FRIENDLY_SKIN（设计 §4.3，修订 P2-1 删 hud_shadow）----
++COLORBLIND_FRIENDLY_SKIN = Skin(
++    name="colorblind_friendly",
+… omitted 44 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/errors.py → b/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/errors.py
+@@ -0,0 +1,35 @@
++"""errors 模块：渲染层异常层级。
++
++迭代 3 增量（设计 §2.4 + §3.3 修订 P3-1）：SkinNotFoundError 实装结构化构造签名
++`(name, available)`，并暴露 `self.name` / `self.available` 供 FO set_skin / UT 断言使用。
++"""
++
++
++class RenderError(RuntimeError):
++    """渲染模块异常基类。
++
++    覆盖场景：
++    - pygame 初始化失败（无图形环境）
++    - 颜色 RGB 非法（由 Skin 注入时校验）
++    - 窗口尺寸过小（小于最小可玩尺寸）
++    - render() 收到非法 snapshot（如 snake_body 为空）
++    - 迭代 3 增量：enable_high_dpi / set_skin / handle_resize / render 未 init 抛此异常
++    """
++
++
++class SkinNotFoundError(RenderError):
++    """皮肤名不在注册表中（迭代 3 触发；迭代 1 仅 DEFAULT_SKIN 不会触发）。
++
++    修订 P3-1 实装构造签名 `(name, available)`，结构化字段供调用方断言：
++        e.name       # 缺失的皮肤名
++        e.available  # 当前注册表 key 列表（tuple）
++    """
++
++    def __init__(self, name: str, available):
++        # available 既可传 tuple 也可传 dict_keys，统一转 tuple 存
++        super().__init__(f"皮肤 {name!r} 不在注册表 {list(available)}")
++        self.name = name
++        self.available = tuple(available)
++
++
++__all__ = ["RenderError", "SkinNotFoundError"]
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/__init__.py → b/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/__init__.py
+@@ -0,0 +1,67 @@
++"""gui_renderer 包：snake-linux v2.0.0 gui-renderer 迭代 3 增量。
++
++迭代 1 首发（已 it_passed）→ 迭代 3 增量接入：平滑插值动画 / 皮肤系统 ≥3 套 /
++窗口等比缩放 / 高分屏清晰（设计 §3.2 + §0.2）。
++"""
++from .constants import (
++    CELL_SIZE,
++    CELL_SIZE_MIN,
++    COLORBLIND_FRIENDLY_SKIN,
++    DARK_SKIN,
++    DEFAULT_SKIN,
++    GRID_COLS,
++    GRID_ROWS,
++    HUD_FONT_NAME,
++    HUD_FONT_SIZE,
++    HUD_HEIGHT,
++    MIN_PLAYABLE_H,
++    MIN_PLAYABLE_W,
++    PLAYFIELD_X,
++    PLAYFIELD_Y,
++    SKIN_REGISTRY,
++    WINDOW_HEIGHT,
++    WINDOW_WIDTH,
++)
++from .errors import RenderError, SkinNotFoundError
++from .renderer import Renderer
++from .types import (
++    Color,
++    FpsMetric,
++    HudData,
++    InterpolationState,
++    Rect,
++    Skin,
++)
++
++__all__ = [
++    # 主类
++    "Renderer",
++    # 值对象
++    "Color",
++    "Rect",
++    "Skin",
++    "HudData",
++    "FpsMetric",
++    "InterpolationState",
++    # 异常
++    "RenderError",
++    "SkinNotFoundError",
++    # 常量
++    "DEFAULT_SKIN",
++    "DARK_SKIN",
++    "COLORBLIND_FRIENDLY_SKIN",
++    "SKIN_REGISTRY",
++    "WINDOW_WIDTH",
++    "WINDOW_HEIGHT",
++    "HUD_HEIGHT",
++    "CELL_SIZE",
++    "CELL_SIZE_MIN",
++    "GRID_COLS",
++    "GRID_ROWS",
++    "MIN_PLAYABLE_W",
++    "MIN_PLAYABLE_H",
++    "PLAYFIELD_X",
++    "PLAYFIELD_Y",
++    "HUD_FONT_NAME",
++    "HUD_FONT_SIZE",
++]
+  ┊ review diff
+a/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py → b/workspace/snake-linux/code/gui-renderer/iter-3/gui_renderer/renderer.py
+@@ -0,0 +1,496 @@
++"""renderer 模块：Renderer 类实现（pygame 适配层 + 绘制流程 + 帧率采样）。
++
++设计要点：
++- 构造期不调 pygame.init() / set_mode() —— 让 Renderer(...) 在 import 时无副作用（设计 §4.3）
++- 所有 pygame 调用走模块顶层 import —— UT 用 monkeypatch 替换为 fake_pygame（设计 §4.2）
++- render 末尾采样 fps；samples 容量 = FPS_SAMPLES_CAPACITY（设计 §4.7）
++- 不引入 socket/urllib/http/requests（NFR-06）
++
++迭代 3 增量（设计 §3.1 / §4.4 / §4.5 / §4.6 / §4.7 / 修订 P1-1 三方案 + P2-1 + P2-2 + P3-1 + P3-2）：
++  - enable_high_dpi 参数（默认 True，pygame.SCALED）
++  - render(..., *, interp=None) 平滑插值
++  - set_skin / handle_resize / skin_names / current_skin_name
++  - _draw_food 按 food_pattern 分发
++  - _draw_hud 同色描边（单次 render + 偏移 blit + 主版 blit，font.render 仍 5 次）
++  - render 未 init 抛 RenderError（替代迭代 1 assert）
++  - SkinNotFoundError 触发路径：构造签名 (name, available)
++"""
++from typing import Optional, Tuple
++
++import pygame  # noqa: F401  # 由 UT 替换为 fake_pygame
++
++from .constants import (
++    CELL_SIZE,
++    CELL_SIZE_MIN,
++    DEFAULT_SKIN,
++    FPS_SAMPLES_CAPACITY,
++    GRID_COLS,
++    GRID_ROWS,
++    HUD_FIRST_LINE_Y,
++    HUD_FONT_NAME,
++    HUD_FONT_SIZE,
++    HUD_SECOND_LINE_Y,
++    MIN_PLAYABLE_H,
++    MIN_PLAYABLE_W,
++    PLAYFIELD_X,
++    PLAYFIELD_Y,
++    SKIN_REGISTRY,
++)
++from .errors import RenderError, SkinNotFoundError
++from .types import FpsMetric, HudData, InterpolationState, Skin
++
++
++# ---- 工具函数（设计 §4.4 修订 P2-1）----
++
++def _interpolate_position(
++    prev: Tuple[int, int], current: Tuple[int, int], alpha: float
++) -> Tuple[float, float]:
++    """线性插值：prev + alpha * (current - prev)。alpha=0→prev；alpha=1→current。"""
++    px = prev[0] + alpha * (current[0] - prev[0])
++    py = prev[1] + alpha * (current[1] - prev[1])
++    return (px, py)
++
++
++def _grid_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
++    """网格距离（max(|dx|, |dy|)，Chebyshev）。仅蛇身/食物单格场景。"""
++    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
++
++
++# ---- 校验（迭代 3 增量：cell_gap / food_pattern / snake_pattern，修订 P2-1 删 hud_shadow）----
++
++def _validate_skin(skin: Skin) -> None:
++    """校验皮肤所有 Color 字段 r/g/b ∈ [0, 255] + 迭代 3 新增字段合法。"""
++    for name, color in (
++        ("background", skin.background),
++        ("grid_line", skin.grid_line),
++        ("snake_head", skin.snake_head),
++        ("snake_body", skin.snake_body),
++        ("food", skin.food),
++        ("food_outline", skin.food_outline),
++        ("hud_text", skin.hud_text),
++        ("hud_accent", skin.hud_accent),
++    ):
++        for ch in ("r", "g", "b"):
++            v = getattr(color, ch)
++            if v < 0 or v > 255:
++                raise RenderError(
++                    f"皮肤 {skin.name} 的 {name}.{ch} = {v} 越界 [0, 255]"
++                )
+… omitted 418 diff line(s) across 1 additional file(s)/section(s)
+  ┊ review diff
+a//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/conftest.py → b//home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3/tests/conftest.py
+@@ -197,6 +197,25 @@
+ 
+ # ---- pytest fixtures ----
+ 
++def _resolve_pg_module():
++    """返回 fake_pygame 模块对象（跨 conftest 实例单例化）。
++
++    pytest 通过两套路径加载 conftest.py：一次作为顶层模块（fixture 用），一次作为
++    `tests.conftest` 子模块（测试代码 `from tests.conftest import` 用）。两套实例化
++    会各自创建 _pg_module，导致 monkeypatch 替换的 rmod.pygame 是「顶层 conftest 」
++    的 _pg_module，而测试断言读的是「tests.conftest」的 _pg_module._set_mode_calls，
++    set_mode 被 append 到「顶层」的 list，「tests.conftest」的 list 仍空。
++
++    修复：fixture 内 lazy 走 `sys.modules['tests.conftest']` 拿 tests 包版本，
++    让两套 conftest 共享同一个 _pg_module + 同一个 _set_mode_calls / _draw_calls。
++    """
++    import sys as _sys
++    mod = _sys.modules.get("tests.conftest")
++    if mod is not None and getattr(mod, "_pg_module", None) is not None:
++        return mod, mod._pg_module
++    return sys.modules[__name__], _pg_module
++
++
+ @pytest.fixture
+ def fake_pygame(monkeypatch):
+     """把 gui_renderer.renderer 模块顶层的 pygame 替换为 fake_pygame 模块。
+@@ -207,9 +226,10 @@
+             ...
+     """
+     import gui_renderer.renderer as rmod
+-    monkeypatch.setattr(rmod, "pygame", _pg_module)
+-    reset_fake_pygame()
+-    return _pg_module
++    _mod, pg = _resolve_pg_module()
++    monkeypatch.setattr(rmod, "pygame", pg)
++    _mod.reset_fake_pygame()
++    return pg
+ 
+ 
+ @pytest.fixture
+  ┊ review diff
+a//tmp/hermes-verify-gui-renderer-iter-3.sh → b//tmp/hermes-verify-gui-renderer-iter-3.sh
+@@ -0,0 +1,47 @@
++#!/bin/bash
++# hermes-verify-gui-renderer-iter-3.sh
++# Ad-hoc verification of FO TDD output for snake-linux/gui-renderer iter-3.
++# 验证项：
++#   1) pytest 全部用例通过（types / constants / skin_registry / renderer_init / renderer_render / renderer_resize / renderer_skin）
++#   2) statectl release_module 已把 iter-3 推进到 dev_reviewing
++#   3) 关键 API 入口存在 + HUD 同色描边（font.render 5 / blit 10）的端到端行为
++#
++# 注意：这是 ad-hoc 验证，不是流水线的 canonical test/lint/build 命令。
++# 真正的 canonical 集成是流水线调度（FO → release_module → MDE/SE review → IT）。
++
++set -e
++cd /home/zyzs/cyx/zteam/workspace/snake-linux/code/gui-renderer/iter-3
++
++echo "=== [1/3] pytest tests/ -v ==="
++python3 -m pytest tests/ -v --tb=short 2>&1 | tail -25
++PYTEST_EXIT=${PIPESTATUS[0]}
++echo "pytest exit code: $PYTEST_EXIT"
++if [ "$PYTEST_EXIT" != "0" ]; then
++    echo "FAIL: pytest 非 0 退出"
++    exit 1
++fi
++
++echo ""
++echo "=== [2/3] pipeline.log 末条（验证 release_module 已落 audit）==="
++tail -3 /home/zyzs/cyx/zteam/workspace/logs/pipeline.log
++
++echo ""
++echo "=== [3/3] modules.json iter-3 status（验证 dev_reviewing）==="
++python3 -c "
++import json
++m = json.load(open('/home/zyzs/cyx/zteam/workspace/snake-linux/modules.json'))
++for mod in m['modules']:
++    if mod['name'] == 'gui-renderer':
++        for it in mod['iterations']:
++            if it['n'] == 3:
++                print(f\"  iter-3 status = {it['status']}\")
++                print(f\"  iter-3 dev_product = {it.get('dev_product')}\")
++                print(f\"  iter-3 failures = {it['failures']}\")
++                if it['status'] != 'dev_reviewing':
++                    print('FAIL: iter-3 未推进到 dev_reviewing')
++                    exit(1)
++                break
++        break
++"
++echo ""
++echo "=== AD-HOC VERIFY OK ==="
+
+session_id: 20260814_073550_85371a
+**Ad-hoc 验证结果**（非流水线 canonical 命令，仅本次手工跑通的证据）：
+
+1. **pytest 99/99 PASSED**（types 18 + constants 19 + skin_registry 7 + renderer_init 16 + renderer_render 22 + renderer_resize 8 + renderer_skin 5 + 其他 4），exit 0
+2. **pipeline.log 审计**：`SPAWN-CREV snake-linux/gui-renderer iter-3 worker=mde pid=1822490` —— MDE 检视门禁已自动 spawn（不是 MDE 主动触发的，是 statectl release_module 推进到 dev_reviewing 后由 `_schedule_module_iter` 自动起的，与 zteam-pipeline-v2 skill 缺口 1 修复一致）
+3. **modules.json iter-3 status = `dev_reviewing`**，dev_product 已挂上 `snake-linux/code/gui-renderer/iter-3/`，failures=1（前轮遗留，不影响本次 DONE 推进）
+
+脚本 `/tmp/hermes-verify-gui-renderer-iter-3.sh` 已清理。
+
+**说明**：这是 ad-hoc 验证（FO 自闭环 UT 通过 + 状态机推进 + 评审自动 spawn 三项一致），不是流水线的 canonical IT 命令（IT 由 MTO 在下个迭代跑）。FO 视角的"完成"标志已达成。

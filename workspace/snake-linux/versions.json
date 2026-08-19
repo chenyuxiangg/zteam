@@ -25,25 +25,39 @@
     },
     {
       "name": "v2.0.0",
-      "status": "testplan",
+      "status": "released",
       "iterations": [],
       "reqs": [
         "snake-gui"
       ],
-      "released_at": null,
-      "st_product": null,
+      "released_at": "2026-08-15T15:17:53Z",
+      "st_product": "snake-linux/st/v2.0.0/",
       "architecture": "snake-linux/arch/v2.0.0/",
       "module_plan": null,
-      "test_plan": null,
+      "test_plan": "snake-linux/testplans/v2.0.0/",
       "qa_report": null,
-      "release_pkg": null,
+      "release_pkg": "snake-linux/release/v2.0.0/",
       "arch_claimed": false,
-      "arch_review_claimed": true,
+      "arch_review_claimed": false,
       "arch_review_claimed_pid": 4188617,
       "arch_reviews": [
         "snake-linux/review/arch/v2.0.0/"
       ],
-      "test_plan_claimed": true
+      "test_plan_claimed": false,
+      "testplan_review_claimed": false,
+      "testplan_review_claimed_pid": 9971,
+      "failures": 2,
+      "test_plan_reviews": [
+        "snake-linux/review/testplan/v2.0.0/"
+      ],
+      "st_claimed": false,
+      "st_claimed_pid": 933858,
+      "st_case_reviews": [
+        "snake-linux/st/v2.0.0/测试用例.md"
+      ],
+      "st_case_passed": true,
+      "qa_claimed": false,
+      "qa_claimed_pid": 980184
     }
   ],
   "current": "v1.0.0"

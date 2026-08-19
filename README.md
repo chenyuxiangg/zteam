@@ -154,6 +154,8 @@ bash uninstall.sh --full               # 清空数据层 workspace/（全部项�
 QA 发布（用户指南用户确认）→ 版本 released（同项目版本串行）。
 详细设计见 docs/v2-工程分层模型设计.md。
 
+- **解除阻塞**：`module {项目} unblock {模块} {迭代}` / `unblock {项目} {版本}`；资源限制 blocked 配额恢复后自动恢复
+
 ## 模型配置
 
 **绑定位置**：不在 cron 配置里，而在 `scripts/statectl.py` 的 **ROLE_MODELS 映射**（worker spawn 时经 `hermes chat -q -m <model> --provider <provider>` 传入）。每角色独立模型，改模型只需改常量/映射，无需重建 cron job。

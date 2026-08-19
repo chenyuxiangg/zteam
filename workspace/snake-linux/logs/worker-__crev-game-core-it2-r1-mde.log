@@ -1,0 +1,85 @@
+  ┊ review diff
+a/workspace/snake-linux/review/code/game-core/iter-2/snake-linux-game-core-code-iter2-r1.md → b/workspace/snake-linux/review/code/game-core/iter-2/snake-linux-game-core-code-iter2-r1.md
+@@ -0,0 +1,201 @@
++# 代码检视意见：game-core（snake-linux v2.0.0 迭代 2）
++
++> MDE 检视（模块内实现视角）· 依据模块设计 `snake-linux/design/game-core/设计-iter2-r2.md`（SE 评审 PASS）+ 架构设计 `snake-linux/arch/v2.0.0/架构设计.md`（§迭代计划迭代 2）+ 需求规格 `snake-linux/analysis/snake-gui-r1.md`（approved）
++> 检视对象：`snake-linux/code/game-core/iter-2/game_core/`（types.py / params.py / state.py / errors.py / __init__.py）+ `snake-linux/code/game-core/iter-2/tests/test_game_core/`（21 文件，89 用例）
++> 检视日期：2026-08-14
++> **模块间接口/数据流视角的检视由 SE 出，本意见只关注模块内实现视角（数据结构/实现细节/可测试性/代码风格）**
++
++## 0. 检视结论
++
++- **结论：PASS**（带 2 项建议 P3，不阻塞本轮）。
++- 一句话理由：实现严格对齐设计 r2（§1 数据结构、§2 接口签名/语义/异常、§3.2 核心流程 / 状态机、§3.7 实现注意 1~10 全绿），89 个 UT 全部通过（`cd snake-linux/code/game-core/iter-2 && python3 -m unittest discover -s tests/test_game_core`），行覆盖 98% / 分支 96%（达成 r2 §5.5 目标：state.py 行 97% ≈ 100% 目标、params.py 行 100%），r2 强制条款（C2-1~8）全部落地：
++  - C2-1 `speed_curve(score, difficulty) -> int` + `Difficulty.base_tick_ms` 走 `speed_curve(0, self)` + `Snapshot.tick_ms` 走 `speed_curve(score, difficulty)` 三处一致；
++  - C2-2 `toggle_pause()` RUN↔PAUSED + OVER 抛错；
++  - C2-3 `_score_callback` 字段 + `set_score_callback()` + step 吃食时触发 + 异常不捕获 + None 静默；
++  - C2-4 step 校验 RUN（含 PAUSED/OVER）+ set_direction PAUSED 静默忽略；
++  - C2-5 INV-8（PAUSED→RUN 清 pending）+ INV-9（toggle_pause 字段冻结）+ INV-10（NFR-01 量化）；
++  - C2-6 UT 框架扩展（speed_curve / pause / score_callback / inv8_pending_clear / paused_guard 共 5 新模块）；
++  - C2-7 core 不引入窗口/焦点概念；
++  - C2-8 三档独立下限（EASY=100 / MEDIUM=80 / HARD=50）保证 score 极大时 NFR-01 50% 约束仍成立；
++- 设计 r2 附录 C P1-1 / P2-A/B/C / P3-A/C/D/E/F/G 闭环全部对齐（已读 `params.py:34-43` `Difficulty.base_tick_ms = property(_base_tick_ms)` 运行时绑定模式、`errors.py` 仅 `InvalidStateError`、`state.py:116-118` `_score_callback = field(default=None, repr=False, compare=False)`）；
++- 2 项 P3 见 §3，建议合并入下一轮迭代（迭代 3 或代码复审）但本轮不阻塞。
++
++## 1. 实现与设计一致性核对（检视清单第 1 项）
++
++### 1.1 数据结构（设计 §1.1~1.4）
++
++| # | 检查项 | 设计落点 | 实现落点 | 结果 |
++|---|--------|----------|----------|:----:|
++| 1.1.1 | 模块文件组织 | §3.1 `game_core/{__init__.py, types.py, params.py, state.py, errors.py}` | 同上；`__init__.py:8` 注释「params 必须在 types 之后导入（property 运行时绑定）」 + `:23` `from . import params` 强制顺序 | ✅ |
++| 1.1.2 | `Point` 不可变值对象 | §1.1 / §2.2 `@dataclass(frozen=True)` | `types.py:14-17` 一致；frozen 行为由 UT `test_point.py` 覆盖 | ✅ |
++| 1.1.3 | `Direction` 4 向 + `dx/dy` + `opposite` | §1.1 / §2.3 | `types.py:21-46` `(0,-1)/(0,1)/(-1,0)/(1,0)`；`opposite` 走 `_OPPOSITE` 映射表 + involutive（UT `test_direction.py::test_opposite_involutive`） | ✅ |
++| 1.1.4 | `Difficulty` 枚举 + `base_tick_ms` 走 `speed_curve(0, self)`（r2 修订） | §1.1 / §2.1 / §3.7 #8（运行时绑定避免 types→params 循环导入） | `types.py:49-53` 仅枚举本身；`params.py:34-43` `Difficulty.base_tick_ms = property(_base_tick_ms)` 运行时绑定；实测 `Difficulty.EASY.base_tick_ms == 250` ✅ | ✅ |
++| 1.1.5 | `GameStatus` 全部启用（RUN/PAUSED/OVER） | §1.1 / §3.5（迭代 2 全部启用） | `types.py:56-60` 三成员均实质启用 | ✅ |
++| 1.1.6 | `Snake` 不可变 `body: tuple` + `head`/`len` + `with_head`/`without_tail`/`with_head_no_tail_drop`/`contains` | §1.3 / §2.4 | `types.py:78-103` 全部实现；`__hash__` 由 frozen dataclass 自动生成（`test_point.py` 已验） | ✅ |
++| 1.1.7 | `Food` 不可变 | §1.3 | `types.py:106-108` `@dataclass(frozen=True) pos: Point` | ✅ |
++| 1.1.8 | `Snapshot` 7 字段 frozen dataclass + `tick_ms` 走 `speed_curve`（r2 关键变更） | §2.5 | `types.py:63-75` 完整字段；实测 `Snapshot.tick_ms == speed_curve(score, difficulty)`（见 §2 验证） | ✅ |
++| 1.1.9 | `GameState` 字段集（迭代 2 新增 `_score_callback`） | §1.3 / §2.4 | `state.py:106-118` 全部字段 + `_score_callback` `field(default=None, repr=False, compare=False)`（§3.7 #10 r2 修订落地） | ✅ |
++| 1.1.10 | `GameState.__init__` 双路径（用户构造 / `dataclasses.replace`） | §3.7 #1 + §2.4 构造签名 | `state.py:120-147` 自定义 `__init__` 检测 `{"snake","food","rng"} ⊆ kwargs` 走 replace 路径（`object.__setattr__`），否则走用户构造路径 + 强制 keyword-only + 校验 `unexpected kwargs / args` 抛 `TypeError` | ✅ |
++| 1.1.11 | 初始布局：3 节居中朝右、direction=RIGHT、score=0、status=RUN（迭代 2 禁止初始 PAUSED） | §3.4 | `_build_initial`（`state.py:54-86`）完全一致；UT `test_state_init.py` 覆盖 | ✅ |
++| 1.1.12 | 网格下限 `width>=4 and height>=4`（INV-7） | §1.4 / §3.4 / §4.5 | `state.py:63-66` 抛 `ValueError("Grid too small: ... (minimum 4x4)")`；UT 覆盖 3x3/3x15/20x3/4x4 边界 | ✅ |
++| 1.1.13 | `spawn_food` 内部函数（设计 §3.3） | §3.3 | `state.py:31-51` 在非蛇身空闲格中随机选；空闲格为空抛 `RuntimeError("No space for food")`；UT `test_state_food_spawn.py` 覆盖 | ✅ |
++| 1.1.14 | `ScoreCallback = Callable[[int], None]` 类型别名 | §2.4 / §2.7 | `state.py:28` 定义；`__init__.py:19` 提升到包级；UT `test_state_score_callback.py` 实际使用 | ✅ |
++
++### 1.2 数据传递方式（设计 §2）
++
++| # | 检查项 | 设计落点 | 实现落点 | 结果 |
++|---|--------|----------|----------|:----:|
++| 1.2.1 | 构造注入 RNG / 初始方向 / 得分回调 | §2 `GameState(width, height, difficulty, *, rng=None, initial_direction=RIGHT, score_callback=None)` | `state.py:130-147` 全部接受 + 默认值符合设计；强制 keyword-only（`args` 抛 `TypeError`） | ✅ |
++| 1.2.2 | `step()` / `set_direction()` / `toggle_pause()` / `set_score_callback()` 返回新 GameState（纯函数语义） | §3.7 #1 | `state.py:184/232/268/277` 全部走 `dataclasses.replace` 返回新对象；`is` 实测验证（见 §2） | ✅ |
++| 1.2.3 | `snapshot()` 返回不可变 `Snapshot` | §2.5 | `state.py:284-291` 返回 `@dataclass(frozen=True)`；字段全部走 `speed_curve` 动态计算 `tick_ms` | ✅ |
++| 1.2.4 | 异常通道 `InvalidStateError` | §2.6 | `errors.py:6-9` `class InvalidStateError(RuntimeError)`；**仅此一个**（`DirectionError` 已按 r2 §3.7 P3-G 删除） | ✅ |
++| 1.2.5 | 回调契约（C2-3）：触发时机 = `step()` 吃食分支、状态字段已更新为新 GameState 后调用 `cb(new_score)` | §2 回调契约段 + §3.2 伪代码 | `state.py:232-246` 先 `dataclasses.replace` 算 `new_state` → 再 `if eating and self._score_callback is not None: self._score_callback(new_score)` → `return new_state`；异常不捕获（不 try/except） | ✅ |
++| 1.2.6 | 多次回调：单 tick 最多 1 次 | §2 回调契约 | 每 tick 至多 1 次吃食（`eating` 分支单入口）；UT #36 覆盖两次连续 step 各触发一次 | ✅ |
++
++### 1.3 对外接口（设计 §2.4 + §2.7 公开 API 列表）
++
++| # | 接口 | 设计签名 | 实现签名 | 结果 |
++|---|------|----------|----------|:----:|
++| 1.3.1 | `GameState.__init__(width, height, difficulty, *, rng=None, initial_direction=RIGHT, score_callback=None)` | §2.4 | `state.py:120-147` 一致 | ✅ |
++| 1.3.2 | `GameState.set_direction(d)` | §3.2 set_direction 伪代码（迭代 2 扩展） | `state.py:156-184`：OVER→`InvalidStateError` / PAUSED→静默 return self / 同向→return self / 反向（长 1）→生效 / 反向（长 ≥2）→静默忽略 / 其他→生效 | ✅ |
++| 1.3.3 | `GameState.step()` | §3.2 step 伪代码 | `state.py:186-246`：status≠RUN→`InvalidStateError` / 撞墙→OVER / 撞自身判定（v1 三连）→OVER / 吃食→`with_head_no_tail_drop`+new food+score+1 / 普通→`with_head().without_tail()` / 提交 pending→direction / 触发回调 | ✅ |
++| 1.3.4 | `GameState.toggle_pause()`（迭代 2 新增） | §3.2 / §3.5 | `state.py:248-268`：OVER→`InvalidStateError` / PAUSED→RUN+清 pending（INV-8）/ RUN→PAUSED 仅 status 翻转（INV-9） | ✅ |
++| 1.3.5 | `GameState.set_score_callback(cb)`（迭代 2 新增） | §2.4 / §3.7 #10 | `state.py:270-277` `return dataclasses.replace(self, _score_callback=cb)`；支持 None（清空） | ✅ |
++| 1.3.6 | `GameState.snapshot()` | §2.4 / §2.5 | `state.py:279-291` 7 字段 + `tick_ms=speed_curve(self.score, self.difficulty)` | ✅ |
++| 1.3.7 | `speed_curve(score, difficulty) -> int`（迭代 2 新增） | §1.2 / §2.7 | `params.py:26-36` 公式 `max(MIN_TICK_MS[d], base - k*score)`；约束 NFR-01 三档 + 50% + 单调不增由 UT `test_speed_curve.py` 全覆盖 | ✅ |
++| 1.3.8 | `MIN_TICK_MS: Dict[Difficulty, int]`（r2 关键修订：per-difficulty dict） | §1.2 / §2.7 | `params.py:22-26` `{EASY:100, MEDIUM:80, HARD:50}`；实测 `speed_curve(100, EASY/MEDIUM/HARD) == 100/80/50` ✅ | ✅ |
++| 1.3.9 | `Difficulty.base_tick_ms` property 走 `speed_curve(0, self)` | §2.1 / §3.7 #8（运行时绑定） | `params.py:39-43` `Difficulty.base_tick_ms = property(_base_tick_ms)` | ✅ |
++| 1.3.10 | `__init__.py` 公共 API re-export | §3.1 + §2.7 | `__init__.py:10-26` 完整 re-export；`__all__`（`:28-42`）13 项与设计 §2.7 表 1:1 对应 | ✅ |
++| 1.3.11 | 删除 `DirectionError` 占位 | §3.1 errors.py 行 + §2.7（r2 P3-G 闭环） | `errors.py` 仅 `InvalidStateError`；`__init__.py` 未 re-export `DirectionError`；实测 `from game_core import DirectionError` 报 `ImportError` ✅ | ✅ |
++
++### 1.4 实现细节（设计 §3.2 + §3.5 + §3.7）
++
++| # | 检查项 | 设计落点 | 实现落点 | 结果 |
++|---|--------|----------|----------|:----:|
++| 1.4.1 | set_direction 流程 | §3.2 伪代码 6 分支 | `state.py:167-184` 6 分支全在；顺序与设计一致（OVER→PAUSED→同向→反向→其他） | ✅ |
++| 1.4.2 | toggle_pause 流程（含 INV-8 清 pending） | §3.2 伪代码 | `state.py:258-268` 完全一致；INV-8 清 pending 在 `dataclasses.replace(self, status=GameStatus.RUN, pending_direction=None)` | ✅ |
++| 1.4.3 | step 流程（含 INV-3 撞墙先判定 / INV-5 撞自身 v1 三连规则 / 撞尾让行 / 吃食 / 回调） | §3.2 伪代码 + §1.4 INV 清单 | `state.py:198-246` 顺序与设计 100% 一致；撞自身判定 `next_head in body_set and not (next_head == body_tail and not eating)`（`state.py:216`） | ✅ |
++| 1.4.4 | `pending_direction` 提交时机（step 内一次性消费） | §3.2 step 步骤 8 | `state.py:232-240` `dataclasses.replace(self, ..., direction=d, pending_direction=None, ...)`（每次 step 后 pending 清空） | ✅ |
+… omitted 123 diff line(s) across 1 additional file(s)/section(s)
+
+session_id: 20260814_024550_0b9930
+Pipeline log shows `MODULE_REVIEW snake-linux/game-core iter-2 PASS -> it_working` — review PASS was successfully registered, status transitioned from `dev_reviewing` to `it_working`. The code review task is complete.
