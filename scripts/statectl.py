@@ -212,6 +212,12 @@ TEST_PROVIDER = os.environ.get("TEST_PROVIDER", "deepseek")  # 2026-08-15 临时
 QUALITY_REVIEWER_MODEL = os.environ.get("QUALITY_REVIEWER_MODEL", "deepseek-v4-pro")
 SECURITY_REVIEWER_MODEL = os.environ.get("SECURITY_REVIEWER_MODEL", "deepseek-v4-pro")
 RELEASER_MODEL = os.environ.get("RELEASER_MODEL", "deepseek-v4-flash")
+# v2 八角色独立模型（2026-08-13 用户调整：PM/SE/TE 用 pro 强推理；FO 用 MiniMax-M3）
+PM_MODEL = os.environ.get("PM_MODEL", "deepseek-v4-pro")
+SE_MODEL = os.environ.get("SE_MODEL", "deepseek-v4-pro")
+TE_MODEL = os.environ.get("TE_MODEL", "deepseek-v4-pro")
+FO_MODEL = os.environ.get("FO_MODEL", "MiniMax-M3")
+FO_PROVIDER = os.environ.get("FO_PROVIDER", "minimax-cn")
 IT_DESIGNER_MODEL = os.environ.get("IT_DESIGNER_MODEL", "deepseek-v4-flash")
 IT_REVIEWER_MODEL = os.environ.get("IT_REVIEWER_MODEL", "deepseek-v4-pro")
 ST_TESTER_MODEL = os.environ.get("ST_TESTER_MODEL", "deepseek-v4-flash")
@@ -236,11 +242,11 @@ RELEASE = {"name": "release", "role": "releaser", "dir": "release", "kind": "dir
 # 角色 → (模型, provider) 映射（含需求阶段两个角色）
 ROLE_MODELS = {
     "req-analyst": (ANALYST_MODEL, ANALYST_PROVIDER),
-    "pm": (ANALYST_MODEL, ANALYST_PROVIDER),  # v2 PM（需求导入细化，麦肯锡+联网）
-    "se": (PLAN_DESIGNER_MODEL, ANALYST_PROVIDER),  # v2 SE（架构设计，全量需求）
-    "te": (TESTPLAN_DESIGNER_MODEL, ANALYST_PROVIDER),  # v2 TE（整体测试方案）
+    "pm": (PM_MODEL, ANALYST_PROVIDER),  # v2 PM（需求导入细化，麦肯锡+联网）— pro
+    "se": (SE_MODEL, ANALYST_PROVIDER),  # v2 SE（架构设计，全量需求）— pro
+    "te": (TE_MODEL, ANALYST_PROVIDER),  # v2 TE（整体测试方案）— pro
     "mde": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),  # v2 MDE（模块设计，代码检视）
-    "fo": (CODE_DEVELOPER_MODEL, CODE_PROVIDER),  # v2 FO（TDD 开发）
+    "fo": (FO_MODEL, FO_PROVIDER),  # v2 FO（TDD 开发）— MiniMax-M3（用户指定）
     "mto": (TEST_DEVELOPER_MODEL, TEST_PROVIDER),  # v2 MTO（模块 IT）
     "sto": (ST_TESTER_MODEL, ANALYST_PROVIDER),  # v2 STO（版本系统测试）
     "qa": (QUALITY_REVIEWER_MODEL, ANALYST_PROVIDER),  # v2 QA（质量专员，发布）

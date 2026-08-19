@@ -164,7 +164,10 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 | 角色 | 常量（环境变量可覆盖） | 当前值 | 说明 |
 |------|------------------------|--------|------|
 | ~~需求分析师~~（v1 退役）→ **PM** | `ANALYST_MODEL` / `ANALYST_PROVIDER` | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
-| **SE / TE / MDE / FO / MTO / STO / QA**（v2） | 复用 PLAN/TESTPLAN/CODE/TEST/ST/QUALITY 角色模型常量 | 见 ROLE_MODELS（可 env 覆盖） | 产出 flash / 评审 pro |
+| **PM / SE / TE**（v2） | `PM_MODEL`/`SE_MODEL`/`TE_MODEL` | `deepseek-v4-pro` / `deepseek` | 强推理（规格/架构/方案） |
+| **FO**（v2，TDD 开发） | `FO_MODEL`/`FO_PROVIDER` | `MiniMax-M3` / `minimax-cn` | 用户指定（受 5h 窗口配额，资源感知自动恢复） |
+| **MDE / MTO / STO**（v2） | 复用 CODE/TEST/ST 角色常量 | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
+| **QA**（v2，发布终审） | `QUALITY_REVIEWER_MODEL` | `deepseek-v4-pro` / `deepseek` | 评审把关 |
 | 需求评审师 | `REVIEWER_MODEL` / `REVIEWER_PROVIDER` | `deepseek-v4-pro` / `deepseek` | 评审类（强推理，把关） |
 | 方案设计/评审 | `PLAN_DESIGNER_MODEL` / `PLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
 | 测试方案设计/评审 | `TESTPLAN_DESIGNER_MODEL` / `TESTPLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
