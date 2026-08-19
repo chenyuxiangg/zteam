@@ -4,7 +4,7 @@
 
 ## 开工前必读
 
-1. 你的启动指令（`hermes chat -q` 的 query）会指明：角色（分析师/评审师/方案设计者/代码开发者/…）、需求 id（`<project>/<req_id>`）、阶段与轮次（`N`）；
+1. 你的启动指令（`hermes chat -q` 的 query）会指明：角色（v2 八角色：PM/SE/TE/MDE/FO/MTO/STO/QA）、对象（需求 `<project>/<req_id>` 或模块 `<project>/__mde-{模块}-it{N}` 或版本 `<project>/__arch{版本}`）与轮次（`N`）；
 2. 先阅读对应角色文件（`roles/*.md`，指令里会给出路径），**严格遵循**其中的输出模板与工作原则；
 3. 文件布局、状态机、命名规则、claim 字段语义：`docs/state-machine.md`。
 

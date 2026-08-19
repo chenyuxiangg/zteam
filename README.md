@@ -163,7 +163,8 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 
 | 角色 | 常量（环境变量可覆盖） | 当前值 | 说明 |
 |------|------------------------|--------|------|
-| 需求分析师 | `ANALYST_MODEL` / `ANALYST_PROVIDER` | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
+| ~~需求分析师~~（v1 退役）→ **PM** | `ANALYST_MODEL` / `ANALYST_PROVIDER` | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
+| **SE / TE / MDE / FO / MTO / STO / QA**（v2） | 复用 PLAN/TESTPLAN/CODE/TEST/ST/QUALITY 角色模型常量 | 见 ROLE_MODELS（可 env 覆盖） | 产出 flash / 评审 pro |
 | 需求评审师 | `REVIEWER_MODEL` / `REVIEWER_PROVIDER` | `deepseek-v4-pro` / `deepseek` | 评审类（强推理，把关） |
 | 方案设计/评审 | `PLAN_DESIGNER_MODEL` / `PLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
 | 测试方案设计/评审 | `TESTPLAN_DESIGNER_MODEL` / `TESTPLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
