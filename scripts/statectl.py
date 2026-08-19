@@ -2042,6 +2042,15 @@ def _minimax_quota_ok() -> bool:
         return False
 
 
+def _log_matches(fn: str, key: str) -> bool:
+    """日志名匹配（精确模式，防短名子串串扰）：
+    模块 worker：worker-__{role}-{模块}-it{N}-r{n}-{role}.log → 模式 '-{模块}-it'
+    版本 worker：worker-__arch{版本}/__archrev{版本}/__tp{版本}/__tprev{版本}/__sto{版本}/__qa{版本}... → 前缀 '__xxx{版本}'"""
+    if key.startswith("v") and any(c.isdigit() for c in key):
+        return any(f"__{p}{key}" in fn for p in ("arch", "archrev", "tp", "tprev", "sto", "qa", "st"))
+    return f"-{key}-it" in fn
+
+
 def _mark_blocked_reason(project: str, key: str, it_or_v: dict) -> str:
     """blocked 原因判定（脚本固定规则）：读该 key 关联 worker 日志尾部（精确路径 worker-{key}-r{N}-{role}.log
     或含 key 的 worker 日志）→ 关键词分类：
@@ -2062,8 +2071,8 @@ def _mark_blocked_reason(project: str, key: str, it_or_v: dict) -> str:
                 fp = os.path.join(d, fn)
                 if fn == "errors.log":
                     pass  # 全局/项目 errors.log 都兜底
-                elif fn.startswith("worker-") and d != LOG_DIR and key_norm in fn:
-                    pass  # 本项目 worker 日志，key 匹配
+                elif fn.startswith("worker-") and d != LOG_DIR and _log_matches(fn, key_norm):
+                    pass  # 本项目 worker 日志，精确模式匹配
                 else:
                     continue
                 try:
