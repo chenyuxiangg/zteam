@@ -65,6 +65,8 @@ def cmd_install() -> int:
     chat_id = _chat_id()
     with open(BOT_ROLE_FILE, encoding="utf-8") as f:
         prompt = f.read().strip()
+    # 占位符替换：<工作区> → 真实绝对路径（zbot 需知道工作区位置才能读文件/查状态）
+    prompt = prompt.replace("<工作区>", WORKSPACE)
     data = _load_gw()
     platforms = data.setdefault("platforms", {})
     telegram = platforms.setdefault("telegram", {})
