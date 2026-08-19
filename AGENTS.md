@@ -51,6 +51,17 @@ zteam/                     # 资产层（git 跟踪）
 - 产出者不得评审自己的产物；评审者不得修改产物；
 - 不得跳过状态（如直接 `pending → approved`）。
 
+## v2 当前主命令（八角色 worker 实际使用）
+
+- 启动时（第 0 步）执行 `set_status {key} {stage} working`（执行中标记）；
+- 规格产出：`release_analyze {key} {规格}` → 等用户评审（`confirm`/`reject`）；
+- 版本级：`release_arch ... DONE`（SE 产出）/ `release_arch ... PASS|FAIL`（PM 评审）、`release_testplan_v2 ... DONE/PASS|FAIL`（TE 产出/SE 评审）、`release_st_v2 ... DONE`（STO）、`release_qa ... DONE`（QA）、`confirm_guide/reject_guide`（用户确认发布）；
+- 模块级：`release_module {项目} {模块} {迭代} design|code|case|it {产物} DONE`、`release_module ... review {意见} PASS|FAIL`（检视门禁）、`release_module ... design {意见} PASS|FAIL`（SE 评设计）；
+- 问题单：`issue {项目} open|fix|close|reopen {iid} ...`（提单人复测关闭，reopen=复测不通过回 open）；
+- 解除阻塞：`module {项目} unblock {模块} {迭代}` / `unblock {项目} {版本}`；
+- 失败：`rollback {key}`；进程崩溃由 stale 兜底（自动重置重试，3 次 blocked）；
+- **注意**：下方 v1 命令（release_review/release_stage_review/release_gate/release_release）为历史流程，v2 worker 不使用。
+
 ## v2 模块中心补充命令
 
 - 规格产出：`release_analyze {key} {规格}` → 等用户评审（`confirm`/`reject`）

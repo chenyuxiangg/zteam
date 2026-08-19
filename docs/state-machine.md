@@ -324,3 +324,54 @@ python3 scripts/statectl.py release_release {key} {项目}/release/{req_id}-r{N}
 2026-08-02T08:27:00Z REVIEW  req-001 round=1 file=review/req-001-r1.md conclusion=FAIL
 2026-08-02T08:27:00Z STATE   req-001 reviewing->needs_fix
 ```
+
+
+## 11. v2 模块中心状态机（2026-08-12 起，替代 v1 独立全链）
+
+> v1（第 1-10 节）为历史流程（需求独立全链：plan→testplan→code→test→quality→security→release）。
+> v2 起：需求规格（用户评审锁定）→ 版本级架构/测试方案 → 模块迭代（设计→开发→IT）→ 版本 ST → QA 发布。需求开发全部下沉到模块。
+
+### 11.1 需求状态机（status.json）
+
+```
+pending → analyzing（PM 细化）→ awaiting_user_confirm（等用户评审）
+        → approved（confirm 锁定规格）→ dispatched（SE 架构分发后）
+        → released（版本 confirm_guide 收口）
+        → removed（change_request remove，忽略）
+reject → analyzing（重细化）；change_request modify → analyzing（变更重跑）
+```
+
+### 11.2 版本状态机（versions.json）
+
+```
+planning → arch（SE 架构）→ arch_reviewing（PM 评审）→ testplan（TE 方案）
+        → testplan_reviewing（SE 评审）→ in_dev（模块迭代）→ st（STO 系统测试）
+        → st_done → qa（QA 发布）→ qa_reviewing（用户指南用户评审）→ released
+任何阶段评审 FAIL → 打回重做；stale（worker 死亡）→ 自动重置重试（3 次 blocked）；blocked → unblock 命令
+版本串行：同项目仅 1 活跃版本（arch~qa_reviewing）；released 后才能开新版本架构
+```
+
+### 11.3 模块迭代状态机（modules.json）
+
+```
+design_pending → design_working（MDE 设计/修订）→ design_reviewing（SE 评审）→ dev_working（FO TDD）
+        → dev_reviewing（MDE 检视门禁）→ it_working（MTO 用例 TE 评审→测试→IT）
+        → it_passed（问题单全闭环自动收口）
+打回：design FAIL → design_working（带反馈）；review FAIL → dev_working（带反馈，3 次 blocked）
+case FAIL → case_retry_count 3 次 blocked；问题单 open → FO 修复 → MTO 复测 → close/reopen
+模块依赖：依赖模块 it_passed 后解锁；依赖环 → DEP_CYCLE 告警
+```
+
+### 11.4 v2 命令速查
+
+| 命令 | 用途 |
+|---|---|
+| `confirm/reject {req_id}` | 用户评审需求规格（唯一拍板人） |
+| `module {项目} add/dep/dispatch/iter/unblock` | SE 模块组织/迭代计划/解除阻塞 |
+| `issue {项目} open/fix/close/reopen {iid}` | 问题单闭环（提单人复测） |
+| `release_arch/testplan_v2 {p} {v} {产物} DONE\|PASS\|FAIL` | 版本级产出/评审 |
+| `release_module {p} {m} {n} design/code/review/case/it ...` | 模块迭代产出/评审/检视 |
+| `release_st_v2/release_qa {p} {v} ... DONE` | ST/发布产出 |
+| `confirm_guide/reject_guide {p} {v}` | 用户确认用户指南（发布最后一关） |
+| `change_request {req_id} modify/remove` | 变更三分场景（released 版本冻结） |
+| `unblock {p} {v}` / `module unblock` | 解除 blocked（资源限制自动恢复） |
