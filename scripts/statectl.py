@@ -26,11 +26,11 @@ from datetime import datetime, timezone
 # ---------------- 路径与常量 ----------------
 
 WORKDIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # zteam/（realpath：兼容 ~/.hermes/scripts/ 下的符号链接调用）
-WORKSPACE_DIR = os.path.join(WORKDIR, "workspace")  # 运行数据层（固定资产在根目录，数据全部收进 workspace/）
-LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")       # 全局日志（跨项目审计流）
+WORKSPACE_DIR = os.path.join(WORKDIR, "workspace")  # 兼容回退路径（未登记项目/旧数据；项目数据已解耦到 work_path）
+LOG_DIR = os.path.join(WORKDIR, "logs")             # 全局日志（跨项目审计流，zteam 根——方案 A：审计随仓库）
 SCRIPTS_DIR = os.path.join(WORKDIR, "scripts")
 STATUS_FILE = os.path.join(WORKSPACE_DIR, "status.json")  # 兼容引用（实际按项目分文件，见 read_status）
-LOCK_FILE = os.path.join(WORKSPACE_DIR, "status.lock")    # 全局锁（register/聚合扫描用）
+LOCK_FILE = os.path.join(WORKDIR, "status.lock")    # 全局锁（映射表写锁/register，zteam 根）
 LOG_FILE = os.path.join(LOG_DIR, "pipeline.log")
 ALARM_FILE = os.path.join(LOG_DIR, "alarms.txt")
 
@@ -716,7 +716,7 @@ def release_it(project: str, version: str, iter_n: str, product: str, conclusion
         if not it:
             print(f"迭代 {iter_n} 不存在", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        full = product_path(product)
         if not os.path.exists(full):
             print(f"产物不存在: {full}", file=sys.stderr)
             return 1
@@ -745,7 +745,7 @@ def release_st(project: str, version: str, product: str, conclusion: str) -> int
         if not v:
             print(f"版本 {version} 不存在", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        full = product_path(product)
         if not os.path.exists(full):
             print(f"产物不存在: {full}", file=sys.stderr)
             return 1
@@ -1066,7 +1066,7 @@ def release_arch(project: str, version: str, product: str, conclusion: str) -> i
             if v.get("status") != "arch":
                 print(f"版本状态非 arch（当前 {v.get('status')}）", file=sys.stderr)
                 return 1
-            full = os.path.join(WORKSPACE_DIR, norm_product(product))
+            full = product_path(product)
             if not os.path.exists(full):
                 print(f"架构产物不存在: {full}", file=sys.stderr)
                 return 1
@@ -1113,7 +1113,7 @@ def release_testplan_v2(project: str, version: str, product: str, conclusion: st
             if v.get("status") != "testplan":
                 print(f"版本状态非 testplan（当前 {v.get('status')}）", file=sys.stderr)
                 return 1
-            full = os.path.join(WORKSPACE_DIR, norm_product(product))
+            full = product_path(product)
             if not os.path.exists(full):
                 print(f"测试方案产物不存在: {full}", file=sys.stderr)
                 return 1
@@ -1275,7 +1275,7 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
         m, it = _get_mod_iter(project, module, iter_n)
         if not m:
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product)) if product else None
+        full = product_path(product) if product else None
         if product and not os.path.exists(full):
             print(f"产物不存在: {full}", file=sys.stderr)
             return 1
@@ -1744,7 +1744,7 @@ def release_st_v2(project: str, version: str, product: str, conclusion: str) -> 
         if v.get("status") != "st":
             print(f"版本状态非 st（当前 {v.get('status')}）", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        full = product_path(product)
         if not os.path.exists(full):
             print(f"ST 报告不存在: {full}", file=sys.stderr)
             return 1
@@ -1778,7 +1778,7 @@ def release_qa(project: str, version: str, product: str, conclusion: str) -> int
         if v.get("status") != "qa":
             print(f"版本状态非 qa（当前 {v.get('status')}）", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        full = product_path(product)
         if not os.path.exists(full):
             print(f"发布包不存在: {full}", file=sys.stderr)
             return 1
@@ -1911,7 +1911,7 @@ def release_st_case(project: str, version: str, product: str, conclusion: str) -
         if not v:
             print(f"版本 {version} 不存在", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        full = product_path(product)
         if not os.path.exists(full):
             print(f"用例不存在: {full}", file=sys.stderr)
             return 1
@@ -2256,9 +2256,7 @@ def _sync_project_version(project: str, version: str) -> None:
 
 def cmd_versions(project: str = None) -> int:
     """版本聚合视图：statectl versions [project]（无参 = 全部项目）。"""
-    projects = [project] if project else [p for p in sorted(os.listdir(WORKSPACE_DIR))
-                                          if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
-                                          and p not in ("logs",) and not p.startswith(".")]
+    projects = [project] if project else [p["name"] for p in read_projects().get("projects", [])]
     st = read_status()
     for proj in projects:
         vd = read_versions(proj)
@@ -2504,7 +2502,7 @@ def _stage_state(st, rid, stage):
 
 
 def norm_product(p: str) -> str:
-    """规范化产物路径：统一为相对 WORKSPACE_DIR 的路径（去 workspace/ 前缀、去绝对路径）。
+    """规范化产物路径：统一为相对路径（去 workspace/ 前缀、去绝对路径）。
     防 worker 传参不规范（如带 workspace/ 前缀）导致归档/展示路径风格不一致。"""
     if not p:
         return p
@@ -2518,6 +2516,15 @@ def norm_product(p: str) -> str:
         if p.startswith(prefix):
             p = p[len(prefix):]
     return p
+
+
+def product_path(p: str) -> str:
+    """产物绝对路径（解耦后查表）：'{project}/{dir}/...' → project_dir(project)/{dir}/...（未登记回退 workspace）。"""
+    p = norm_product(p)
+    if p and "/" in p:
+        proj, rest = p.split("/", 1)
+        return os.path.join(project_dir(proj), rest)
+    return os.path.join(WORKSPACE_DIR, p or "")
 
 
 def set_stage_state(st: dict, rid: str, stage: str, state: str, product: str = None) -> tuple:
@@ -3570,7 +3577,7 @@ def cmd_record_product(rid: str, stage: str, product: str) -> int:
         if not s:
             print(f"阶段 {stage} 不存在（可选：req/plan/testplan/code/test/quality/security/release）", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, norm_product(product))
+        full = product_path(product)
         if not os.path.exists(full):
             print(f"产物不存在: {full}", file=sys.stderr)
             return 1
@@ -3956,7 +3963,7 @@ def diagnose() -> int:
     def add(level, code, msg):
         rows.append((level, code, msg))
 
-    # D1 status.json
+    # D1 status.json（解耦后：已投放项目各自 work_path/status.json；未投放=正常待创建）
     try:
         st = read_status()
         add("PASS", "D1", "status.json 存在且 JSON 合法")
@@ -3965,14 +3972,18 @@ def diagnose() -> int:
         add("FAIL", "D1", f"status.json JSON 损坏: {e} —— 需手工修复（见 docs/troubleshooting.md）")
     except FileNotFoundError:
         st = {}
-        add("FAIL", "D1", "status.json 缺失")
+        ps = read_projects().get("projects", [])
+        if ps and any(os.path.exists(os.path.join(p["work_path"], "status.json")) for p in ps):
+            add("FAIL", "D1", "存在已投放项目但 status.json 缺失")
+        else:
+            add("INFO", "D1", "尚无已投放项目（首次投放需求时自动创建 status.json）")
 
     # D2 目录完整性（资产层在根目录，数据层按项目分层：映射表 work_path 下含全部子目录；存量 workspace 兼容）
     missing = [d for d in ("roles", "scripts", "docs") if not os.path.isdir(os.path.join(WORKDIR, d))]
     proj_srcs = []  # (项目名, 检查根路径)
     for p in read_projects().get("projects", []):
         proj_srcs.append((p["name"], p.get("work_path")))
-    for p in sorted(os.listdir(WORKSPACE_DIR)):  # 存量兼容（未登记或迁移前数据）
+    for p in sorted(os.listdir(WORKSPACE_DIR)) if os.path.isdir(WORKSPACE_DIR) else []:  # 存量兼容（未登记或迁移前数据）
         if os.path.isdir(os.path.join(WORKSPACE_DIR, p)) and p not in ("logs",) and not p.startswith("."):
             if p not in [x[0] for x in proj_srcs]:
                 proj_srcs.append((p, os.path.join(WORKSPACE_DIR, p)))
@@ -4036,7 +4047,7 @@ def diagnose() -> int:
             for name in sorted(os.listdir(idir)):
                 if name.endswith(".md") and f"{p['name']}/{name[:-3]}" not in st:
                     unreg.append(f"{p['name']}/{name}")
-    for proj in sorted(os.listdir(WORKSPACE_DIR)):
+    for proj in sorted(os.listdir(WORKSPACE_DIR)) if os.path.isdir(WORKSPACE_DIR) else []:
         if proj in ("logs",) or proj.startswith(".") or not os.path.isdir(os.path.join(WORKSPACE_DIR, proj)):
             continue
         idir = os.path.join(WORKSPACE_DIR, proj, "input")
