@@ -14,7 +14,7 @@ v2 起为八角色模块中心模型（PM/SE/TE/MDE/FO/MTO/STO/QA）：需求请
 | 原始诉求 | 实现 |
 |----------|------|
 | 分析与评审是不同角色 | `roles/req-analyst.md` vs `roles/req-reviewer.md`，两个上半部 job + 两个下半部 worker 完全分离 |
-| 一次输入多个需求 | `workspace/<项目>/input/` 可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
+| 一次输入多个需求 | `{work_path}/input/`（默认 `~/project/<项目>/input/`）可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
 | 评审结论被分析者自动感知 | 分析师上半部轮询 `needs_fix` 状态并唤醒修改 worker |
 | 分析完成被评审者自动感知 | 评审上半部轮询 `analyzed` 状态并唤醒评审 worker |
 | 多轮自动完成 | 状态机循环直至 `approved` 或 `max_rounds` 上限，失败自动重试 + stale 恢复 + 巡检兜底（漏设状态自动补正） |
@@ -56,7 +56,7 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 ├── scripts/                   # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口
 ├── docs/                      # state-machine.md（状态机定义）+ troubleshooting.md（问题定位）
 ├── AGENTS.md                  # 流水线约定（下半部 worker 自动加载）
-└── workspace/                 # 数据层（按项目分层；uninstall --full 清空对象）
+└── projects.json              # 项目映射表（唯一真理源）；项目数据在各自 work_path（默认 ~/project/<项目>/）
     ├── <项目名>/              # 每个项目一个文件夹（首次投放需求时自动创建）
     │   ├── status.json        # 该项目状态机（唯一事实来源；key = <项目>/<req_id>）
     │   ├── status.lock        # 该项目 flock 锁（项目间并发、同项目串行）
@@ -72,7 +72,7 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 
 ## 快速开始（3 步）
 
-1. **投放需求**：把需求原文放入 `workspace/<项目名>/input/req-001.md`（项目目录不存在会自动创建；可一次放多个；上半部脚本会自动登记）；
+1. **投放需求**：项目须先登记（`statectl project add <项目名> [路径]`，缺省 `~/project/<项目名>/`）；把需求原文放入 `{work_path}/input/req-001.md`（目录不存在会自动创建；可一次放多个；上半部脚本会自动登记）；
 2. **创建 cron job**（全部 `no_agent` 纯脚本，不需要模型；**推荐直接用 `bash install.sh` 一键创建，见下节**）：
 
 ```bash
@@ -91,7 +91,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 
 > 注意：调度请用 cron 表达式（`"5m"` 会被解析成一次性任务）；`--repeat 0` = 无限循环；**job 只有在 gateway 运行时才会自动触发**（`hermes cron status` 查看；未运行时输出仍会被保存但不投递）。
 
-3. **查看结果**：`jq . workspace/status.json` 看流转；`ls workspace/artifacts/` 看终版；`tail workspace/logs/pipeline.log` 看审计；**有问题先跑 `python3 scripts/statectl.py diagnose`**（问题定位见 `docs/troubleshooting.md`）。
+3. **查看结果**：`jq . {work_path}/status.json` 看流转；`ls {work_path}/artifacts/` 看终版；`tail logs/pipeline.log` 看审计（zteam/logs/）；**有问题先跑 `python3 scripts/statectl.py diagnose`**（问题定位见 `docs/troubleshooting.md`）。
 
 > 替代方案：**第 2 步可直接用一键脚本** `bash install.sh` 完成（幂等，可重复执行），见下节。
 
