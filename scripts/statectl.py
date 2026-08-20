@@ -17,6 +17,7 @@ zteam 流水线状态控制与上下半部调度（方案 B 唯一实现）
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -35,9 +36,50 @@ ALARM_FILE = os.path.join(LOG_DIR, "alarms.txt")
 
 DEFAULT_PROJECT = "default"  # 未指定项目时的兜底项目
 
-# ---- 项目分层：workspace/<project>/{input,analysis,...,logs,status.json,status.lock} ----
+# ---- 项目映射表（唯一真理源：项目名/成立时间/最新版本/工作路径；只能用户明确修改经脚本写入） ----
+PROJECTS_FILE = os.path.join(WORKDIR, "projects.json")
+
+
+def read_projects() -> dict:
+    """读项目映射表；不存在则返回空表。"""
+    if os.path.exists(PROJECTS_FILE):
+        try:
+            return json.load(open(PROJECTS_FILE, encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {"projects": []}
+    return {"projects": []}
+
+
+def write_projects(pj: dict) -> None:
+    """原子写项目映射表。"""
+    pj["updated_at"] = now_iso()
+    tmp = PROJECTS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(pj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, PROJECTS_FILE)
+
+
+def project_work_path(project: str):
+    """查表取项目工作路径；未登记返回 None。"""
+    pj = read_projects()
+    for p in pj.get("projects", []):
+        if p["name"] == project:
+            return p.get("work_path")
+    return None
+
+
+def project_default():
+    """当前默认项目名（无 → None）。"""
+    pj = read_projects()
+    for p in pj.get("projects", []):
+        if p.get("default"):
+            return p["name"]
+    return None
+
+# ---- 项目分层：路径经映射表解析（work_path），未登记回退 workspace/<project>（存量兼容） ----
 def project_dir(project: str) -> str:
-    return os.path.join(WORKSPACE_DIR, project)
+    wp = project_work_path(project)
+    return wp if wp else os.path.join(WORKSPACE_DIR, project)
 
 
 def project_status_file(project: str) -> str:
@@ -1779,6 +1821,8 @@ def confirm_guide(project: str, version: str) -> int:
                         f.write(f"# 归档 {project}/{r}\n\n版本：{version}\n发布包：{v.get('release_pkg')}\n状态：released（v2 模块中心，随版本发布）\n")
         if changed:
             write_status(st)
+        # 版本 released → 同步项目映射表 latest_version（脚本守护）
+        _sync_project_version(project, version)
         log(f"VERSION_RELEASED {project}/{version}（用户确认用户指南）")
     return 0
 
@@ -2105,6 +2149,111 @@ def _mark_blocked_reason(project: str, key: str, it_or_v: dict) -> str:
     return it_or_v["blocked_reason"]
 
 
+def cmd_project(project: str, rest: list) -> int:
+    """项目映射表命令（唯一真理源，用户明确修改才可写）：
+    project list / info {name} / add {name} {path?} / setpath {name} {path} / default {name} / rm {name}"""
+    if project == "list":
+        pj = read_projects()
+        ps = pj.get("projects", [])
+        if not ps:
+            print("（尚无项目——用 `project add {name} {path?}` 登记，或让 zbot 帮你创建）")
+            return 0
+        for p in sorted(ps, key=lambda x: x["name"]):
+            mark = " [默认]" if p.get("default") else ""
+            print(f"{p['name']} | 最新 {p.get('latest_version') or '—'} | {p.get('work_path')}{mark}")
+        return 0
+    if not rest:
+        print("project list / info <name> / add <name> <path?> / setpath <name> <path> / default <name> / rm <name>", file=sys.stderr)
+        return 1
+    name = rest[0]
+    if project == "info":
+        wp = project_work_path(name)
+        if not wp:
+            print(f"项目 {name} 未登记", file=sys.stderr)
+            return 1
+        pj = read_projects()
+        p = next(x for x in pj["projects"] if x["name"] == name)
+        print(f"项目 {name}")
+        print(f"  成立时间: {p.get('created_at')}")
+        print(f"  最新版本: {p.get('latest_version') or '—'}")
+        print(f"  工作路径: {p.get('work_path')}")
+        print(f"  默认标记: {'是' if p.get('default') else '否'}")
+        return 0
+    if not re.match(r"^[A-Za-z0-9_-]+$", name):
+        print("项目名仅允许 [A-Za-z0-9_-]", file=sys.stderr)
+        return 1
+    if project in ("add", "setpath", "default", "rm"):
+        with acquire_lock() as _:  # 映射表为全局资产，用全局锁
+            pj = read_projects()
+            ps = pj.setdefault("projects", [])
+            if project == "add":
+                if any(p["name"] == name for p in ps):
+                    print(f"项目 {name} 已登记", file=sys.stderr)
+                    return 1
+                path = rest[1] if len(rest) > 1 else os.path.join(os.path.expanduser("~"), "project", name)
+                if not _valid_work_path(path):
+                    return 1
+                ps.append({"name": name, "created_at": now_iso(), "latest_version": None,
+                           "work_path": path, "default": False})
+                write_projects(pj)
+                log(f"PROJECT_ADD {name} path={path}")
+                print(f"已登记项目 {name} → {path}")
+                return 0
+            p = next((x for x in ps if x["name"] == name), None)
+            if not p:
+                print(f"项目 {name} 未登记", file=sys.stderr)
+                return 1
+            if project == "setpath":
+                if len(rest) < 2:
+                    print("project setpath <name> <path>", file=sys.stderr)
+                    return 1
+                if not _valid_work_path(rest[1]):
+                    return 1
+                old = p["work_path"]
+                p["work_path"] = rest[1]
+                write_projects(pj)
+                log(f"PROJECT_SETPATH {name} {old} -> {rest[1]}")
+                print(f"已迁移项目 {name}：{old} → {rest[1]}")
+                return 0
+            if project == "default":
+                for q in ps:
+                    q["default"] = (q["name"] == name)
+                write_projects(pj)
+                log(f"PROJECT_DEFAULT {name}")
+                print(f"默认项目已设为 {name}")
+                return 0
+            if project == "rm":
+                ps.remove(p)
+                write_projects(pj)
+                log(f"PROJECT_RM {name}（仅解除登记，数据未删）")
+                print(f"已解除登记 {name}（工作路径数据未删除）")
+                return 0
+    print(f"未知 project 动作 {project}", file=sys.stderr)
+    return 1
+
+
+def _valid_work_path(path: str) -> bool:
+    """工作路径校验：绝对路径 + 禁止 zteam 内部（防污染 git 仓）。"""
+    if not os.path.isabs(path):
+        print("工作路径必须是绝对路径", file=sys.stderr)
+        return False
+    real_wd = os.path.realpath(path)
+    if real_wd == os.path.realpath(WORKDIR) or real_wd.startswith(os.path.realpath(WORKDIR) + os.sep):
+        print(f"工作路径不能在 zteam 内部（{WORKDIR}）——会污染 git 仓", file=sys.stderr)
+        return False
+    return True
+
+
+def _sync_project_version(project: str, version: str) -> None:
+    """版本 released → 更新项目映射表 latest_version（脚本守护，AI 不自保证）。"""
+    pj = read_projects()
+    p = next((x for x in pj.get("projects", []) if x["name"] == project), None)
+    if p:
+        p["latest_version"] = version
+        write_projects(pj)
+        log(f"PROJECT_VERSION {project} -> {version}")
+
+
 def cmd_versions(project: str = None) -> int:
     """版本聚合视图：statectl versions [project]（无参 = 全部项目）。"""
     projects = [project] if project else [p for p in sorted(os.listdir(WORKSPACE_DIR))
@@ -2181,13 +2330,68 @@ def cmd_assign(rid: str, spec: str) -> int:
 
 
 
+def _register_one(st: dict, proj: str, rid: str, full: str, registered: list) -> None:
+    """单条需求注册为 pending（版本归属/冻结校验/落盘）——映射表与存量扫描共用。"""
+    key = f"{proj}/{rid}"
+    vd = ensure_versions(proj)
+    meta = _parse_req_meta(full)
+    ver = meta["version"]
+    if not ver:
+        ver = advance_current(proj)  # 未指定 → current；current released 时自动开新版本
+        vd = read_versions(proj)  # advance 可能已落盘，重读
+    else:
+        # 显式指定 released 版本 → 拒绝（版本冻结，需开新版本承载）
+        if ver in [x["name"] for x in vd["versions"]] and \
+                next(x for x in vd["versions"] if x["name"] == ver).get("status") == "released":
+            print(f"注册拒绝: {key} 指定版本 {ver} 已 released（冻结），请开新版本或 assign 到新版本", file=sys.stderr)
+            log(f"REGISTER_REJECT {key} version={ver} released(冻结)")
+            return
+    if ver not in [x["name"] for x in vd["versions"]]:
+        vd["versions"].append({"name": ver, "status": "planning",
+                               "iterations": [], "reqs": [], "released_at": None})
+    for x in vd["versions"]:
+        if x["name"] == ver and rid not in x.get("reqs", []):
+            x.setdefault("reqs", []).append(rid)
+    write_versions(proj, vd)
+    st[key] = {
+        "status": "pending",
+        "round": 0,
+        "max_rounds": DEFAULT_MAX_ROUNDS,
+        "forced": False,
+        "analysis": None,
+        "reviews": [],
+        "failures": 0,
+        "version": ver,
+        "iteration": meta["iteration"],
+        "depends_on": meta["depends_on"],
+        "stages": new_stages(),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    registered.append(key)
+    log(f"REGISTER {key} status=pending round=0 project={proj} version={ver}")
+
+
 def register_new_inputs(st: dict) -> list:
     """扫描各项目 input/ 下未登记文件自动注册为 pending（项目目录自动创建）。
     结构：workspace/<project>/input/<req_id>.md（每个项目独立 input/）。
     兼容旧结构：workspace/input/<project>/<req_id>.md 与平铺 workspace/input/<req_id>.md（迁移前数据仍可注册）。
     返回新注册的 key（'<project>/<req_id>'）列表。"""
     registered = []
-    # 新结构：workspace/<project>/input/*.md
+    # 新结构（项目工作路径解耦）：遍历映射表项目 → 扫 {work_path}/input/*.md（未登记项目不扫=强制先 project add）
+    for p in read_projects().get("projects", []):
+        idir = os.path.join(p["work_path"], "input")
+        if not os.path.isdir(idir):
+            continue
+        for name in sorted(os.listdir(idir)):
+            if not name.endswith(".md"):
+                continue
+            rid = name[:-3]
+            key = f"{p['name']}/{rid}"
+            if key in st:
+                continue
+            _register_one(st, p["name"], rid, os.path.join(idir, name), registered)
+    # 存量兼容：workspace/<project>/input/*.md（迁移期旧数据仍可注册）
     if os.path.isdir(WORKSPACE_DIR):
         for proj in sorted(os.listdir(WORKSPACE_DIR)):
             if proj in ("logs",) or proj.startswith("."):
@@ -2203,43 +2407,7 @@ def register_new_inputs(st: dict) -> list:
                 key = f"{proj}/{rid}"
                 if key in st:
                     continue
-                vd = ensure_versions(proj)
-                meta = _parse_req_meta(os.path.join(idir, name))
-                ver = meta["version"]
-                if not ver:
-                    ver = advance_current(proj)  # 未指定 → current；current released 时自动开新版本
-                    vd = read_versions(proj)  # advance 可能已落盘，重读
-                else:
-                    # 显式指定 released 版本 → 拒绝（版本冻结，需开新版本承载）
-                    if ver in [x["name"] for x in vd["versions"]] and \
-                            next(x for x in vd["versions"] if x["name"] == ver).get("status") == "released":
-                        print(f"注册拒绝: {key} 指定版本 {ver} 已 released（冻结），请开新版本或 assign 到新版本", file=sys.stderr)
-                        log(f"REGISTER_REJECT {key} version={ver} released(冻结)")
-                        continue
-                if ver not in [x["name"] for x in vd["versions"]]:
-                    vd["versions"].append({"name": ver, "status": "planning",
-                                           "iterations": [], "reqs": [], "released_at": None})
-                for x in vd["versions"]:
-                    if x["name"] == ver and rid not in x.get("reqs", []):
-                        x.setdefault("reqs", []).append(rid)
-                write_versions(proj, vd)
-                st[key] = {
-                    "status": "pending",
-                    "round": 0,
-                    "max_rounds": DEFAULT_MAX_ROUNDS,
-                    "forced": False,
-                    "analysis": None,
-                    "reviews": [],
-                    "failures": 0,
-                    "version": ver,
-                    "iteration": meta["iteration"],
-                    "depends_on": meta["depends_on"],
-                    "stages": new_stages(),
-                    "created_at": now_iso(),
-                    "updated_at": now_iso(),
-                }
-                registered.append(key)
-                log(f"REGISTER {key} status=pending round=0 project={proj} version={ver}")
+                _register_one(st, proj, rid, os.path.join(idir, name), registered)
     # 兼容旧结构：workspace/input/<project>/*.md 与平铺 input/<req_id>.md（迁移前）
     legacy_input = os.path.join(WORKSPACE_DIR, "input")
     if os.path.isdir(legacy_input):
@@ -3981,6 +4149,8 @@ def main(argv) -> int:
             return cmd_reject(rest[0], " ".join(rest[1:]))
         if cmd == "change_request":
             return cmd_change_request(rest[0], rest[1], " ".join(rest[2:]))
+        if cmd == "project":
+            return cmd_project(rest[0], rest[1:])
         if cmd == "versions":
             return cmd_versions(rest[0] if rest else None)
         if cmd == "assign":
