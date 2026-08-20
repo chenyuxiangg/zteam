@@ -4000,7 +4000,7 @@ def diagnose() -> int:
                 add("WARN", "D2", f"{proj} 工作路径未初始化（{base}）——首次投放需求时自动创建")
             else:
                 missing.append(f"{proj}/{{{','.join(miss_p)}}}")
-    if not os.path.isdir(os.path.join(WORKSPACE_DIR, "logs")):
+    if not os.path.isdir(LOG_DIR):
         missing.append("logs")
     add("PASS" if not missing else "FAIL", "D2", "目录完整" if not missing else f"缺失目录: {missing}")
 
