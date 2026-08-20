@@ -133,6 +133,15 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 - **资源限制自动恢复**：blocked 时巡检按脚本规则判因（扫项目 worker 日志尾部：429/配额 → `resource:minimax`；timeout → `network`；无痕迹 → `other`）；`resource` + 配额恢复（check_minimax_quota.py 退出码 0）或 `network` → **自动 unblock**（RESOURCE_RECOVERED 告警）；`other` → 人工介入（永不自动）；
 - **判别顺序**：先查 `blocked_reason` 字段（已标记直接用），未标记才扫日志——一切判定为脚本固定规则，非 AI 读日志。
 
+
+### 项目工作路径解耦（v2.1）
+
+- **项目映射表** `zteam/projects.json`（唯一真理源，git 跟踪）：项目名/成立时间/最新版本/工作路径/默认标记——**只能用户明确修改**（zbot 需用户确认）经 `statectl project ...` 写入；
+- 命令：`project list/info/add {name} {path?}/setpath {name} {path}/default {name}/rm {name}`（add 路径缺省 `~/project/{name}`；校验=绝对路径+非 zteam 内部；default 唯一）；
+- **路径解析**：`project_dir(project)` 查表取 work_path（未登记回退 workspace/{project} 存量兼容）；需求投放= `{work_path}/input/{req_id}.md`；register 扫映射表（未登记项目不扫=强制先 add）；
+- **版本同步**：版本 released（confirm_guide）自动更新 latest_version（脚本守护）；
+- **zbot 必守**：/new 第一步执行 `project list`；用户未指定项目→提示默认项目；项目操作需用户确认后执行。
+
 ## v2 模块中心命令（PM/SE/TE/MDE/FO/MTO/STO/QA 八角色）
 
 - 规格评审（用户拍板）：`confirm {req_id}` / `reject {req_id} <理由>`（zbot 推送🧾待评审）
