@@ -3984,7 +3984,11 @@ def diagnose() -> int:
                               "code", "tests", "quality", "security", "release", "archive", "logs")
                   if not os.path.isdir(os.path.join(base, d))]
         if miss_p:
-            missing.append(f"{proj}/{{{','.join(miss_p)}}}")
+            if "input" in miss_p:
+                # 未投放（input 都还没建）→ 待首次投放创建，不算损坏
+                add("WARN", "D2", f"{proj} 工作路径未初始化（{base}）——首次投放需求时自动创建")
+            else:
+                missing.append(f"{proj}/{{{','.join(miss_p)}}}")
     if not os.path.isdir(os.path.join(WORKSPACE_DIR, "logs")):
         missing.append("logs")
     add("PASS" if not missing else "FAIL", "D2", "目录完整" if not missing else f"缺失目录: {missing}")
