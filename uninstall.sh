@@ -67,14 +67,26 @@ rm -rf "$HERMES_SKILLS/req-review-pipeline" && say "已移除 skill: $HERMES_SKI
 if [ "$FULL" -eq 1 ]; then
   # 安全校验：工作区必须是流水线目录（含 scripts/statectl.py）才允许清空
   if [ -f "$WORKSPACE/scripts/statectl.py" ] && [ "$WORKSPACE" != "$HOME" ] && [ "$WORKSPACE" != "/" ]; then
-    # 清空范围：workspace/ 整个数据层（input/ analysis/ review/ artifacts/ 阶段产物目录 plans/testplans/code/tests/quality/security/release/ logs/ status.json）
-    # 保留范围：scripts/ roles/ docs/ README.md AGENTS.md install.sh uninstall.sh .gitignore .git/
-    rm -rf "$WORKSPACE/workspace"
-    # 重建空骨架（项目目录由 statectl register 自动创建；这里只建根与全局日志）
-    mkdir -p "$WORKSPACE/workspace"/logs
-    touch "$WORKSPACE/workspace/status.lock"
-    touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt"
-    say "已清空数据层 workspace/（全部项目数据），项目资产与 git 历史保留"
+    # 清空范围（解耦后）：各项目 work_path 数据目录 + 项目映射表登记；保留 zteam/logs 审计与 status.lock
+    # 保留范围：scripts/ roles/ docs/ skills/ projects.json 骨架/ README.md AGENTS.md install.sh uninstall.sh .gitignore .git/
+    PJFILE="$WORKSPACE/projects.json"
+    if [ -f "$PJFILE" ]; then
+      python3 - "$PJFILE" <<'PYEOF'
+import json, os, sys, shutil
+pj = json.load(open(sys.argv[1], encoding="utf-8"))
+for p in pj.get("projects", []):
+    wp = p.get("work_path")
+    if wp and os.path.isabs(wp) and wp != "/" and os.path.exists(wp):
+        shutil.rmtree(wp, ignore_errors=True)
+        print(f"  已清空项目数据: {p['name']} ({wp})")
+json.dump({"projects": [], "updated_at": None}, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+print("  已清空项目映射表登记")
+PYEOF
+    fi
+    mkdir -p "$WORKSPACE/logs"
+    touch "$WORKSPACE/status.lock"
+    touch "$WORKSPACE/logs/pipeline.log" "$WORKSPACE/logs/alarms.txt"
+    say "已清空全部项目数据（work_path 目录 + projects.json 登记），项目资产与 git 历史保留"
     say "如需同步 git 备份: cd $WORKSPACE && git add -A && git commit -m 'uninstall --full 清空运行期数据' && git push"
   else
     warn "工作区校验未通过（$WORKSPACE），拒绝清空"

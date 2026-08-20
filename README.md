@@ -101,7 +101,7 @@ hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekl
 bash install.sh                        # 一键安装/修复（幂等）：目录骨架 + cron 薄壳 + 4 个 job + zbot 职责注入 + 自检；zbot 配置变更时自动重启 gateway（REQREVIEW_NO_RESTART=1 跳过）
 bash install.sh --with-gateway         # 干净机器一键到位：gateway 未运行则自动安装并启动
 bash uninstall.sh                      # 卸载：移除 4 个 job + 薄壳 + zbot 职责配置，【保留全部数据】
-bash uninstall.sh --full               # 清空数据层 workspace/（全部项目数据），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
+bash uninstall.sh --full               # 清空全部项目数据（work_path 目录 + projects.json 登记），项目资产与 git 历史保留（交互输入 yes；agent 场景用 REQREVIEW_FULL_YES=1 免交互）
 ```
 
 ### 干净机器完整流程（新机器 / 迁移）
@@ -125,7 +125,7 @@ bash uninstall.sh --full               # 清空数据层 workspace/（全部项�
    hermes cron status                    # 应见 "Gateway is running" + 3 active jobs
    python3 scripts/statectl.py diagnose  # 应见 0 严重问题 / 0 警告
    # 可选端到端验证（消耗少量 token）：投放一个测试需求并立即触发
-   cp 测试需求.md workspace/<项目名>/input/test-install.md && hermes cron run req-worker-top
+   cp 测试需求.md ~/project/<项目名>/input/test-install.md && hermes cron run req-worker-top
    python3 scripts/statectl.py list      # 应见 analyzing → analyzed
    ```
 5. **场景差异说明**：
@@ -134,7 +134,7 @@ bash uninstall.sh --full               # 清空数据层 workspace/（全部项�
    - **无 systemd 环境**（WSL/Docker 等）→ `--with-gateway` 自动启动失败时会提示手动方案（`hermes gateway run` 前台 / `sudo hermes gateway install --system`），不会静默假装成功。
 
 - **install 幂等**：重复执行只会补齐缺失项（已存在则跳过），末尾自动跑 `diagnose` 自检；**工作区迁移后重跑 install 即可**（薄壳按当前路径重新生成）；
-- **uninstall 默认安全**：只拆 cron job 与 `$HERMES_HOME/scripts/` 薄壳，`workspace/status.json`/产物/日志原样保留；`--full` 才删数据且有确认；
+- **uninstall 默认安全**：只拆 cron job 与 `$HERMES_HOME/scripts/` 薄壳，项目数据（work_path）与审计日志原样保留；`--full` 才清项目数据（work_path + projects.json 登记）且有确认；
 - 两者都**不碰 gateway**（它同时服务 Hermes 其他功能）。
 
 ## v2 模块中心（八角色）
@@ -180,7 +180,7 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 1. **直接改常量/映射（推荐）**：编辑 `scripts/statectl.py` 模型常量区（约 185–235 行）即可，立即生效；
 2. **环境变量覆盖**：上表常量同名环境变量优先。⚠️ **坑**：cron job 由 gateway（systemd 服务）执行，交互 shell 里 `export` 的变量**到不了 gateway 进程**——环境变量覆盖只对手动运行（`python3 scripts/statectl.py ...`）生效；要让 gateway 场景也走环境变量，需 `systemctl --user edit hermes-gateway` 在 `[Service]` 下加 `Environment=CODE_DEVELOPER_MODEL=...` 再 `hermes gateway restart`。
 
-**验证生效**：`tail workspace/logs/pipeline.log` 中 `SPAWN` 行带实际模型（`... model=MiniMax-M3 ...` / `... model=deepseek-v4-flash ...`）。
+**验证生效**：`tail logs/pipeline.log`（zteam/logs/）中 `SPAWN` 行带实际模型（`... model=MiniMax-M3 ...` / `... model=deepseek-v4-flash ...`）。
 
 > 可用模型以上游 API 实际返回为准；当前配置组合：DeepSeek（`deepseek-v4-flash`/`deepseek-v4-pro`，api.deepseek.com）+ MiniMax（`MiniMax-M3`，minimax-cn 中国站，KEY=MINIMAX_CN_API_KEY）+ Kimi（kimi-coding-cn，KEY=KIMI_CN_API_KEY，备用未启用）。
 
@@ -269,7 +269,7 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
 - **教训**：2026-08-07 工作区曾被旧版 `uninstall.sh --full`（删除整个工作区）误删，靠会话 DB 重建——现 `--full` 已改为只清空数据层 workspace/、保留项目资产；纳入 git 后即使误删也可 `git restore` 秒级恢复。
 
 
-- 投放唯一入口是 `workspace/<项目>/input/`；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
+- 投放唯一入口是 `{work_path}/input/`（默认 `~/project/<项目>/input/`，项目先 `project add` 登记）；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
 - **归档快速阅读**：`workspace/artifacts/<project>/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
 - **改内容不改文件名不会触发重新分析**——重跑用 `python3 scripts/statectl.py requeue <req_id>`（从失败阶段续跑，已通过阶段不重跑，省 token）；
 - **人工补记产物**（评审已过但 product 漏记）：`python3 scripts/statectl.py record_product <req_id> <stage> <产物路径>`（校验存在，合规替代手改 status.json）；
