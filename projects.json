@@ -1,0 +1,33 @@
+{
+  "projects": [
+    {
+      "name": "snake-linux",
+      "created_at": "2026-08-20T01:15:05Z",
+      "latest_version": "v2.0.0",
+      "work_path": "/home/zyzs/project/snake-linux",
+      "default": false
+    },
+    {
+      "name": "tetris",
+      "created_at": "2026-08-20T01:15:05Z",
+      "latest_version": "v1.0.0",
+      "work_path": "/home/zyzs/project/tetris",
+      "default": false
+    },
+    {
+      "name": "gomoku",
+      "created_at": "2026-08-20T01:15:05Z",
+      "latest_version": "v1.0.0",
+      "work_path": "/home/zyzs/project/gomoku",
+      "default": false
+    },
+    {
+      "name": "pacman",
+      "created_at": "2026-08-20T01:15:05Z",
+      "latest_version": "v1.0.0",
+      "work_path": "/home/zyzs/project/pacman",
+      "default": false
+    }
+  ],
+  "updated_at": "2026-08-20T01:15:20Z"
+}

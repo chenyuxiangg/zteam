@@ -3967,15 +3967,22 @@ def diagnose() -> int:
         st = {}
         add("FAIL", "D1", "status.json 缺失")
 
-    # D2 目录完整性（资产层在根目录，数据层按项目分层：workspace/<项目>/ 下含全部子目录）
+    # D2 目录完整性（资产层在根目录，数据层按项目分层：映射表 work_path 下含全部子目录；存量 workspace 兼容）
     missing = [d for d in ("roles", "scripts", "docs") if not os.path.isdir(os.path.join(WORKDIR, d))]
-    proj_dirs = [p for p in sorted(os.listdir(WORKSPACE_DIR))
-                 if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
-                 and p not in ("logs",) and not p.startswith(".")]
-    for proj in proj_dirs:
+    proj_srcs = []  # (项目名, 检查根路径)
+    for p in read_projects().get("projects", []):
+        proj_srcs.append((p["name"], p.get("work_path")))
+    for p in sorted(os.listdir(WORKSPACE_DIR)):  # 存量兼容（未登记或迁移前数据）
+        if os.path.isdir(os.path.join(WORKSPACE_DIR, p)) and p not in ("logs",) and not p.startswith("."):
+            if p not in [x[0] for x in proj_srcs]:
+                proj_srcs.append((p, os.path.join(WORKSPACE_DIR, p)))
+    for proj, base in proj_srcs:
+        if not base or not os.path.isdir(base):
+            add("WARN", "D2", f"{proj} 工作路径未创建（{base}）——首次投放需求时自动创建")
+            continue
         miss_p = [d for d in ("input", "analysis", "review", "artifacts", "plans", "testplans",
                               "code", "tests", "quality", "security", "release", "archive", "logs")
-                  if not os.path.isdir(os.path.join(WORKSPACE_DIR, proj, d))]
+                  if not os.path.isdir(os.path.join(base, d))]
         if miss_p:
             missing.append(f"{proj}/{{{','.join(miss_p)}}}")
     if not os.path.isdir(os.path.join(WORKSPACE_DIR, "logs")):
@@ -4017,8 +4024,14 @@ def diagnose() -> int:
             if e.get("forced"):
                 add("WARN", "D8", f"{key} 为强制归档（forced），请人工复核未解决意见")
 
-    # D9 input/ 未登记（项目子目录 + 平铺兼容）
+    # D9 input/ 未登记（映射表 work_path + 存量 workspace 兼容）
     unreg = []
+    for p in read_projects().get("projects", []):
+        idir = os.path.join(p["work_path"], "input")
+        if os.path.isdir(idir):
+            for name in sorted(os.listdir(idir)):
+                if name.endswith(".md") and f"{p['name']}/{name[:-3]}" not in st:
+                    unreg.append(f"{p['name']}/{name}")
     for proj in sorted(os.listdir(WORKSPACE_DIR)):
         if proj in ("logs",) or proj.startswith(".") or not os.path.isdir(os.path.join(WORKSPACE_DIR, proj)):
             continue

@@ -1,9 +1,0 @@
-# pacman 项目零依赖声明（开发方案 §2、NFR-05）
-#
-# 本游戏依赖面 = 0 个 pip 包（全部使用 Python 标准库）。
-# - curses: Python 标准库内置（CPython 默认含）
-# - 在极简 Debian/Ubuntu 发行版若报 ModuleNotFoundError: _curses，
-#   请执行系统包命令安装（README §1 依赖安装）：
-#     sudo apt install python3-curses
-#
-# 该文件保留为空列表（仅注释行），便于"按声明安装"的验收（FR-19）。
