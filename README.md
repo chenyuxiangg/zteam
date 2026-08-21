@@ -23,25 +23,25 @@ v2 起为八角色模块中心模型（PM/SE/TE/MDE/FO/MTO/STO/QA）：需求请
 
 ```
 ┌─ 上半部（cron no_agent 纯脚本，秒级，零 token，3 分钟内绰绰有余）────┐
-│  watchdog-analyst.py   注册新需求 / stale 恢复 / 原子认领 / spawn 分析师 worker │
-│  watchdog-reviewer.py  stale 恢复 / 原子认领 / spawn 评审 worker            │
-│  watchdog-worker.py    主调度：stale 恢复 + 巡检兜底 + 阶段链认领+spawn      │
+│  watchdog-worker.py    主调度（v2）：注册 / stale 恢复 / 三状态机认领+spawn    │
 │  watchdog-weekly.py    每周一致性巡检（只告警）                             │
 │  watchdog-notify.py    每 15 分钟：有新归档才输出报告（cron deliver 推送）    │
+│  watchdog-quota.py     MiniMax 配额检查（资源感知恢复判定）                 │
+│  watchdog-analyst.py / reviewer.py   v1 兼容冗余 job（调度已被 worker 覆盖）  │
 └──────────────────────────────────────────────────────────────┬────────────┘
                           setsid hermes chat -q -m <model> &
 ┌──────────────────────────────────────────────────────────────▼────────────┐
 │ ── 下半部（独立 Hermes 进程，分钟级，无 3 分钟限制，进程级持久）──          │
-│   需求阶段：analyst → req-analyst.md 产出需求分解文档 → set_status reviewing │
-│             reviewer → req-reviewer.md 评审 → release_review（PASS→阶段链） │
-│   阶段链：  方案设计→方案评审→测试方案→测试方案评审→代码→代码评审→          │
-│             测试开发→测试评审→质量门禁→安全门禁→发布（released 完整交付）    │
-│   每阶段四态：claimed（认领）→ working（启动）→ reviewing（产出）→ done（PASS）│
-│             状态变更全部经 set_status/release_*（严格迁移校验）；           │
-│             漏设状态由上半部巡检（guard_recovery）自动补正（GUARD 审计）     │
+│   v2 八角色（cwd = 项目 work_path，指令含绝对路径）：                        │
+│   需求：PM 细化（麦肯锡）→ 用户评审锁定规格（confirm/reject）                │
+│   版本：SE 架构 → PM 评审 → TE 测试方案 → SE 评审 → in_dev                  │
+│   模块：MDE 设计 → SE 评审 → FO TDD（检视门禁）→ MTO 模块 IT（问题单闭环）    │
+│   收口：STO 版本 ST → QA 终审 + 用户指南（用户确认）→ released              │
+│   状态变更全部经 set_status/release_*（严格迁移校验 + 脚本守护）；           │
+│   漏设状态由上半部巡检（guard_recovery）自动补正（GUARD 审计）               │
 └─────────────────────────────────────────────────────────────────────────────┘
        状态机（v2 三态机，确定性逻辑集中在 scripts/statectl.py + flock 串行化）：
-       需求：pending → analyzing → awaiting_user_confirm → approved → dispatched → released
+       需求：pending → analyzing → analyzed → reviewing → awaiting_user_confirm → approved → dispatched → released
        版本：planning → arch → arch_reviewing → testplan → testplan_reviewing → in_dev → st → st_done → qa → qa_reviewing → released
        模块：design_pending → design_working → design_reviewing → dev_working → dev_reviewing → it_working → it_passed
        （详细迁移表见 docs/state-machine.md §11）
@@ -135,7 +135,7 @@ bash uninstall.sh --full               # 清空全部项目数据（work_path �
    python3 scripts/statectl.py diagnose  # 应见 0 严重问题 / 0 警告
    # 可选端到端验证（消耗少量 token）：投放一个测试需求并立即触发
    cp 测试需求.md ~/project/<项目名>/input/test-install.md && hermes cron run req-worker-top
-   python3 scripts/statectl.py list      # 应见 analyzing → analyzed
+   python3 scripts/statectl.py list      # 应见 analyzing → awaiting_user_confirm（PM 产出后等你 confirm）
    ```
 5. **场景差异说明**：
    - **未装 Hermes** → install.sh 明确报错并给出第 1 步的安装命令（exit 1，无副作用）；
@@ -172,14 +172,10 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 
 | 角色 | 常量（环境变量可覆盖） | 当前值 | 说明 |
 |------|------------------------|--------|------|
-| ~~需求分析师~~（v1 退役）→ **PM** | `ANALYST_MODEL` / `ANALYST_PROVIDER` | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
 | **PM / SE / TE**（v2） | `PM_MODEL`/`SE_MODEL`/`TE_MODEL` | `deepseek-v4-pro` / `deepseek` | 强推理（规格/架构/方案） |
 | **FO**（v2，TDD 开发） | `FO_MODEL`/`FO_PROVIDER` | `MiniMax-M3` / `minimax-cn` | 用户指定（受 5h 窗口配额，资源感知自动恢复） |
 | **MDE / MTO / STO**（v2） | 复用 CODE/TEST/ST 角色常量 | `deepseek-v4-flash` / `deepseek` | 产出类（快/便宜） |
 | **QA**（v2，发布终审） | `QUALITY_REVIEWER_MODEL` | `deepseek-v4-pro` / `deepseek` | 评审把关 |
-| 需求评审师 | `REVIEWER_MODEL` / `REVIEWER_PROVIDER` | `deepseek-v4-pro` / `deepseek` | 评审类（强推理，把关） |
-| 方案设计/评审 | `PLAN_DESIGNER_MODEL` / `PLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
-| 测试方案设计/评审 | `TESTPLAN_DESIGNER_MODEL` / `TESTPLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
 | code 阶段（MDE/FO） | `CODE_DEVELOPER_MODEL` / `CODE_REVIEWER_MODEL` / `CODE_PROVIDER` | `deepseek-v4-flash` / `deepseek-v4-flash` / `deepseek` | 模块设计/开发（FO 已独立为 MiniMax-M3） |
 | test 阶段（MTO） | `TEST_DEVELOPER_MODEL` / `TEST_REVIEWER_MODEL` / `TEST_PROVIDER` | `deepseek-v4-flash` / `deepseek-v4-flash` / `deepseek` | 模块 IT 用例/测试 |
 | 质量/安全门禁 | `QUALITY_REVIEWER_MODEL` / `SECURITY_REVIEWER_MODEL` | `deepseek-v4-pro` | 把关/红线 |
@@ -200,7 +196,7 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 - **worker 崩溃** → 上半部 stale 恢复（`kill -0` 存活检查 + 超时回滚 + failures 计数），2 次后 `blocked` + 告警推送；
 - **worker 漏设状态/卡死循环** → 巡检兜底（guard_recovery）：超时后按产物存在性/评审结论自动补正（PASS→done / FAIL→重做 / 无产物→回滚），GUARD 审计留痕，无需人工；
 - **模型质量上限** → 检查清单逐条可勾选，主观判断最小化。
-- **job 冗余（已知）**：`req-analyst-top`/`req-reviewer-top` 与 `req-worker-top` 调度重叠（后者已覆盖全阶段认领），保留为兼容/冗余调度，暂不合并。
+- **job 冗余（已知）**：`req-analyst-top`/`req-reviewer-top` 为 **v1 遗留兼容 job**（v2 调度已全部由 `req-worker-top` 覆盖），保留不删（不影响，零 token）；如需彻底清理可 `hermes cron remove` 两个 job。
 
 ## Gateway 与开机自启
 
