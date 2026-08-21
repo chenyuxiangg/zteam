@@ -3004,9 +3004,12 @@ def _tick_common() -> int:
         st_all = read_status()
         register_new_inputs(st_all)
     # 阶段 2：每项目锁调度（项目间并行；注册增量合并写入）
-    projects = [p for p in sorted(os.listdir(WORKSPACE_DIR))
-                if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
-                and p not in ("logs",) and not p.startswith(".")]
+    # 项目来源 = 映射表 work_path（解耦后）；存量 workspace 目录兼容（不存在则跳过）
+    projects = [p["name"] for p in read_projects().get("projects", [])]
+    if os.path.isdir(WORKSPACE_DIR):
+        projects += [p for p in sorted(os.listdir(WORKSPACE_DIR))
+                     if os.path.isdir(os.path.join(WORKSPACE_DIR, p))
+                     and p not in ("logs",) and not p.startswith(".") and p not in projects]
     for proj in projects:
         with acquire_lock(project=proj) as _:
             ensure_project(proj)  # 新建项目：先建骨架（spawn_worker 需要项目 logs/ 存在）
@@ -3189,11 +3192,13 @@ def weekly_tick() -> int:
                 issues.append(f"[AUDIT] 需求 {key} 处于 blocked，需人工介入（python3 {WORKDIR}/scripts/statectl.py requeue {key}）")
             elif s in MID_STATES:
                 issues.append(f"[AUDIT] 需求 {key} 滞留 {s}（中间态不应跨周存在）")
-        # 未登记 input 检查（新结构 workspace/<proj>/input/ + 兼容旧 input/）
-        for proj in sorted(os.listdir(WORKSPACE_DIR)):
-            if proj in ("logs",) or proj.startswith(".") or not os.path.isdir(os.path.join(WORKSPACE_DIR, proj)):
+        # 未登记 input 检查（映射表 work_path + 兼容旧 workspace input/）
+        for proj in [p["name"] for p in read_projects().get("projects", [])] + \
+                    ([x for x in sorted(os.listdir(WORKSPACE_DIR)) if os.path.isdir(os.path.join(WORKSPACE_DIR, x))
+                      and x not in ("logs",) and not x.startswith(".")] if os.path.isdir(WORKSPACE_DIR) else []):
+            if proj in ("logs",) or proj.startswith("."):
                 continue
-            idir = os.path.join(WORKSPACE_DIR, proj, "input")
+            idir = os.path.join(project_dir(proj), "input")  # 查表（workspace 兼容项目自动回退）
             if os.path.isdir(idir):
                 for name in sorted(os.listdir(idir)):
                     if name.endswith(".md") and f"{proj}/{name[:-3]}" not in st:
@@ -3897,7 +3902,9 @@ def cmd_notify() -> int:
         reminded = {k for k in reminded if st.get(k, {}).get("status") == "awaiting_user_confirm"}
         json.dump(sorted(reminded), open(CONFIRM_REMINDED, "w", encoding="utf-8"))
         # 段 1.5：版本用户指南待确认（qa_reviewing → 用户 confirm_guide/reject_guide）
-        for proj in sorted(os.listdir(WORKSPACE_DIR)):
+        for proj in [p["name"] for p in read_projects().get("projects", [])] + \
+                    ([x for x in sorted(os.listdir(WORKSPACE_DIR)) if os.path.isdir(os.path.join(WORKSPACE_DIR, x))
+                      and x not in ("logs",) and not x.startswith(".")] if os.path.isdir(WORKSPACE_DIR) else []):
             if proj in ("logs",) or proj.startswith("."):
                 continue
             try:
