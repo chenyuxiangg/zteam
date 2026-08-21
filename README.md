@@ -13,10 +13,10 @@ v2 起为八角色模块中心模型（PM/SE/TE/MDE/FO/MTO/STO/QA）：需求请
 
 | 原始诉求 | 实现 |
 |----------|------|
-| 分析与评审是不同角色 | `roles/req-analyst.md` vs `roles/req-reviewer.md`，两个上半部 job + 两个下半部 worker 完全分离 |
+| 分析与评审是不同角色 | v2 八角色（PM/SE/TE/MDE/FO/MTO/STO/QA）各自独立角色文件 + 独立 worker，评审与产出严格分离 |
 | 一次输入多个需求 | `{work_path}/input/`（默认 `~/project/<项目>/input/`）可放任意多个 `{req_id}.md`，各自独立流转、互不阻塞 |
-| 评审结论被分析者自动感知 | 分析师上半部轮询 `needs_fix` 状态并唤醒修改 worker |
-| 分析完成被评审者自动感知 | 评审上半部轮询 `analyzed` 状态并唤醒评审 worker |
+| 评审结论被产出者自动感知 | 调度脚本按状态机自动唤醒修订 worker（评审 FAIL 带意见打回）|
+| 产出完成被评审者自动感知 | 调度脚本自动 spawn 对应评审（用户评审/SE/PM/MDE 检视）|
 | 多轮自动完成 | 状态机循环直至 `approved` 或 `max_rounds` 上限，失败自动重试 + stale 恢复 + 巡检兜底（漏设状态自动补正） |
 
 ## 架构总览
@@ -40,9 +40,11 @@ v2 起为八角色模块中心模型（PM/SE/TE/MDE/FO/MTO/STO/QA）：需求请
 │             状态变更全部经 set_status/release_*（严格迁移校验）；           │
 │             漏设状态由上半部巡检（guard_recovery）自动补正（GUARD 审计）     │
 └─────────────────────────────────────────────────────────────────────────────┘
-       状态机：pending → analyzing → analyzed → reviewing → approved
-       → plan → testplan → code → test → quality → security → released（终态）
-      （状态机全部确定性逻辑集中在 scripts/statectl.py，flock 串行化）
+       状态机（v2 三态机，确定性逻辑集中在 scripts/statectl.py + flock 串行化）：
+       需求：pending → analyzing → awaiting_user_confirm → approved → dispatched → released
+       版本：planning → arch → arch_reviewing → testplan → testplan_reviewing → in_dev → st → st_done → qa → qa_reviewing → released
+       模块：design_pending → design_working → design_reviewing → dev_working → dev_reviewing → it_working → it_passed
+       （详细迁移表见 docs/state-machine.md §11）
 ```
 
 ## 目录结构
@@ -56,18 +58,18 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 ├── scripts/                   # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口
 ├── docs/                      # state-machine.md（状态机定义）+ troubleshooting.md（问题定位）
 ├── AGENTS.md                  # 流水线约定（下半部 worker 自动加载）
-└── projects.json              # 项目映射表（唯一真理源）；项目数据在各自 work_path（默认 ~/project/<项目>/）
-    ├── <项目名>/              # 每个项目一个文件夹（首次投放需求时自动创建）
-    │   ├── status.json        # 该项目状态机（唯一事实来源；key = <项目>/<req_id>）
-    │   ├── status.lock        # 该项目 flock 锁（项目间并发、同项目串行）
-    │   ├── input/             # 该项目需求投放区（一个文件一个需求）
-    │   ├── analysis/ review/  # 需求分析与评审（只留最新轮，历史进 archive/）
-    │   ├── plans/ testplans/ code/ tests/   # 阶段链产物（代码/测试为文件集目录）
-    │   ├── quality/ security/ release/      # 门禁结论 / 交付包（发布说明+指南+tar.gz+校验和）
-    │   ├── artifacts/         # 归档（结论摘要 + 各阶段终版 + 评审历史）
-    │   ├── archive/           # 历史轮次归档
-    │   └── logs/              # 该项目 worker 日志
-    └── logs/                  # 全局日志（pipeline.log 审计流 + alarms.txt）
+├── projects.json              # 项目映射表（唯一真理源：name/created_at/latest_version/work_path/default）
+├── logs/                      # 全局审计（pipeline.log 审计流 + alarms.txt，gitignore）
+└── status.lock                # 全局锁（gitignore）
+
+项目数据不在 zteam 内——每项目在映射表 work_path（默认 ~/project/<项目名>/）：
+    ├── status.json / status.lock   # 该项目状态机 + flock 锁（项目间并发、同项目串行）
+    ├── input/                      # 该项目需求投放区（一个文件一个需求）
+    ├── analysis/ review/           # 需求分析与评审
+    ├── arch/ testplans/ code/ tests/  # 版本架构 / 测试方案 / 模块代码（v2 模块中心产物）
+    ├── quality/ security/ release/ # 门禁结论 / 交付包（发布说明+指南+tar.gz+校验和）
+    ├── artifacts/ archive/         # 归档 / 历史轮次
+    └── logs/                       # 该项目 worker 日志
 ```
 
 ## 快速开始（3 步）
@@ -86,7 +88,9 @@ zteam/                      # 资产层（git 跟踪，uninstall --full 保留�
 
 hermes cron create "*/5 * * * *" --name req-analyst-top  --script watchdog-analyst.sh  --no-agent --repeat 0
 hermes cron create "*/5 * * * *" --name req-reviewer-top --script watchdog-reviewer.sh --no-agent --repeat 0
+hermes cron create "*/5 * * * *" --name req-worker-top    --script watchdog-worker.sh    --no-agent --repeat 0
 hermes cron create "0 9 * * 1"   --name req-weekly-audit --script watchdog-weekly.sh   --no-agent --repeat 0
+hermes cron create "*/15 * * * *" --name req-result-notify --script watchdog-notify.sh --no-agent --repeat 0
 ```
 
 > 注意：调度请用 cron 表达式（`"5m"` 会被解析成一次性任务）；`--repeat 0` = 无限循环；**job 只有在 gateway 运行时才会自动触发**（`hermes cron status` 查看；未运行时输出仍会被保存但不投递）。
@@ -119,10 +123,10 @@ bash uninstall.sh --full               # 清空全部项目数据（work_path �
    ```bash
    cd <工作区> && bash install.sh --with-gateway
    ```
-   该命令幂等完成：目录骨架 → cron 薄壳（按当前路径生成）→ 3 个 cron job → gateway 未运行则自动安装启动（用户级 systemd 服务，开机自启）→ 末尾自动 `diagnose` 自检，全绿才 exit 0。
+   该命令幂等完成：目录骨架 → cron 薄壳（按当前路径生成）→ 5 个 cron job → gateway 未运行则自动安装启动（用户级 systemd 服务，开机自启）→ 末尾自动 `diagnose` 自检，全绿才 exit 0。
 4. **验证**：
    ```bash
-   hermes cron status                    # 应见 "Gateway is running" + 3 active jobs
+   hermes cron status                    # 应见 "Gateway is running" + 5 active jobs
    python3 scripts/statectl.py diagnose  # 应见 0 严重问题 / 0 警告
    # 可选端到端验证（消耗少量 token）：投放一个测试需求并立即触发
    cp 测试需求.md ~/project/<项目名>/input/test-install.md && hermes cron run req-worker-top
@@ -171,8 +175,8 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 | 需求评审师 | `REVIEWER_MODEL` / `REVIEWER_PROVIDER` | `deepseek-v4-pro` / `deepseek` | 评审类（强推理，把关） |
 | 方案设计/评审 | `PLAN_DESIGNER_MODEL` / `PLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
 | 测试方案设计/评审 | `TESTPLAN_DESIGNER_MODEL` / `TESTPLAN_REVIEWER_MODEL` | `deepseek-v4-flash` / `deepseek-v4-pro` | 产出+评审 |
-| **code 阶段** | `CODE_DEVELOPER_MODEL` / `CODE_REVIEWER_MODEL` / `CODE_PROVIDER` | `MiniMax-M3` / `MiniMax-M3` / `minimax-cn` | 产出+评审均 M3 |
-| **test 阶段** | `TEST_DEVELOPER_MODEL` / `TEST_REVIEWER_MODEL` / `TEST_PROVIDER` | `MiniMax-M3` / `MiniMax-M3` / `minimax-cn` | 产出+评审均 M3 |
+| code 阶段（MDE/FO） | `CODE_DEVELOPER_MODEL` / `CODE_REVIEWER_MODEL` / `CODE_PROVIDER` | `deepseek-v4-flash` / `deepseek-v4-flash` / `deepseek` | 模块设计/开发（FO 已独立为 MiniMax-M3） |
+| test 阶段（MTO） | `TEST_DEVELOPER_MODEL` / `TEST_REVIEWER_MODEL` / `TEST_PROVIDER` | `deepseek-v4-flash` / `deepseek-v4-flash` / `deepseek` | 模块 IT 用例/测试 |
 | 质量/安全门禁 | `QUALITY_REVIEWER_MODEL` / `SECURITY_REVIEWER_MODEL` | `deepseek-v4-pro` | 把关/红线 |
 | 发布者 | `RELEASER_MODEL` | `deepseek-v4-flash` | 打包交付 |
 
@@ -187,7 +191,7 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 ## 关键限制与对策
 
 - **cron 3 分钟硬中断** → 上半部只做秒级唤醒，耗时活全部在下半部独立进程完成（`setsid` 脱离 cron 会话，进程级持久）；
-- **双 job 竞态/并发** → 全局锁注册 + 项目级 flock 锁（workspace/<项目>/status.lock）——不同项目并行、同项目串行；中间态原子认领（compare-and-swap）+ claim 防重复；
+- **双 job 竞态/并发** → 全局锁注册 + 项目级 flock 锁（{work_path}/status.lock）——不同项目并行、同项目串行；中间态原子认领（compare-and-swap）+ claim 防重复；
 - **worker 崩溃** → 上半部 stale 恢复（`kill -0` 存活检查 + 超时回滚 + failures 计数），2 次后 `blocked` + 告警推送；
 - **worker 漏设状态/卡死循环** → 巡检兜底（guard_recovery）：超时后按产物存在性/评审结论自动补正（PASS→done / FAIL→重做 / 无产物→回滚），GUARD 审计留痕，无需人工；
 - **模型质量上限** → 检查清单逐条可勾选，主观判断最小化。
@@ -221,7 +225,7 @@ QA 发布（用户指南用户确认）→ 版本 released（同项目版本串�
 
 ### 通道③④ 查询 / 干预 / 投放（聊天即操作）
 连接后直接和 bot 对话（中文即可），Hermes 会加载 `req-review-pipeline` skill 处理：
-- **投放**："我有个新需求：<内容>" → 自动写入 `workspace/<项目名>/input/`（起合法 req_id）；
+- **投放**："我有个新需求：<内容>" → 自动写入 `{work_path}/input/`（起合法 req_id）；
 - **查询**："需求进度" / "req-003 状态" → 状态摘要回复；
 - **干预**："requeue req-003" / "rollback req-003" / "跑下诊断"；
 - 结果随时可问，或等通道②推送。
@@ -265,22 +269,23 @@ zbot 是**流水线专属助手**：只处理投放/查询/干预/汇报，其�
   ```
 - **误删恢复**：`git checkout -- .`（恢复所有改动）/ `git restore <文件>`（恢复单个）；
 - **回滚到某次提交**：`git log --oneline` 查版本号 → `git reset --hard <版本号>`（谨慎，丢弃之后改动）；
-- **忽略项**：`workspace/logs/`、`workspace/**/logs/`、`__pycache__/`、`*.lock`（运行噪音，不入库）；`workspace/<项目>/status.json`、`workspace/<项目>/input/` 等业务数据全部入库；
+- **忽略项**：`logs/`、`status.lock`、`__pycache__/`、`*.pyc`、`*.lock`、`.coverage`、`.venv/`、`build/`（运行噪音，不入库）；项目业务数据在 work_path（zteam 外，天然不入库）；`projects.json` 入库（git 可恢复）；
 - **教训**：2026-08-07 工作区曾被旧版 `uninstall.sh --full`（删除整个工作区）误删，靠会话 DB 重建——现 `--full` 已改为只清空数据层 workspace/、保留项目资产；纳入 git 后即使误删也可 `git restore` 秒级恢复。
 
 
 - 投放唯一入口是 `{work_path}/input/`（默认 `~/project/<项目>/input/`，项目先 `project add` 登记）；一个 `.md` = 一个需求，**文件名即需求 ID**（仅允许 `[A-Za-z0-9_-]`）；
-- **归档快速阅读**：`workspace/artifacts/<project>/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
+- **归档快速阅读**：`{work_path}/artifacts/{req_id}.md` 头部「结论摘要」区 = 最终结论（状态/最终轮次/分析路径/评审历史），接手开发以【原文 + 最终分析 + 最后一轮评审】为准，前面轮次评审意见是过程记录；
 - **改内容不改文件名不会触发重新分析**——重跑用 `python3 scripts/statectl.py requeue <req_id>`（从失败阶段续跑，已通过阶段不重跑，省 token）；
 - **人工补记产物**（评审已过但 product 漏记）：`python3 scripts/statectl.py record_product <req_id> <stage> <产物路径>`（校验存在，合规替代手改 status.json）；
-- **手动暂停/恢复流水线**（异常排查时防 token 消耗）：`python3 scripts/statectl.py halt [原因]` / `unhalt`（touch/删 `workspace/.pause` 标记，tick 整体跳过调度；已运行 worker 不受影响；**halt 是唯一暂停方式**——`hermes cron pause` 会被 cron guard 自动恢复）
-- 删除 `workspace/<项目>/input/` 文件不会清理状态条目（历史保留）；
+- **手动暂停/恢复流水线**（异常排查时防 token 消耗）：`python3 scripts/statectl.py halt [原因]` / `unhalt`（touch/删 `zteam/.pause` 标记，tick 整体跳过调度；已运行 worker 不受影响；**halt 是唯一暂停方式**——`hermes cron pause` 会被 cron guard 自动恢复）
+- 删除 `{work_path}/input/` 文件不会清理状态条目（历史保留）；
 - 非 `.md` 文件忽略；一个文件放多个需求会被当作一个需求处理；
 - 完整边界行为表见 `docs/state-machine.md` §9.1。
 
 ## 设计文档索引
 
-- 角色：`roles/req-analyst.md`（产品视角·麦肯锡方法论）、`roles/req-reviewer.md`（12 项检查清单）、`roles/bot.md`（zbot 职责，install/uninstall 自动注入/移除）
+- 角色：v2 八角色 `roles/{pm,se,te,mde,fo,mto,sto,qa}.md` + 旧角色已退役标注；`roles/bot.md`（zbot 职责，install/uninstall 自动注入/移除）
+- **项目工作路径解耦设计**：`docs/项目工作路径解耦设计.md`（项目映射表/命令族/路径解析）
 - 状态机（含上下半部调度架构）：`docs/state-machine.md`
 - **问题定位指南（DFx）**：`docs/troubleshooting.md`
 - 流水线约定（下半部加载）：`AGENTS.md`
