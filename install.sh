@@ -113,7 +113,7 @@ python3 "$SCRIPTS_DIR/statectl.py" diagnose
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
-  say "安装完成，诊断全绿。投放需求: 新建/拷贝 需求.md 到 workspace/<项目名>/input/（项目目录不存在会自动创建）"
+  say "安装完成，诊断全绿。投放需求: 先 project add <项目名> [路径] 登记，再放 需求.md 到 {work_path}/input/（默认 ~/project/<项目名>/input/）"
 else
   warn "安装完成但诊断存在 FAIL（见上方报告，排查指南: docs/troubleshooting.md）"
 fi
