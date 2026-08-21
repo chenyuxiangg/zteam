@@ -657,7 +657,7 @@ def _schedule_it_st(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"为项目 {project} 版本 {v['name']} 的迭代 {it['n']} 执行集成测试（IT）。\n"
                     f"启动时（第 0 步）：运行 python3 {WORKDIR}/scripts/statectl.py set_status {project}/__it{it['n']} test working（幂等，标记集成测试执行中）；\n"
                     f"迭代内需求（UT 均已通过）：\n{_it_inputs(project, reqs, st)}\n"
-                    f"任务：1. 按 {WORKDIR}/roles/it-designer.md 在 {out} 目录内产出集成测试（用例+报告+结论 PASS/FAIL）；\n"
+                    f"任务：1. 按 {WORKDIR}/roles/it-designer.md 在 {product_path(out)} 目录内产出集成测试（用例+报告+结论 PASS/FAIL）；\n"
                     f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_it {project} {v['name']} {it['n']} {out} 完成状态更新；\n"
                     f"3. 完成后无需汇报。"
                 )
@@ -674,7 +674,7 @@ def _schedule_it_st(project: str, vd: dict, st: dict, alarms: list) -> None:
                 f"启动时（第 0 步）：运行 python3 {WORKDIR}/scripts/statectl.py set_status {project}/__st{''.join(v['name'].split('.'))} test working（幂等）；\n"
                 f"迭代集成测试产物：\n" + "\n".join(
                     f"- iter-{it['n']}：{it.get('it_product') or '?'}" for it in iters)
-                + f"\n任务：1. 按 {WORKDIR}/roles/st-tester.md 在 {out} 目录内产出系统测试（用例+报告+结论 PASS/FAIL）；\n"
+                + f"\n任务：1. 按 {WORKDIR}/roles/st-tester.md 在 {product_path(out)} 目录内产出系统测试（用例+报告+结论 PASS/FAIL）；\n"
                 f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_st {project} {v['name']} {out} 完成状态更新；\n3. 完成后无需汇报。"
             )
             pid = spawn_worker("st-tester", f"{project}/__st{v['name']}", 1, query)
@@ -1149,7 +1149,7 @@ def _arch_inputs(project: str, reqs: list, st: dict) -> str:
     lines = []
     for r in reqs:
         e = st.get(f"{project}/{r}") or {}
-        lines.append(f"- {r}：规格={e.get('analysis') or '?'}（状态={e.get('status', '?')}）")
+        lines.append(f"- {r}：规格={product_path(e.get('analysis') or '') or '?'}（状态={e.get('status', '?')}）")
     return "\n".join(lines)
 
 
@@ -1180,13 +1180,13 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"你是本流水线的【SE（架构设计）】。严格遵循 {WORKDIR}/roles/se.md 为项目 {project} 版本 {v['name']} "
                     f"执行架构设计（全量需求规格一次性）。\n"
                     f"版本需求规格（全部已获用户评审通过）：\n{_arch_inputs(project, reqs, st)}\n"
-                    f"任务：1. 阅读全部规格，输出架构设计到 {out}（架构/技术选型/模块间依赖/接口/构建/发布/配置）；\n"
+                    f"任务：1. 阅读全部规格，输出架构设计到 {product_path(out)}（架构/技术选型/模块间依赖/接口/构建/发布/配置）；\n"
                     f"2. 设计功能模块组织并落盘（按需执行，幂等）：\n"
                     f"   python3 {WORKDIR}/scripts/statectl.py module {project} add <模块名> <类型:默认 基础平台/中间件/上层应用，可自定义> [desc]\n"
                     f"   python3 {WORKDIR}/scripts/statectl.py module {project} dep <模块名> <依赖模块,逗号分隔>\n"
                     f"   python3 {WORKDIR}/scripts/statectl.py module {project} dispatch <模块名> <req_id,逗号分隔>\n"
                     f"   python3 {WORKDIR}/scripts/statectl.py module {project} iter <模块名> <迭代号,逗号分隔>（SE 排迭代计划）\n"
-                    f"3. 输出功能模块分工表到 {out}功能模块分工表.md（模块/职责/需求/依赖/迭代计划）；\n"
+                    f"3. 输出功能模块分工表到 {product_path(out)}功能模块分工表.md（模块/职责/需求/依赖/迭代计划）；\n"
                     f"4. 运行 python3 {WORKDIR}/scripts/statectl.py release_arch {project} {v['name']} {out} DONE 完成状态更新；\n"
                     f"5. 完成后无需汇报。"
                 )
@@ -1201,9 +1201,9 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                 out = f"{project}/review/arch/{v['name']}/"
                 query = (
                     f"你是本流水线的【PM】。严格遵循 {WORKDIR}/roles/pm.md 为项目 {project} 版本 {v['name']} 评审架构设计。\n"
-                    f"架构设计：{v.get('architecture')}；模块分工：同目录功能模块分工表.md；需求规格见分工表。\n"
+                    f"架构设计：{product_path(v.get('architecture') or '')}；模块分工：同目录功能模块分工表.md；需求规格见分工表。\n"
                     f"任务：1. 评审架构是否覆盖全部需求规格/模块组织合理/迭代计划可行；\n"
-                    f"2. 评审意见写到 {out}（明确 PASS 或 FAIL + 具体问题）；\n"
+                    f"2. 评审意见写到 {product_path(out)}（明确 PASS 或 FAIL + 具体问题）；\n"
                     f"3. 运行 python3 {WORKDIR}/scripts/statectl.py release_arch {project} {v['name']} {out} PASS|FAIL；\n"
                     f"4. 完成后无需汇报。"
                 )
@@ -1218,9 +1218,9 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                 out = f"{project}/review/testplan/{v['name']}/"
                 query = (
                     f"你是本流水线的【SE】。严格遵循 {WORKDIR}/roles/se.md 为项目 {project} 版本 {v['name']} 评审整体测试方案。\n"
-                    f"测试方案：{v.get('test_plan')}；架构设计：{v.get('architecture')}。\n"
+                    f"测试方案：{v.get('test_plan')}；架构设计：{product_path(v.get('architecture') or '')}。\n"
                     f"任务：1. 评审 IT/ST 方案覆盖性与测试套件框架可用性（对照架构/模块分工）；\n"
-                    f"2. 评审意见写到 {out}（明确 PASS 或 FAIL + 具体问题）；\n"
+                    f"2. 评审意见写到 {product_path(out)}（明确 PASS 或 FAIL + 具体问题）；\n"
                     f"3. 运行 python3 {WORKDIR}/scripts/statectl.py release_testplan_v2 {project} {v['name']} {out} PASS|FAIL；\n"
                     f"4. 完成后无需汇报。"
                 )
@@ -1238,7 +1238,7 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"你是本流水线的【TE（整体测试方案）】。严格遵循 {WORKDIR}/roles/te.md 为项目 {project} 版本 {v['name']} "
                     f"制定整体测试方案。\n"
                     f"输入：架构设计 {v.get('architecture')}；需求规格见分工表模块需求。\n"
-                    f"任务：1. 输出整体测试方案到 {out}（IT 方案/ST 方案/测试套件框架设计，模板可参考主流测试套 pytest）；\n"
+                    f"任务：1. 输出整体测试方案到 {product_path(out)}（IT 方案/ST 方案/测试套件框架设计，模板可参考主流测试套 pytest）；\n"
                     f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_testplan_v2 {project} {v['name']} {out} DONE 完成状态更新；\n"
                     f"3. 完成后无需汇报。"
                 )
@@ -1532,8 +1532,8 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                     query = (
                         f"你是本流水线的【MDE（模块设计）】。严格遵循 {WORKDIR}/roles/mde.md 为模块 {m['name']} "
                         f"（版本 {v['name']} 迭代 {it['n']}）设计功能模块。\n"
-                        f"架构设计：{v.get('architecture')}\n模块需求规格：\n{_module_inputs(project, m, st)}\n"
-                        f"任务：1. 输出功能模块设计文档到 {out}（数据结构/接口/实现细节/DFx/可测试性/UT 框架）；\n"
+                        f"架构设计：{product_path(v.get('architecture') or '')}\n模块需求规格：\n{_module_inputs(project, m, st)}\n"
+                        f"任务：1. 输出功能模块设计文档到 {product_path(out)}（数据结构/接口/实现细节/DFx/可测试性/UT 框架）；\n"
                         f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} DONE；\n"
                         f"3. 完成后无需汇报。"
                     )
@@ -1548,8 +1548,8 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                     query = (
                         f"你是本流水线的【MDE（模块设计）】。严格遵循 {WORKDIR}/roles/mde.md 修订模块 {m['name']} "
                         f"（版本 {v['name']} 迭代 {it['n']}）功能模块设计。\n"
-                        f"架构设计：{v.get('architecture')}\n既有设计：{m['design'].get('product')}\n{fb}"
-                        f"任务：1. 按评审意见修订设计（或重写），更新到 {out}；\n"
+                        f"架构设计：{product_path(v.get('architecture') or '')}\n既有设计：{m['design'].get('product')}\n{fb}"
+                        f"任务：1. 按评审意见修订设计（或重写），更新到 {product_path(out)}；\n"
                         f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} DONE；\n"
                         f"3. 完成后无需汇报。"
                     )
@@ -1567,9 +1567,9 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                         query = (
                             f"你是本流水线的【SE】。严格遵循 {WORKDIR}/roles/se.md 评审模块 {m['name']} "
                             f"（版本 {v['name']} 迭代 {it['n']}）功能模块设计。\n"
-                            f"模块设计：{m['design'].get('product')}；架构设计：{v.get('architecture')}\n"
+                            f"模块设计：{m['design'].get('product')}；架构设计：{product_path(v.get('architecture') or '')}\n"
                             f"任务：1. 评审设计是否遵循架构（接口/数据流/模块间契约）+ 可落地（FO 可据其 TDD）；\n"
-                            f"2. 评审意见写到 {out}（明确 PASS 或 FAIL + 具体问题）；\n"
+                            f"2. 评审意见写到 {product_path(out)}（明确 PASS 或 FAIL + 具体问题）；\n"
                             f"3. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} PASS|FAIL；\n"
                             f"4. 完成后无需汇报。"
                         )
@@ -1585,9 +1585,9 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                     query = (
                         f"你是本流水线的【MDE（模块设计）】。严格遵循 {WORKDIR}/roles/mde.md 为模块 {m['name']} "
                         f"（版本 {v['name']} 迭代 {it['n']}）修订功能模块设计（按 SE 评审意见）。\n"
-                        f"架构设计：{v.get('architecture')}\n模块需求规格：\n{_module_inputs(project, m, st)}\n"
+                        f"架构设计：{product_path(v.get('architecture') or '')}\n模块需求规格：\n{_module_inputs(project, m, st)}\n"
                         f"{fb}"
-                        f"任务：1. 阅读 SE 评审意见并逐条修订，输出更新后的功能模块设计文档到 {out}；\n"
+                        f"任务：1. 阅读 SE 评审意见并逐条修订，输出更新后的功能模块设计文档到 {product_path(out)}；\n"
                         f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} design {out} DONE；\n"
                         f"3. 完成后无需汇报。"
                     )
@@ -1604,7 +1604,7 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                         f"你是本流水线的【FO（开发者，TDD）】。严格遵循 {WORKDIR}/roles/fo.md 为模块 {m['name']} "
                         f"（版本 {v['name']} 迭代 {it['n']}）TDD 开发。\n"
                         f"模块设计：{m['design'].get('product')}\n{fb}"
-                        f"任务：1. 先写测试再实现（TDD），输出代码与 UT 用例到 {out}；\n"
+                        f"任务：1. 先写测试再实现（TDD），输出代码与 UT 用例到 {product_path(out)}；\n"
                         f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} code {out} DONE；\n"
                         f"3. 完成后无需汇报。"
                     )
@@ -1624,7 +1624,7 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                             f"（版本 {v['name']} 迭代 {it['n']}）执行代码检视（模块内实现视角）。\n"
                             f"模块设计：{m['design'].get('product')}；代码：{it.get('dev_product')}\n"
                             f"任务：1. 按检视清单核对（实现与设计一致/边界异常/可测试性/风格）；\n"
-                            f"2. 检视意见写到 {out}（明确 PASS 或 FAIL + 具体问题，FAIL 需指向代码位置）；\n"
+                            f"2. 检视意见写到 {product_path(out)}（明确 PASS 或 FAIL + 具体问题，FAIL 需指向代码位置）；\n"
                             f"3. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} review {out} PASS|FAIL；\n"
                             f"4. 完成后无需汇报。"
                         )
@@ -1639,10 +1639,10 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                         query = (
                             f"你是本流水线的【MTO（模块测试者，IT）】。严格遵循 {WORKDIR}/roles/mto.md 为模块 {m['name']} "
                             f"（版本 {v['name']} 迭代 {it['n']}）执行模块集成测试（IT）。\n"
-                            f"整体测试方案：{v.get('test_plan')}\n模块设计：{m['design'].get('product')}\n"
-                            f"任务：1. 先写测试用例文档到 {out}测试用例.md；\n"
+                            f"整体测试方案：{product_path(v.get('test_plan') or '')}\n模块设计：{m['design'].get('product')}\n"
+                            f"任务：1. 先写测试用例文档到 {product_path(out)}测试用例.md；\n"
                             f"2. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} case {out}测试用例.md PASS（用例经 TE 评审通过；若 TE 未通过会打回，需按意见修改后重新提交）；\n"
-                            f"3. 用例评审通过后写测试代码并执行模块 IT，输出模块测试报告到 {out}；发现缺陷提问题单（issue open）；\n"
+                            f"3. 用例评审通过后写测试代码并执行模块 IT，输出模块测试报告到 {product_path(out)}；发现缺陷提问题单（issue open）；\n"
                             f"4. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} it {out} DONE；\n"
                             f"5. 完成后无需汇报。"
                         )
@@ -1696,7 +1696,7 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                                 f"（版本 {v['name']} 迭代 {it['n']}）修复问题单。\\n"
                                 f"模块设计：{m['design'].get('product')}；代码：{it.get('dev_product')}\\n"
                                 f"open 问题单（必须全部修复）：\\n{iss_list}\\n"
-                                f"任务：1. 逐一修复问题单描述缺陷，修改代码到 {out}；\\n"
+                                f"任务：1. 逐一修复问题单描述缺陷，修改代码到 {product_path(out)}；\\n"
                                 f"2. 每个修复完成执行：\\n{fix_cmds}\\n"
                                 f"3. 全部修复后无需汇报。"
                             )
@@ -1867,9 +1867,9 @@ def _schedule_st_qa(project: str, vd: dict, md: dict, st: dict, alarms: list) ->
                     query = (
                         f"你是本流水线的【STO（系统测试者，ST）】。严格遵循 {WORKDIR}/roles/sto.md 为项目 {project} 版本 {v['name']} "
                         f"执行版本系统测试（ST）。\n"
-                        f"整体测试方案：{v.get('test_plan')}\n模块 IT 产物：\n{its}\n"
-                        f"任务：1. 先写测试用例文档到 {out}测试用例.md，提交 TE 评审（release_module case 风格：python3 {WORKDIR}/scripts/statectl.py release_st_case {project} {v['name']} {out}测试用例.md PASS）；\n"
-                        f"2. 用例评审通过后写测试代码并执行 ST（端到端主链路/回归），输出集成测试报告到 {out}；缺陷提问题单（issue open）；\n"
+                        f"整体测试方案：{product_path(v.get('test_plan') or '')}\n模块 IT 产物：\n{its}\n"
+                        f"任务：1. 先写测试用例文档到 {product_path(out)}测试用例.md，提交 TE 评审（release_module case 风格：python3 {WORKDIR}/scripts/statectl.py release_st_case {project} {v['name']} {out}测试用例.md PASS）；\n"
+                        f"2. 用例评审通过后写测试代码并执行 ST（端到端主链路/回归），输出集成测试报告到 {product_path(out)}；缺陷提问题单（issue open）；\n"
                         f"3. 运行 python3 {WORKDIR}/scripts/statectl.py release_st_v2 {project} {v['name']} {out} DONE；\n"
                         f"4. 完成后无需汇报。"
                     )
@@ -1886,8 +1886,8 @@ def _schedule_st_qa(project: str, vd: dict, md: dict, st: dict, alarms: list) ->
                     f"你是本流水线的【QA（质量专员）】。严格遵循 {WORKDIR}/roles/qa.md 为项目 {project} 版本 {v['name']} 执行发布评审。\n"
                     f"输入：架构设计 {v.get('architecture')}；ST 报告 {v.get('st_product')}；模块设计见模块目录。\n"
                     f"任务：1. 评审测试报告（功能实现率/功能测试通过率/覆盖率）+ 检查安全红线；\n"
-                    f"2. 编写用户指南到 {out}用户指南.md；\n"
-                    f"3. 按构建规则制作 release 发布包到 {out}（含发布说明/SHA256SUMS/可用性自检）；\n"
+                    f"2. 编写用户指南到 {product_path(out)}用户指南.md；\n"
+                    f"3. 按构建规则制作 release 发布包到 {product_path(out)}（含发布说明/SHA256SUMS/可用性自检）；\n"
                     f"4. 运行 python3 {WORKDIR}/scripts/statectl.py release_qa {project} {v['name']} {out} DONE（进入用户指南用户评审）；\n"
                     f"5. 完成后无需汇报。"
                 )
@@ -2747,7 +2747,7 @@ def build_worker_query(role: str, key: str, e: dict):
                 f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 完成需求 {key}（项目 {project}）的第 {n} 轮分析/修改。",
                 f"启动时（第 0 步）：运行 python3 {WORKDIR}/scripts/statectl.py set_status {key} req working（标记执行中）；",
                 "输入文件：",
-                f"- 需求原文：{rel_input(project, rid)}",
+                f"- 需求原文：{product_path(rel_input(project, rid))}",
             ]
             if e.get("analysis"):
                 q.append(f"- 上一版分析（修改轮必读）：{e['analysis']}")
@@ -2769,7 +2769,7 @@ def build_worker_query(role: str, key: str, e: dict):
                 f"你是本流水线的【{cn}】下半部 worker。严格遵循 {rolefile} 评审需求 {key}（项目 {project}）的第 {n} 轮分析。",
                 f"启动时（第 0 步）：运行 python3 {WORKDIR}/scripts/statectl.py set_status {key} req reviewing（标记评审中，幂等）；",
                 "输入文件：",
-                f"- 需求原文：{rel_input(project, rid)}",
+                f"- 需求原文：{product_path(rel_input(project, rid))}",
                 f"- 分析报告：{analysis_file}",
                 f"注意：本需求 max_rounds={e.get('max_rounds', DEFAULT_MAX_ROUNDS)}，第 {n} 轮仍 FAIL 将由状态机自动强制归档，你无需关心。",
                 "任务：",
