@@ -28,10 +28,10 @@ command -v hermes  >/dev/null || die "缺少 hermes CLI（请先安装 Hermes Ag
 # ---- 1. 目录骨架（缺啥补啥，不覆盖已有文件） ----
 # 资产层在根目录（roles/docs/scripts）；数据层在 workspace/（按项目分层：workspace/<项目>/ 下含全部子目录，
 # 项目目录由 statectl register 在首次投放需求时自动创建；这里只建根与全局日志）
-mkdir -p "$WORKSPACE"/{roles,docs,scripts,skills} "$WORKSPACE/workspace"/logs
-[ -f "$WORKSPACE/workspace/status.lock" ] || touch "$WORKSPACE/workspace/status.lock"
-touch "$WORKSPACE/workspace/logs/pipeline.log" "$WORKSPACE/workspace/logs/alarms.txt"
-say "目录骨架就绪: $WORKSPACE（资产层 + workspace/ 数据层）"
+mkdir -p "$WORKSPACE"/{roles,docs,scripts,skills} "$WORKSPACE/logs"
+[ -f "$WORKSPACE/status.lock" ] || touch "$WORKSPACE/status.lock"
+touch "$WORKSPACE/logs/pipeline.log" "$WORKSPACE/logs/alarms.txt"
+say "目录骨架就绪: $WORKSPACE（资产层 + logs/ 审计；项目数据在映射表 work_path）"
 
 # ---- 1.5 zbot 职责注入（roles/bot.md → gateway.json，幂等） ----
 # gateway.json 内容变化才重启 gateway（幂等 install 零干扰；REQREVIEW_NO_RESTART=1 跳过重启）

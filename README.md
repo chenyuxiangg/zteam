@@ -50,26 +50,31 @@ v2 起为八角色模块中心模型（PM/SE/TE/MDE/FO/MTO/STO/QA）：需求请
 ## 目录结构
 
 ```
-zteam/                      # 资产层（git 跟踪，uninstall --full 保留）
-├── roles/pm.md se.md te.md mde.md fo.md mto.md sto.md qa.md  # v2 八角色
-├── roles/bot.md                     # zbot 职责（gateway 注入）
-├── roles/req-reviewer.md      # 需求评审师角色定义 + 12 项评审检查清单
-├── roles/bot.md               # zbot（Telegram bot）职责边界与人格定义（install 注入 gateway，uninstall 移除）
-├── scripts/                   # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口
-├── docs/                      # state-machine.md（状态机定义）+ troubleshooting.md（问题定位）
-├── AGENTS.md                  # 流水线约定（下半部 worker 自动加载）
-├── projects.json              # 项目映射表（唯一真理源：name/created_at/latest_version/work_path/default）
-├── logs/                      # 全局审计（pipeline.log 审计流 + alarms.txt，gitignore）
-└── status.lock                # 全局锁（gitignore）
+zteam/                          # 资产层（git 跟踪，uninstall --full 保留）
+├── roles/                      # 角色定义
+│   ├── pm.md  se.md  te.md  mde.md  fo.md  mto.md  sto.md  qa.md   # v2 八角色
+│   ├── bot.md                  # zbot 职责（install 注入 gateway，uninstall 移除）
+│   └── req-*.md 等 12 个旧角色文件   # v1 已退役（头部标注，保留历史参考，spawn 不再使用）
+├── scripts/                    # statectl.py（状态机唯一实现）+ bot_config.py + watchdog-*.py 上半部入口 + 配额检查
+├── docs/                       # state-machine.md（状态机）+ troubleshooting.md（问题定位）+ v2 设计文档 + 解耦设计
+├── skills/                     # req-review-pipeline（工作区权威源，install 同步 ~/.hermes）
+├── projects.json               # 项目映射表（唯一真理源：name/created_at/latest_version/work_path/default，git 跟踪）
+├── logs/                       # 全局审计（pipeline.log + alarms.txt，gitignore）
+├── status.lock                 # 全局锁（gitignore）
+├── AGENTS.md  README.md  install.sh  uninstall.sh  .gitignore
+└── 设想的流程.md  问题.md        # 本地资产（gitignore，不入库）
 
 项目数据不在 zteam 内——每项目在映射表 work_path（默认 ~/project/<项目名>/）：
-    ├── status.json / status.lock   # 该项目状态机 + flock 锁（项目间并发、同项目串行）
-    ├── input/                      # 该项目需求投放区（一个文件一个需求）
-    ├── analysis/ review/           # 需求分析与评审
-    ├── arch/ testplans/ code/ tests/  # 版本架构 / 测试方案 / 模块代码（v2 模块中心产物）
-    ├── quality/ security/ release/ # 门禁结论 / 交付包（发布说明+指南+tar.gz+校验和）
-    ├── artifacts/ archive/         # 归档 / 历史轮次
-    └── logs/                       # 该项目 worker 日志
+├── status.json / status.lock   # 该项目状态机 + flock 锁（项目间并发、同项目串行）
+├── input/                      # 该项目需求投放区（一个文件一个需求）
+├── analysis/ review/           # 需求分析与评审（用户评审锁定规格）
+├── arch/ testplans/            # 版本架构 / 整体测试方案（v2）
+├── code/ tests/                # 模块代码（模块×迭代）与测试
+├── quality/ security/ release/ # 门禁结论 / 交付包（发布说明+指南+tar.gz+校验和）
+├── artifacts/ archive/         # 归档 / 历史轮次
+├── modules.json versions.json  # 模块组织 / 版本状态（v2）
+├── issues/                     # 问题单（IT 发现→FO 修复→复测闭环）
+└── logs/                       # 该项目 worker 日志
 ```
 
 ## 快速开始（3 步）
