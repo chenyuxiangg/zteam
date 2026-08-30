@@ -155,3 +155,8 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 - 变更：`change_request {req_id} modify|remove <描述>`（修改→重细化全链重跑 / 删除→忽略+解锁；released 版本冻结）
 - 版本串行：同项目仅 1 活跃版本；released 后才能开新版本架构
 - 查看：`versions [项目]`（版本/模块/迭代聚合视图）
+
+## 专项参考（references，按需 skill_view 加载）
+
+- `references/project-workspace.md`——**项目映射表机制专项**：projects.json 结构/命令族/路径解析（product_path）/diagnose 语义/worker cwd 改造/并发会话污染排查/迁移流程（合并自 zteam-project-workspace）；
+- `references/zteam-v2-ops.md`——**v2 模块中心排障专项**：版本/需求/模块状态机、已修复缺口（评审 spawn/版本自动推进）、zbot 模型认知排障（session DB 铁证）、released 继续开发、用户评审拍板流程、排障定位清单（合并自 zteam-pipeline-v2）。
