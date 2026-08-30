@@ -12,19 +12,19 @@ description: 运维需求评审自动流水线（工作区见内文，原 ~/cyx/
 - **上半部**：cron no_agent 纯脚本（零 token），只做注册/认领/spawn，秒级。5 个 job：`req-analyst-top`（`*/5 * * * *`）、`req-reviewer-top`（`*/5 * * * *`）、`req-worker-top`（`*/5 * * * *`，阶段链 worker）、`req-weekly-audit`（每周一 9 点）、`req-result-notify`（`*/15 * * * *`，结果推送）。
 - **下半部**：`setsid hermes chat -q` 独立进程，干分析/评审重活，不受 cron 3 分钟限制。
 - **状态机唯一实现**：`scripts/statectl.py`（flock 串行化；claim/release/stale 恢复/告警/归档全在这里）。
-- **路径模型（2026-08-09 项目分层）**：数据层按项目分层 `workspace/<项目>/{input,analysis,...,logs,status.json,status.lock}`（每项目 13 子目录 + 项目级状态与锁，首次投放自动创建）；资产层（roles/docs/scripts/skills）留在根目录。产物相对路径（如 `<项目>/analysis/{req_id}-r1.md`）从 **WORKSPACE_DIR** 解析。**并发**：全局锁（register）+ 项目锁（调度）——项目间并行、同项目串行；曾修复阶段 1 全量写覆盖竞态（改为只注册不写盘，增量随项目锁合并）。再遇到"产物不存在"先 grep 路径拼接。
+- **路径模型（2026-08-09 项目分层）**：数据层按项目分层（2026-08-19 解耦）：每项目在映射表 **work_path**（默认 `~/project/<项目>/`，含 input/analysis/arch/testplans/code/tests/quality/security/release/artifacts/archive/logs + status.json/lock + modules.json/versions.json/issues，首次投放自动创建）；资产层（roles/docs/scripts/skills）留在 zteam 根。产物相对路径（如 `<项目>/analysis/{req_id}-r1.md`）经 **product_path()** 查表解析为 work_path 绝对路径。**并发**：全局锁（register）+ 项目锁（调度）——项目间并行、同项目串行；曾修复阶段 1 全量写覆盖竞态（改为只注册不写盘，增量随项目锁合并）。再遇到"产物不存在"先 grep 路径拼接。
 - 状态流转：`pending → analyzing → analyzed → reviewing → needs_fix ↺ / approved / blocked`。
 
 ## 日常操作（在 <工作区> 下）
 
 ```bash
-# 投放新需求：任意 .md 放进 workspace/<项目名>/input/（一个文件一个需求，项目目录不存在会自动创建），下一个 tick 自动注册并启动
-# 边界行为：改内容不改文件名 → 不触发重新分析（重跑用 requeue）；删 workspace/<项目>/input/ 文件 → 状态条目保留；
+# 投放新需求：任意 .md 放进 {work_path}/input/（默认 ~/project/<项目名>/input/，项目先 `project add` 登记；未登记项目 register 拒绝=强制先登记），下一个 tick 自动注册并启动
+# 边界行为：改内容不改文件名 → 不触发重新分析（重跑用 requeue）；删 {work_path}/input/ 文件 → 状态条目保留；
 #           文件名即 ID（仅 [A-Za-z0-9_-]）；完整边界表见 docs/state-machine.md §9.1
 # 安装/卸载（幂等/安全，见 README「安装与卸载」）
 bash install.sh        # 一键安装/修复（薄壳+5 job+zbot 注入+自检）；工作区迁移后重跑
 bash install.sh --with-gateway   # 干净机器一键到位（gateway 未运行则自动安装启动；未装 Hermes 会报错并给安装命令）
-bash uninstall.sh      # 卸载（移除 job+薄壳+zbot 配置，保留数据）；--full 清空数据层 workspace/（保留资产，有确认）
+bash uninstall.sh      # 卸载（移除 job+薄壳+zbot 配置，保留数据）；--full 清空项目数据（work_path 目录 + projects.json 登记，保留资产，有确认）
 # 查看进度
 python3 scripts/statectl.py list          # 总览
 python3 scripts/statectl.py get <req_id>  # 单条详情（含 claim 字段 + 各阶段四态）
@@ -38,8 +38,8 @@ python3 scripts/statectl.py halt [原因] / unhalt  # 手动暂停/恢复流水�
 python3 scripts/statectl.py rollback <req_id>  # 手动回滚中间态
 python3 scripts/statectl.py resume <req_id> <stage> <designing|reviewing|gating|releasing|done>  # 人工恢复指定阶段状态
 # 审计
-tail workspace/logs/pipeline.log   # 状态迁移审计（含 GUARD 巡检补正行）
-ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
+tail zteam/logs/pipeline.log   # 状态迁移审计（含 GUARD 巡检补正行）
+ls {work_path}/logs/worker-*.log     # 每个下半部 worker 的明细
 ```
 
 ## 角色与模型
@@ -57,17 +57,17 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 ## 告警处理
 
 - `[BLOCKED]`：连续失败 ≥2 次，流水线停止流转等人工。**处置必须走下方标准流程，先查根因再 requeue**。
-- `[FORCED]`：达 max_rounds=3 仍 FAIL，强制归档 `workspace/<项目>/artifacts/<req_id>.md`（含全部轮次历史），需人工复核未解决意见。
-- 告警经上半部 tick 从 `workspace/logs/alarms.txt` 消费并输出；cron 未配 deliver 时只本地保存。
+- `[FORCED]`：达 max_rounds=3 仍 FAIL，强制归档 `{work_path}/artifacts/<req_id>.md`（含全部轮次历史），需人工复核未解决意见。
+- 告警经上半部 tick 从 `zteam/logs/alarms.txt` 消费并输出；cron 未配 deliver 时只本地保存。
 
 ## BLOCKED 根因分析标准流程（zbot 收到 BLOCKED 后必须主动完成，带结论请示；不得只问"要不要 requeue"）
 
 触发机制：`failures ≥ 2`（stale 回滚或评审 FAIL 累计），护栏触发后停止流转。requeue 前完成下面 4 步：
 
-1. **定位卡死点**：`statectl list` + `tail workspace/logs/pipeline.log`——找 BLOCKED 前最后一条 RECOVER/FAIL 属于哪个阶段，failures 如何累计（**stale 回滚** vs **评审 FAIL** 性质不同：前者是进程问题，后者是内容问题）；
+1. **定位卡死点**：`statectl list` + `tail zteam/logs/pipeline.log`——找 BLOCKED 前最后一条 RECOVER/FAIL 属于哪个阶段，failures 如何累计（**stale 回滚** vs **评审 FAIL** 性质不同：前者是进程问题，后者是内容问题）；
 2. **查 worker 生死**：pipeline.log 的 SPAWN/SKIP 行有 pid；`ps -p <pid>`——存活且多 tick 无进展=可能"干完活没退出"（模式 A）；已死=崩溃（模式 B）；
-3. **看 worker 日志**：`tail workspace/logs/worker-<key>-r<N>.log` 最后输出 + 对比日志 mtime 与停止时间差，grep `error|traceback|timeout`；
-4. **产物完整性**：`ls workspace/{项目}/{stage}/{req_id}-r{N}/`——决定 requeue 后该阶段是否重做（已通过阶段产物保留复用，只有失败阶段及其后续重做）。
+3. **看 worker 日志**：`tail {work_path}/logs/worker-<key>-r<N>.log` 最后输出 + 对比日志 mtime 与停止时间差，grep `error|traceback|timeout`；
+4. **产物完整性**：`ls {work_path}/{stage}/{req_id}-r{N}/`——决定 requeue 后该阶段是否重做（已通过阶段产物保留复用，只有失败阶段及其后续重做）。
 
 **已知模式**（共 4 类，按排查顺序）：
 - **模式 A「干完活没退出」**（2026-08-08 tetris 实测）：worker 日志有完整成功收尾（验证全绿/产物落盘/set_status 已在 pipeline.log 留下审计）+ 进程存活但连续多 tick 无进展 + dmesg 无 OOM/kill → 判定为 **hermes chat 进程完成响应后挂住不退出**（网络/会话收尾卡住，与 Telegram 适配器挂起 #63309 同族，环境网络不稳是背景）。**产物无损 → 直接 requeue 从该阶段续跑即可，无需改任何代码**（已通过阶段不重跑）；
@@ -92,7 +92,7 @@ ls workspace/logs/worker-*.log     # 每个下半部 worker 的明细
 
 用户在消息平台（Telegram 等）提出需求流水线相关请求时，按以下约定处理（无需用户给命令行）：
 
-- **投放（必须确认项目，P2）**：用户发需求文本/文件 → 起合法 `req_id`（英文短名或拼音，仅 `[A-Za-z0-9_-]`，**避免中文文件名**）→ **先确认项目名**（未指定→询问；无法指定→列出 `workspace/` 项目目录帮回忆；仍无→拒绝投放，不写文件）→ 写入 `workspace/{项目}/input/{req_id}.md` → 回复"已投放 {项目}/{req_id}，5 分钟内自动开始分析"；
+- **投放（必须确认项目，P2）**：用户发需求文本/文件 → 起合法 `req_id`（英文短名或拼音，仅 `[A-Za-z0-9_-]`，**避免中文文件名**）→ **先确认项目名**（未指定→询问；无法指定→执行 `statectl project list` 列出项目帮回忆；仍无→拒绝投放，不写文件）→ 写入 `{work_path}/input/{req_id}.md` → 回复"已投放 {项目}/{req_id}，5 分钟内自动开始分析"；
 - **查询**：回复 `statectl list` 的摘要（状态/轮次/失败数），详情用 `get <req_id>`；
 - **干预**：执行 `requeue`/`rollback`/`diagnose` 并回复结果；
 - **推送**：告警与结果推送由 cron（`deliver=telegram`）自动完成，agent 不需要主动发；
@@ -113,18 +113,18 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 |---|---|---|
 | 一直 pending 不分析 | diagnose D11 / `hermes cron status` | 多半是 gateway 未运行 → `hermes gateway start` |
 | 卡 analyzing/reviewing | `ps aux \| grep "hermes chat"`；worker 日志 | worker 还活着=慢，等（20min 后 stale 自动回滚）；死了 → 下个 tick 自动恢复或 `rollback <id>` |
-| `[BLOCKED]`（失败≥2） | `tail workspace/logs/worker-*.log` 找根因 | 修根因 → `requeue <id>` |
-| `[FORCED]`（超轮次强制归档） | 复核 `workspace/artifacts/<project>/<id>.md` 未解决意见 | 人工裁决；误判则 requeue 重跑 |
+| `[BLOCKED]`（失败≥2） | `tail {work_path}/logs/worker-*.log` 找根因 | 修根因 → `requeue <id>` |
+| `[FORCED]`（超轮次强制归档） | 复核 `{work_path}/artifacts/<id>.md` 未解决意见 | 人工裁决；误判则 requeue 重跑 |
 | worker 秒退/日志空 | pipeline.log 的 SPAWN 行看 model | **最常见：模型名不存在** → 改 statectl.py 第 43–48 行；其次 API key/限流 |
 | job 不自动触发 | `hermes cron status` + Repeat 是否 ∞ | gateway 未跑 → start；`"5m"` 建的一次性任务 → `hermes cron edit --schedule "*/5 * * * *" --repeat 0` |
-| workspace/status.json 损坏 | 备份 → 修复/重建条目（产物不丢） | 见 docs/troubleshooting.md §2 S9 |
+| {work_path}/status.json 损坏 | 备份 → 修复/重建条目（产物不丢） | 见 docs/troubleshooting.md §2 S9 |
 
 **分层心法**：`SPAWN` 审计行是上下半部分界线——上半部问题看 gateway/脚本，下半部问题看 worker/模型/API；产物文件永不覆盖，最坏情况是重跑一轮而非丢数据。
 
 ## 验证
 
-- 状态机自测（零 token）：`register` → `claim <id> analyst` → 写产物 → `release_analyze` → `claim <id> reviewer` → `release_review <id> <file> FAIL` → 检查 `needs_fix`/`approved`/强制归档分支与 `workspace/artifacts/` 生成。
-- 端到端冒烟：放真实需求进 `workspace/<项目名>/input/`，手动跑 `python3 scripts/statectl.py worker_tick` → 轮询 `get` 到 `approved`，核对 `workspace/logs/pipeline.log` 与 `workspace/<项目>/artifacts/`。
+- 状态机自测（零 token）：`register` → `claim <id> analyst` → 写产物 → `release_analyze` → `claim <id> reviewer` → `release_review <id> <file> FAIL` → 检查各状态分支与 `{work_path}/artifacts/` 生成。
+- 端到端冒烟：放真实需求进 `{work_path}/input/`，手动跑 `python3 scripts/statectl.py worker_tick` → 轮询 `get` 到 `approved`，核对 `zteam/logs/pipeline.log` 与 `{work_path}/artifacts/`。
 
 
 ### v2 blocked 处理（模块/版本级）
