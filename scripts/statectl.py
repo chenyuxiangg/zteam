@@ -1321,6 +1321,7 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"3. 完成后无需汇报。"
                 )
                 pid = spawn_worker("te", f"{project}/__tp{v['name']}", 1, query)
+                v["test_plan_claimed_pid"] = pid  # spawn 后写真实 pid（漏写 → 巡检把占位 0 当死进程→误杀重开→3 连 blocked）
                 log(f"SPAWN-TE {project}/{v['name']} worker=te pid={pid}")
                 alarms.append(f"版本 {v['name']} 进入测试方案设计（TE pid={pid}）")
     write_versions(project, vd)
