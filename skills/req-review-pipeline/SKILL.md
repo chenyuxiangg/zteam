@@ -107,11 +107,13 @@ ls {work_path}/logs/worker-*.log     # 每个下半部 worker 的明细
 ```bash
 python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → 退出码 1
 ```
-诊断覆盖：状态文件/目录/条目 schema/非法状态/中间态滞留/claim 残留/引用文件/归档/gateway 运行/cron job/worker 进程/日志可写。**完整症状决策表见工作区 `docs/troubleshooting.md`（唯一权威）**，要点：
+诊断覆盖：状态文件/目录/条目 schema/非法状态/中间态滞留/claim 残留/引用文件/归档/gateway 运行/cron job/worker 进程/日志可写/**D15 版本可达性表完整（改状态机跑 diagnose 即回归）**/**D16 版本实际状态在表内（v1 遗留状态暴露）**。**完整症状决策表见工作区 `docs/troubleshooting.md`（唯一权威）**，要点：
 
 | 症状 | 第一检查 | 修复 |
 |---|---|---|
 | 一直 pending 不分析 | diagnose D11 / `hermes cron status` | 多半是 gateway 未运行 → `hermes gateway start` |
+| **版本卡死**（无 SPAWN 无告警） | `tail logs/pipeline.log` grep `VERSION_STUCK\|VERSION_GUARD` | **b6dc84a 起有版本级 guard**：arch 死状态自动回 planning（VERSION_GUARD 告警）；12 tick 滞留自动 VERSION_STUCK 告警——先看告警再查 versions.json 调度前置条件 |
+| **版本状态不在可达性表** | diagnose D16 WARN | v1 遗留状态（st_pending 等）或状态机改动遗漏——核查 VERSION_FLOW 表 |
 | 卡 analyzing/reviewing | `ps aux \| grep "hermes chat"`；worker 日志 | worker 还活着=慢，等（20min 后 stale 自动回滚）；死了 → 下个 tick 自动恢复或 `rollback <id>` |
 | `[BLOCKED]`（失败≥2） | `tail {work_path}/logs/worker-*.log` 找根因 | 修根因 → `requeue <id>` |
 | `[FORCED]`（超轮次强制归档） | 复核 `{work_path}/artifacts/<id>.md` 未解决意见 | 人工裁决；误判则 requeue 重跑 |

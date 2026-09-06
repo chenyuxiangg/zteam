@@ -42,6 +42,8 @@ project_dir(project) = 查 projects.json → work_path
 product_path(product) = 产物绝对路径查表解析（核心！）：
    '{project}/{dir}/...' → project_dir(project)/{dir}/...（release_*/产物校验全部走它）
    norm_product 先规范化（去 workspace/ 前缀/去绝对路径）再查表
+read_status(None) = 聚合映射表项目 work_path/status.json（主源）+ 旧单文件/workspace 存量兼容
+                     （cc3a927 修复：原只扫已删 workspace → 聚合空 → set_status/release_analyze 报不存在 → BLOCKED）
 register_new_inputs = 遍历映射表项目扫 {work_path}/input/*.md（未登记项目不扫 = 强制先 add）
                       + 存量兼容扫 workspace/{项目}/input（workspace 不存在时自然跳过）
 confirm_guide 收口 → 自动 _sync_project_version 更新 latest_version（脚本守护）

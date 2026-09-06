@@ -22,6 +22,19 @@
 - 注册逻辑在 `register_new_inputs`：`ver = meta["version"] or advance_current(proj)`；
 - 不再需要人工 assign 解卡；投放侧仍可用 `version: vX.Y.Z` frontmatter 显式指定。
 
+### 缺口 3（已修复，309659c）：arch 评审 FAIL → 版本永久卡死（无兜底）
+- release_arch FAIL 原把版本置回 `arch`，但调度器只在 `planning` spawn SE——`arch` 无分支，SE 永不重调度；stale 兜底只在 claim=True+进程死时动作，FAIL 后 claim=False 不触发 → 版本静默卡死；
+- **修复**：FAIL → `planning`（planning 分支自动重新 claim + spawn SE）；**根因是"可达性无保证"——任何 FAIL/回退落点必须落在有调度分支的状态**。
+
+### 缺口 4（已修复，cc3a927）：read_status() 不认 projects.json 项目
+- read_status(None) 聚合只遍历（已删除的）workspace/ → 映射表项目 work_path/status.json 读不到 → PM 干完活 set_status/release_analyze 报「不存在」→ 卡 claimed → stale/guard 误判 → BLOCKED；
+- **修复**：聚合主源 = 映射表项目（project_status_file 内部查表）+ workspace 存量兼容；v1 release_*/stale/guard/notify 15 处产物路径 WORKSPACE_DIR 拼接 → product_path()（PAUSE_FILE 也移 zteam 根）。
+
+### 缺口 5（已修复，b6dc84a）：版本状态机系统性防线（②版本 guard + ③可达性表）
+- ② `_version_guard_watch`（每 tick）：**arch+claim=False 死状态 → 即时回 planning + VERSION_GUARD 告警**；中间态 12 tick（~60min）无变化无活 worker → **VERSION_STUCK 告警**（不再静默卡死）；补正仅限 arch→planning（其余告警为主）；no_worker 判定注意 `_claims_sig` 全 False 返回非空串（查 "True" not in）；
+- ③ `VERSION_FLOW` 可达性表（12 状态 × 通道 auto_sched/auto_done/wait_user/term + stuck 落点）；**D15 结构级**（表内每状态必须有通道——改状态机跑 diagnose 即回归）；**D16 运行级**（versions.json 实际状态必须在表——v1 遗留 st_pending/st_passed/quality_pending 暴露 WARN）；
+- 版本状态名两套混用隐患（v1 st_pending vs v2 st 等）由 D16 兜底检出。
+
 ## zbot 模型 / 认知排障（2026-08-13 实测）
 
 - **zbot 模型 = gateway channel_overrides per-channel**（gateway.json `platforms.telegram.channel_overrides.<chat_id>` 的 `model`/`provider` 字段，ChannelOverride 支持；优先级：session `/model` → channel_overrides → config.yaml default）；bot_config.py install 已注入 `model=deepseek-v4-flash, provider=deepseek`；**不动 config.yaml 全局 default**；
@@ -47,6 +60,6 @@
    - ⚠️ **2026-08-20 项目数据解耦后**：`statectl list`/`get` 无参聚合可能读不到 `~/project/<项目>/status.json`（projects.json work_path）→ **list 可能误报"空：还没有需求"**。别信空结果，直接 `ls ~/project/` + grep pipeline.log 的 REGISTER/CLAIM/SPAWN 行核对，或手工 `python3 -c "import json;print(json.load(open('/home/zyzs/project/<项目>/status.json')))"`。
 2. **卡点分类**：无新 SPAWN = 调度缺口（缺口 1/2 已于 4eb2247 修复；若复现先查对应 spawn 分支与 advance_current 是否被回归）或版本挂错（查 versions.json 归属）；有 SPAWN 无 STATE = 下半部问题（worker 日志/模型名/API 配额）；
 3. `versions {p}` 聚合视图看版本/迭代/需求归属（版本状态 + 需求 done 数）；
-4. 版本级产物（arch/testplan）卡点不体现在需求条目 stages 里——**必须查 versions.json 和 pipeline.log 的 VERSION/ARCH 行**，statectl get 只覆盖需求级；
+4. 版本级产物（arch/testplan）卡点不体现在需求条目 stages 里——**必须查 versions.json 和 pipeline.log 的 VERSION/ARCH 行**，statectl get 只覆盖需求级；**b6dc84a 起版本卡死会 VERSION_STUCK/VERSION_GUARD 自动告警——先看 alarms.txt 的这两个标记**；
 5. **幽灵 worker / 伪 pending（并发会话数据污染，2026-08-20 实测）**：并发会话迁移/改动 work_path 数据可能改坏状态（versions.json 被改成 planning + status.json 清空 + input 文件不全）→ tick 修复后把这些"伪 pending"当新需求调度 → 冒出不该跑的 worker（如已 released 的 snake-linux/snake-linux 被 PM 重新分析）。**查证三件套**：`ls ~/project/<项目>/input/`（input 文件是否齐全）↔ `versions.json` 版本状态/reqs ↔ `status.json` 条目——三者不一致 = 数据被外部改动；对照备份 `~/cyx/zteam-workspace-backup-<日期>/` 恢复真实状态；杀错 worker 用 `ps aux | grep "hermes chat"` 找 pid 后 kill（**勿用 `pkill -f "hermes chat -q"`——模式过宽会误杀自身 shell/gateway 进程**）；
 6. **ad-hoc 验证 mock spawn 的坑**：`spawn_worker` 的 cmd 数组 = `["hermes","chat","-q",query,"-m",model,"-Q"]`——**query 在 `cmd[3]`（不是 cmd[2]）**；断言指令内容用 `captured[0][3]`；mock 只验证"调度模板生成的指令"（find_claimable/_schedule_* 的 query），**直接调 spawn_worker 传旧 query 断言不到模板替换**。
