@@ -398,7 +398,7 @@ def read_status(project: str = None) -> dict:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
-    # 聚合全部项目
+    # 聚合全部项目（解耦后主源 = 映射表 work_path/status.json；存量 workspace 兼容）
     merged = {}
     if os.path.isfile(STATUS_FILE):  # 迁移前的单文件（读后由 write_status 分发到项目文件）
         try:
@@ -406,7 +406,17 @@ def read_status(project: str = None) -> dict:
                 merged.update(json.load(f))
         except (FileNotFoundError, json.JSONDecodeError):
             pass
-    if os.path.isdir(WORKSPACE_DIR):
+    for p in read_projects().get("projects", []):  # 映射表项目（work_path/status.json，project_status_file 内部查表）
+        sf = project_status_file(p["name"])
+        if os.path.isfile(sf):
+            try:
+                with open(sf, encoding="utf-8") as f:
+                    data = json.load(f)
+                for k, v in data.items():
+                    merged.setdefault(k, v)  # 单文件优先（避免覆盖未迁移数据）
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+    if os.path.isdir(WORKSPACE_DIR):  # 存量兼容（未登记/迁移前数据）
         for proj in sorted(os.listdir(WORKSPACE_DIR)):
             sf = project_status_file(proj)
             if os.path.isfile(sf):
@@ -772,7 +782,7 @@ def cmd_confirm(rid: str) -> int:
         if e.get("status") != "awaiting_user_confirm":
             print(f"confirm 仅对 awaiting_user_confirm 状态有效（当前 {e.get('status')}）", file=sys.stderr)
             return 1
-        if not e.get("analysis") or not os.path.exists(os.path.join(WORKSPACE_DIR, norm_product(e["analysis"]))):
+        if not e.get("analysis") or not os.path.exists(product_path(e["analysis"])):
             print(f"规格产物不存在或未登记: {e.get('analysis')}", file=sys.stderr)
             return 1
         e["status"] = "approved"
@@ -2944,14 +2954,14 @@ def write_artifact(key: str, e: dict) -> None:
         with open(orig, encoding="utf-8") as f:
             parts += ["## 需求原文", "", f.read().strip(), ""]
     if e.get("analysis"):
-        ap = os.path.join(WORKSPACE_DIR, e["analysis"])
+        ap = product_path(e["analysis"])
         if os.path.exists(ap):
             with open(ap, encoding="utf-8") as f:
                 parts += [f"## 最终分析（{e['analysis']}）", "", f.read().strip(), ""]
     if reviews:
         parts += [f"## 需求评审历史（{len(reviews)} 轮）", ""]
         for rp in reviews:
-            full = os.path.join(WORKSPACE_DIR, rp)
+            full = product_path(rp)
             if os.path.exists(full):
                 with open(full, encoding="utf-8") as f:
                     parts += [f"### {rp}", "", f.read().strip(), ""]
@@ -2960,7 +2970,7 @@ def write_artifact(key: str, e: dict) -> None:
         s = (e.get("stages") or {}).get(stg["name"], {})
         prod = s.get("product")
         if prod:
-            full = os.path.join(WORKSPACE_DIR, prod)
+            full = product_path(prod)
             if os.path.isdir(full):  # 文件集产物（代码/测试目录）：列出文件树并嵌入文本文件
                 files = sorted(os.listdir(full))
                 parts += [f"## {stg['name']} 阶段终版（{prod}）", "",
@@ -2977,7 +2987,7 @@ def write_artifact(key: str, e: dict) -> None:
                 with open(full, encoding="utf-8") as f:
                     parts += [f"## {stg['name']} 阶段终版（{prod}）", "", f.read().strip(), ""]
         for rp in s.get("reviews", []):
-            full = os.path.join(WORKSPACE_DIR, rp)
+            full = product_path(rp)
             if os.path.exists(full):
                 with open(full, encoding="utf-8") as f:
                     parts += [f"### {stg['name']} 评审（{rp}）", "", f.read().strip(), ""]
@@ -3134,7 +3144,7 @@ def guard_recovery(st: dict) -> list:
         pid = e.get("worker_pid")
         if state == "reviewing":
             rp = rel_stage_review(cfg, project, rid2, n) if cfg else rel_review(project, rid2, n)
-            full_rp = os.path.join(WORKSPACE_DIR, rp)
+            full_rp = product_path(rp)
             if os.path.exists(full_rp):
                 conclusion = parse_conclusion(full_rp)
                 s["round"] = int(s.get("round", 0)) + 1  # 评审完成：轮次递增
@@ -3159,7 +3169,7 @@ def guard_recovery(st: dict) -> list:
                 rollback_entry(st, rid, alarms, reason="guard-timeout")
         else:  # claimed / working：查阶段产物
             prod = rel_stage_product(cfg, project, rid2, n) if cfg else rel_analysis(project, rid2, n)
-            if os.path.exists(os.path.join(WORKSPACE_DIR, prod)):
+            if os.path.exists(product_path(prod)):
                 ok, err = set_stage_state(st, rid, stage, "reviewing", prod)
                 log(f"GUARD {rid} {stage} {state}->reviewing (auto, product exists)")
             else:
@@ -3287,7 +3297,7 @@ def release_analyze(rid: str, product: str) -> int:
         if not e or e["status"] != "analyzing":
             print(f"release_analyze: {rid} 状态不是 analyzing，拒绝", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, product)
+        full = product_path(product)
         if not os.path.exists(full):
             # 产物缺失 → 视为失败：自动回滚，交由重试/stale 兜底
             alarms = []
@@ -3318,7 +3328,7 @@ def release_review(rid: str, product: str, conclusion: str) -> int:
         if not e or e["status"] != "reviewing":
             print(f"release_review: {rid} 状态不是 reviewing，拒绝", file=sys.stderr)
             return 1
-        full = os.path.join(WORKSPACE_DIR, product)
+        full = product_path(product)
         if not os.path.exists(full):
             alarms = []
             rollback_entry(st, rid, alarms, reason="missing-product")
@@ -3377,7 +3387,7 @@ def release_stage_design(rid: str, stage: str, product: str) -> int:
         if not ok:
             print(f"release_stage_design: {err}", file=sys.stderr)
             return 1
-        if not os.path.exists(os.path.join(WORKSPACE_DIR, product)):
+        if not os.path.exists(product_path(product)):
             alarms = []
             rollback_entry(st, rid, alarms, reason="missing-product")
             write_status(st)
@@ -3401,7 +3411,7 @@ def release_stage_review(rid: str, stage: str, product: str, conclusion: str) ->
         if not e:
             print(f"release_stage_review: {rid} 不存在", file=sys.stderr)
             return 1
-        if not os.path.exists(os.path.join(WORKSPACE_DIR, product)):
+        if not os.path.exists(product_path(product)):
             alarms = []
             rollback_entry(st, rid, alarms, reason="missing-product")
             write_status(st)
@@ -3446,7 +3456,7 @@ def release_gate(rid: str, stage: str, product: str, conclusion: str) -> int:
         if not e:
             print(f"release_gate: {rid} 不存在", file=sys.stderr)
             return 1
-        if not os.path.exists(os.path.join(WORKSPACE_DIR, product)):
+        if not os.path.exists(product_path(product)):
             alarms = []
             rollback_entry(st, rid, alarms, reason="missing-product")
             write_status(st)
@@ -3488,7 +3498,7 @@ def release_release(rid: str, product: str) -> int:
         if not ok:
             print(f"release_release: {err}", file=sys.stderr)
             return 1
-        if not os.path.exists(os.path.join(WORKSPACE_DIR, product)):
+        if not os.path.exists(product_path(product)):
             alarms = []
             rollback_entry(st, rid, alarms, reason="missing-product")
             write_status(st)
@@ -3834,7 +3844,7 @@ def cmd_get(rid: str) -> int:
 
 NOTIFY_MARKER = os.path.join(LOG_DIR, ".notify_marker")
 CONFIRM_REMINDED = os.path.join(LOG_DIR, ".confirm_reminded")  # 已提醒用户评审的规格 key 集
-PAUSE_FILE = os.path.join(WORKSPACE_DIR, ".pause")  # 手动暂停标记：touch = 流水线整体停止调度（halt）
+PAUSE_FILE = os.path.join(WORKDIR, ".pause")  # 手动暂停标记：touch = 流水线整体停止调度（halt；解耦后在 zteam 根）
 
 
 def cmd_halt(reason: str = "") -> int:
@@ -3868,7 +3878,7 @@ def _spec_summary(e: dict) -> str:
     parts = []
     try:
         if e.get("analysis"):
-            full = os.path.join(WORKSPACE_DIR, norm_product(e["analysis"]))
+            full = product_path(e["analysis"])
             if os.path.exists(full):
                 head = " ".join(open(full, encoding="utf-8").read().splitlines()[:8])[:200]
                 parts.append(f"规格：{head}")
