@@ -160,6 +160,7 @@ rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
   say "安装完成，诊断全绿。投放需求: 先 project add <项目名> [路径] 登记，再放 需求.md 到 {work_path}/input/（默认 ~/project/<项目名>/input/）"
+  say "📣 请在 Telegram 中给 zbot（@zyzs_bot）发送 /new 开启新会话——zbot 将重新加载最新角色定义/项目映射并执行 project list 供你选择；旧会话可能沿用历史认知"
 else
   warn "安装完成但诊断存在 FAIL（见上方报告，排查指南: docs/troubleshooting.md）"
 fi
