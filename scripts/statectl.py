@@ -1099,7 +1099,7 @@ def release_arch(project: str, version: str, product: str, conclusion: str) -> i
             v["status"] = "testplan"  # TE 测试方案阶段
             v["test_plan_claimed"] = False
         else:
-            v["status"] = "arch"  # 重做
+            v["status"] = "planning"  # FAIL → 回 planning（调度分支会自动重新 claim + spawn SE 重做；arch 无调度分支会卡死）
             v["arch_claimed"] = False
         v["arch_review_claimed"] = False
         v["arch_review_claimed_pid"] = 0
