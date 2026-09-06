@@ -502,6 +502,74 @@ def versions_path(project: str) -> str:
     return os.path.join(project_dir(project), VERSIONS_FILE)
 
 
+# ---- ③ 版本状态可达性表（v2 版本状态机——每个状态必须有接走通道；改状态机时同步维护此表 + diagnose D16 回归）
+# channel: auto_sched=调度器分支（claim=False 自动 spawn/推进）| auto_done=worker 完成 release_* 回（claim 活态）
+#          wait_user=等待用户/人工（notify/unblock 通道）| term=终态
+# stuck=guard 兜底回退落点（该状态无接走通道时的安全回退）
+VERSION_FLOW = {
+    "planning":       {"channel": {"auto_sched"},                        "desc": "待 SE 架构（规格全锁定→spawn SE）"},
+    "arch":           {"channel": {"auto_done"},   "stuck": "planning", "desc": "SE 架构中（release_arch DONE→arch_reviewing）；claim=False 滞留=死状态→guard 回 planning"},
+    "arch_reviewing": {"channel": {"auto_sched", "auto_done"},           "desc": "PM 评审架构（release_arch PASS→testplan / FAIL→planning）"},
+    "testplan":       {"channel": {"auto_sched", "auto_done"},           "desc": "TE 测试方案（release_testplan_v2 DONE→testplan_reviewing）"},
+    "testplan_reviewing": {"channel": {"auto_sched", "auto_done"},       "desc": "SE 评审方案（PASS→in_dev / FAIL→testplan）"},
+    "in_dev":         {"channel": {"auto_sched"},                        "desc": "模块迭代开发（_schedule_module_iter + 全 it_passed→st）"},
+    "st":             {"channel": {"auto_done"},                        "desc": "STO 系统测试（release_st_v2 DONE→st_done）"},
+    "st_done":        {"channel": {"auto_sched"},                        "desc": "ST 完成→qa（_schedule_st_qa spawn QA）"},
+    "qa":             {"channel": {"auto_done"},                        "desc": "QA 发布评审（release_qa DONE→qa_reviewing）"},
+    "qa_reviewing":   {"channel": {"wait_user"},                        "desc": "等用户确认用户指南（confirm_guide→released / reject_guide→qa）"},
+    "released":       {"channel": {"term"},                             "desc": "终态"},
+    "blocked":        {"channel": {"wait_user"},                        "desc": "人工 unblock"},
+}
+# v1 遗留状态（若 v2 数据出现 = 死状态，D16 报）：st_pending/st_passed/quality_pending/quality/security 等
+
+
+def _version_guard_watch(project: str, vd: dict, alarms: list) -> None:
+    """② 版本级巡检兜底（防静默卡死——仿 req 级 guard）：
+    - arch + claim=False：死状态（无调度分支可接走）→ 立即补正回 planning（自动重调度 SE）
+    - 其余中间态：连续 N tick 状态/claim 无变化（应推进未推进）→ VERSION_STUCK 告警（写审计 + alarms）
+    脚本固定规则；补正仅限明确安全回退，其余告警为主（不自动改防误伤）。"""
+    for v in vd.get("versions", []):
+        status = v.get("status")
+        if status in ("released", "blocked"):
+            continue
+        if status not in VERSION_FLOW:
+            log(f"VERSION_GUARD {project}/{v['name']} 未知状态 {status}（不在可达性表）")
+            alarms.append(f"版本 {v['name']} 状态 {status} 不在可达性表（VERSION_FLOW），需人工核查")
+            continue
+        # 死状态即时补正：arch + claim=False（无 worker 在跑也无调度分支能接走——只有 release_arch DONE 能离开但没人产出）
+        if status == "arch" and not v.get("arch_claimed"):
+            v["status"] = "planning"
+            v["arch_failures"] = int(v.get("arch_failures", 0)) + 1
+            log(f"VERSION_GUARD {project}/{v['name']} arch+无claim=死状态 → 回 planning（SE 重调度，累计 {v['arch_failures']} 次）")
+            alarms.append(f"版本 {v['name']} 卡死 arch（无 claim）已自动回 planning 重调度 SE（第 {v['arch_failures']} 次）——若反复出现请人工核查架构评审 FAIL 原因")
+            v["_guard_sig"] = f"{status}|{_claims_sig(v)}"
+            v["_guard_ticks"] = 0
+            continue
+        # 滞留检测：状态/claim 组合连续 tick 无变化（调度器应推进却未推进）
+        sig = f"{status}|{_claims_sig(v)}"
+        if v.get("_guard_sig") == sig:
+            v["_guard_ticks"] = int(v.get("_guard_ticks", 0)) + 1
+        else:
+            v["_guard_sig"] = sig
+            v["_guard_ticks"] = 0
+        ticks = int(v.get("_guard_ticks", 0))
+        flow = VERSION_FLOW.get(status, {})
+        no_worker = "True" not in _claims_sig(v)  # 所有 claim 均为 False（_claims_sig 全 False 也返回非空串——须查子串）
+        if ticks >= 12 and no_worker and "auto_done" not in flow.get("channel", set()):
+            # 12 tick（~60 分钟）无活 worker 且状态非"等 worker 回 release_*" → 应被调度/推进却停滞
+            log(f"VERSION_STUCK {project}/{v['name']} 状态 {status} 滞留 {ticks} tick 无推进（claims 全空）")
+            alarms.append(f"版本 {v['name']} 疑似卡死：状态 {status} 滞留 {ticks * 5} 分钟无活 worker 无推进——"
+                          f"可能调度前置条件不满足（如规格未锁定/版本串行/依赖），请核查 versions.json + pipeline.log")
+            v["_guard_ticks"] = 0  # 告警后重置（防每 tick 重复告警）
+
+
+def _claims_sig(v: dict) -> str:
+    """版本 claim 组合签名（判断有无活 worker/待评审）。"""
+    return "|".join(str(bool(v.get(c))) for c in
+                    ("arch_claimed", "arch_review_claimed", "test_plan_claimed",
+                     "testplan_review_claimed", "st_claimed", "qa_claimed"))
+
+
 def ensure_versions(project: str) -> dict:
     """项目版本清单：不存在则初始化（v1.0.0 planning + current）。
     结构：{"versions": [{"name","status","iterations":[{"n","status","reqs","it_product","it_reviews"}],
@@ -3042,6 +3110,7 @@ def _tick_common() -> int:
             md = read_modules(proj)
             _module_stale_recovery(proj, md, alarms)  # 模块 worker 死亡兜底
             _version_stale_recovery(proj, vd, alarms)  # 版本 worker 死亡兜底
+            _version_guard_watch(proj, vd, alarms)  # ② 版本级巡检兜底（死状态补正/滞留告警）
             _issue_stale_watch(proj, alarms)  # 问题单长期 open 告警
             _resource_unblock(proj, md, vd, alarms)  # 资源限制 blocked → 配额恢复自动 unblock
             _schedule_module_iter(proj, vd, md, pst, alarms)  # v2 模块迭代链（MDE→FO→MTO）
@@ -4113,6 +4182,32 @@ def diagnose() -> int:
 
     # D14 日志可写
     add("PASS" if os.access(LOG_DIR, os.W_OK) else "FAIL", "D14", "logs/ 目录可写")
+
+    # D15 版本状态可达性（③ 结构级回归：状态机改动后跑 diagnose 即校验——每状态必须有接走通道）
+    dead = []
+    for st, flow in VERSION_FLOW.items():
+        if not flow.get("channel"):
+            dead.append(f"{st}(无通道)")
+    if dead:
+        add("FAIL", "D15", f"版本状态机可达性表存在死状态: {', '.join(dead)}（VERSION_FLOW 每状态必须有 channel）")
+    else:
+        add("PASS", "D15", f"版本状态机可达性表完整（{len(VERSION_FLOW)} 状态全有接走通道）")
+
+    # D16 运行级状态合法性：各项目 versions.json 实际状态必须在 VERSION_FLOW（v1 遗留/未知状态暴露）
+    bad_v = []
+    for p in [x["name"] for x in read_projects().get("projects", [])]:
+        try:
+            vd = read_versions(p)
+        except Exception:
+            continue
+        for v in vd.get("versions", []):
+            s = v.get("status")
+            if s and s not in VERSION_FLOW:
+                bad_v.append(f"{p}/{v['name']}={s}")
+    if bad_v:
+        add("WARN", "D16", f"存在不在可达性表的版本状态（v1 遗留/未知）: {', '.join(bad_v[:5])}——请核查（版本 guard 会告警）")
+    else:
+        add("PASS", "D16", "全部版本状态在可达性表内")
 
     print("== zteam 诊断报告 ==")
     for level, code, msg in rows:
