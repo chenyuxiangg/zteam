@@ -54,6 +54,17 @@
 - **reject 后 PM 修订仍写同 rN 文件**（round 仅评审时递增），初版留档 `archive/`，修订版文件头标注"修订版"；reject 理由要完整带上全部拍板，PM 才能逐条固化（修订版含 R-01~R-09 对照表）；
 - confirm 是规格锁定的唯一入口，锁定后进入版本级流程。
 
+## 问题单分单/再激活排障（2026-09-11 全链实测）
+
+- **症状**：某单连续多轮打回、FO 每轮标 fixed 但复测证据显示代码没改到位 → 先查 **FO 拿到的上下文**：
+  `_issue_brief_for_fix` 是否给了单末尾的复测建议（原实现只给前 2000 字符，建议被截掉=空转真因）。
+- **症状**：单已裁决归属但没人修 → 查版本状态是否 `in_dev`（D17：进行中迭代要求版本 in_dev；不变式自愈每 tick 跑）；
+  已收口迭代（it_passed）会被**再激活**，日志 `MODULE_ITER_REACTIVATE` / `VERSION_REOPEN`。
+- **症状**：跨模块单挂一个模块反复修不好 → 用 SE 重新裁决：把 `归属模块` 改回"待定"（或从 waiting 摘除）
+  → 调度自动 spawn SE → 它会按复测意见 `issue split` 逐项拆到各根因模块（WEBUI-07 → WEBUI-08/09/10/11 实例）。
+- **复测方**：`issue assign` 后看单的 `提单人` 字段——MTO 提单由 MTO 复测、ST 阶段 STO 提单由 STO 验收
+  （日志 `SPAWN-RETEST ... worker=sto|mto`）；批量 fixeds 混有 STO 单时复测方取 STO。
+
 ## 排障定位清单
 
 1. `statectl list` + `statectl get {rid}` + `tail zteam/logs/pipeline.log`（SPAWN/STATE/ARCH_DONE/VERSION 审计行）三步定位卡点；
@@ -63,3 +74,21 @@
 4. 版本级产物（arch/testplan）卡点不体现在需求条目 stages 里——**必须查 versions.json 和 pipeline.log 的 VERSION/ARCH 行**，statectl get 只覆盖需求级；**b6dc84a 起版本卡死会 VERSION_STUCK/VERSION_GUARD 自动告警——先看 alarms.txt 的这两个标记**；
 5. **幽灵 worker / 伪 pending（并发会话数据污染，2026-08-20 实测）**：并发会话迁移/改动 work_path 数据可能改坏状态（versions.json 被改成 planning + status.json 清空 + input 文件不全）→ tick 修复后把这些"伪 pending"当新需求调度 → 冒出不该跑的 worker（如已 released 的 snake-linux/snake-linux 被 PM 重新分析）。**查证三件套**：`ls ~/project/<项目>/input/`（input 文件是否齐全）↔ `versions.json` 版本状态/reqs ↔ `status.json` 条目——三者不一致 = 数据被外部改动；对照备份 `~/cyx/zteam-workspace-backup-<日期>/` 恢复真实状态；杀错 worker 用 `ps aux | grep "hermes chat"` 找 pid 后 kill（**勿用 `pkill -f "hermes chat -q"`——模式过宽会误杀自身 shell/gateway 进程**）；
 6. **ad-hoc 验证 mock spawn 的坑**：`spawn_worker` 的 cmd 数组 = `["hermes","chat","-q",query,"-m",model,"-Q"]`——**query 在 `cmd[3]`（不是 cmd[2]）**；断言指令内容用 `captured[0][3]`；mock 只验证"调度模板生成的指令"（find_claimable/_schedule_* 的 query），**直接调 spawn_worker 传旧 query 断言不到模板替换**。
+
+## MTO 模块 IT 收尾登记续跑（web-ui it3 实测，2026-09-10）
+
+**命令语义与判定（`release_module {项目} {模块} {迭代} it {产物} DONE`）**：
+- 前置 `status == it_working`；执行后写 `it_report`/`it_product`、`claimed=False`，再查 **项目级** `open_issues(项目)`（该文件状态 ∈ {open, fixed} 的单，**非按模块过滤**——会带上其它模块的单）；
+- 非空 → status **留在 it_working** + `waiting_issues=[...]`（修复链：FO `issue fix` → MTO 复测 `issue close` → 全 closed 自动 it_passed）；全空 → **自动 it_passed**。
+- ⚠️ 推论：**IT 有 FAIL 用例却没提单就登记 = 系统判 it_passed（假通过）**。必须先 `issue open` 再登记，顺序反了要回滚/补单。
+
+**续跑收尾核对清单（缺一不可，登记前逐项核）**：
+1. `测试用例.md` 存在且模块迭代 `case_passed=true`（TE 评审已过）；
+2. `模块测试报告.md` 存在，**结论区 PASS/FAIL 在头部 3000 字符内**（机器可解析）；
+3. `测试执行日志.txt` 存在（原始执行输出）；
+4. 本轮缺陷已 `issue {项目} open <iid> <P0-P4> <描述>`（含断言原文 + 复现命令 + 代码位）；
+5. 建议真链**重跑留证**（间歇缺陷需多次；报告只记本轮真实结果，勿沿用上轮结论）。
+
+**worker 撞上限的半成品形态**：日志尾 `⚠️ Reached maximum iterations (150)`。典型残缺 = `tests/`、`测试用例.md`、样本/harness 齐全，但**报告/执行日志/问题单全缺**、状态停在 `it_working` 且 `it_product=null`（web-ui it3 r1 即此形态）。此类"续跑收尾"任务**必须补齐 1-4 再登记**，只跑登记命令会制造假通过。
+
+**取证要点**：`modules.json` → `modules[name=web-ui].iterations[n]`（v2 模块状态在 modules.json，**不在 status.json**）；`issue {项目} list open`；临时诊断/探针文件放 `_tmp/` 并从 `tests/it/` 移出（vitest include `tests/it/**/*.test.ts` 会把 `_diag*.test.ts` 计入用例集）；`evidence_*.py` 探针保留作缺陷证据。

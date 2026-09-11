@@ -1,4 +1,12 @@
 {
-  "projects": [],
-  "updated_at": null
+  "projects": [
+    {
+      "name": "semulate",
+      "created_at": "2026-09-06T07:20:58Z",
+      "latest_version": "v1.0.0",
+      "work_path": "/home/zyzs/code/mcu_semulate/semulate",
+      "default": false
+    }
+  ],
+  "updated_at": "2026-09-11T14:25:03Z"
 }

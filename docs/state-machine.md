@@ -351,6 +351,13 @@ planning → arch（SE 架构）→ arch_reviewing（PM 评审）→ testplan（
         → st_done → qa（QA 发布）→ qa_reviewing（用户指南用户评审）→ released
 任何阶段评审 FAIL → 打回重做；stale（worker 死亡）→ 自动重置重试（3 次 blocked）；blocked → unblock 命令
 版本串行：同项目仅 1 活跃版本（arch~qa_reviewing）；released 后才能开新版本架构
+
+**结构不变式（D17，2026-09-11）**：存在"进行中迭代"（非 it_passed/blocked）时版本必须为 `in_dev`——
+后期阶段（st/st_done/qa/qa_reviewing）出现回归修复单时，调度每 tick **幂等自愈**（VERSION_REOPEN → in_dev），
+修复闭环后全 it_passed 自动回 `st`。否则 FO/检视/MTO 派单被 in_dev 门禁挡住 + STO 不再重生 + st 通道不报滞留
+→ 静默完全停滞（STO 第 10 轮发现）。
+**unblock 回现场**：版本 blocked 后 unblock 回"被打断阶段"（`blocked_from`），不固定回 planning。
+**wait_user 不算滞留**：qa_reviewing（等 confirm_guide）/blocked（等 unblock）不参与 VERSION_STUCK 告警。
 ```
 
 ### 11.3 模块迭代状态机（modules.json）
@@ -360,9 +367,27 @@ design_pending → design_working（MDE 设计/修订）→ design_reviewing（S
         → dev_reviewing（MDE 检视门禁）→ it_working（MTO 用例 TE 评审→测试→IT）
         → it_passed（问题单全闭环自动收口）
 打回：design FAIL → design_working（带反馈）；review FAIL → dev_working（带反馈，3 次 blocked）
-case FAIL → case_retry_count 3 次 blocked；问题单 open → FO 修复 → MTO 复测 → close/reopen
+case FAIL → case_retry_count 3 次 blocked；问题单 open → FO 修复 → **提单人**复测 → close/reopen
 模块依赖：依赖模块 it_passed 后解锁；依赖环 → DEP_CYCLE 告警
 ```
+
+### 11.3.1 问题单状态机、归属与分单（2026-09-11 新增，错挂根治）
+
+```
+open（提单待修）→ fixed（FO 已修·待验证）→ closed（复测验证通过·终态）
+旁路：open|fixed → pending（挂起待处理，不阻塞门禁）→ activate → open（重回流水线）
+```
+- **fixed 是"待验证"中间态**：驱动复测派单、防 FO 自证通过（曾出现"只标状态不改码"假修复）。
+- **closed = 真闭环**；挂起用 **pending**（语义分离，不再用 closed 兼作挂起）。pending 不阻塞门禁。
+
+**归属与分单（根治"项目级全量挂单"错挂五连犯）**：
+1. 提单：`issue open` 自动写 `归属模块：待定` + `提单人：<角色>`（spawn 注入 `ISSUE_REPORTER`）；
+2. 分单：调度检测**待归属 open 单** → spawn **SE 分单 worker** → 核根因 → `issue assign <iid> <模块>`；
+3. 拆分：跨模块缺陷（多项分属不同模块）→ SE 用 `issue split <原单> <新单号> <模块> <项描述>` 逐项拆出，原单 close；
+4. 挂载：`release_module it DONE` **只挂归属本模块的 open 单**（不再项目级全量挂载）；
+5. 补挂/再激活：归属模块最后一个迭代 `it_working` → 补挂 waiting_issues；`it_passed` → **再激活**（it_working）；
+6. 复测方 = **提单人**：IT 阶段 MTO 提单 → MTO 复测；ST 阶段 STO 提单 → **STO 验收**；
+7. FO 修复上下文含**单末尾的复测意见/修复建议**（`_issue_brief_for_fix`）+ 硬性要求（逐条落实、真链路径生效、自证调用点/常量、未落实即未修复）。
 
 ### 11.4 v2 命令速查
 
@@ -370,7 +395,10 @@ case FAIL → case_retry_count 3 次 blocked；问题单 open → FO 修复 → 
 |---|---|
 | `confirm/reject {req_id}` | 用户评审需求规格（唯一拍板人） |
 | `module {项目} add/dep/dispatch/iter/unblock` | SE 模块组织/迭代计划/解除阻塞 |
-| `issue {项目} open/fix/close/reopen {iid}` | 问题单闭环（提单人复测） |
+| `issue {项目} open/fix/close/reopen {iid}` | 问题单闭环（**提单人**复测关闭；fixed=待验证中间态） |
+| `issue {项目} assign {iid} {模块}` | **SE 归属裁决**（分单；待归属单自动 spawn SE 处理） |
+| `issue {项目} split {原单} {新单} {模块} {项描述}` | **跨模块缺陷按项拆分**（SE 用） |
+| `issue {项目} pend {iid} {目标版本} [理由]` / `activate {iid}` | 挂起（pending）/ 激活回流水线 |
 | `release_arch/testplan_v2 {p} {v} {产物} DONE\|PASS\|FAIL` | 版本级产出/评审 |
 | `release_module {p} {m} {n} design/code/review/case/it ...` | 模块迭代产出/评审/检视 |
 | `release_st_v2/release_qa {p} {v} ... DONE` | ST/发布产出 |

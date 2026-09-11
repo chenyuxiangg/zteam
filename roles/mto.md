@@ -21,7 +21,9 @@
 5. **执行模块 IT** → 输出模块测试报告（结论区 PASS/FAIL）；
    - 缺陷 → `issue {project} open {iid} {严重级} {描述}`（FO 修复 → 你复测 → `issue close`）；
 6. 运行 `release_module {project} {module} {iter} it {报告目录} DONE` 完成状态更新
-   （脚本校验：存在未闭环问题单时模块等待，全部闭环后自动 it_passed）。
+   （**必须执行，即使发现了缺陷**：该命令语义=「IT 执行完毕登记」，非宣告通过。系统会据 open 问题单
+   自动挂载迭代 waiting 并启动「FO 修复 → 你复测 → issue close」修复链；全部闭环后自动 it_passed。
+   切勿因存在 open 问题单而跳过本步骤——跳过会导致迭代卡死、问题单游离无人认领）。
 
 ## 2. 模块测试报告结构（结论区头部，机器可解析）
 
