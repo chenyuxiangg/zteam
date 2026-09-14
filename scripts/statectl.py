@@ -1097,6 +1097,11 @@ def _issue_path_reporter(project: str, iid: str) -> str:
     return _issue_reporter(open(p, encoding="utf-8").read())
 
 
+def _issue_owner_locked(content: str) -> bool:
+    """归属是否已被 SE 复核锁定（FO 不可再拒修——防推诿循环）。"""
+    return any(l.startswith("归属复核：") and "locked" in l for l in content.splitlines()[:20])
+
+
 def _issue_brief_for_fix(project: str, iid: str) -> str:
     """FO 修复上下文：描述（头部）+ **复测方最新意见/修复建议**（尾部关键段）+ 归属。
     2026-09-11 教训：原实现只取单前 2000 字符 → 描述在前、复测方三次重申的精确修复建议在后
@@ -1189,12 +1194,54 @@ def cmd_issue(project: str, action: str, rest: list) -> int:
                     break
             if not done:
                 lines.insert(1, f"归属模块：{module}")
+        _was_rejected = "FO 拒修" in content
+        if _was_rejected and not any(l.startswith("归属复核：") for l in lines):
+            for i, ln in enumerate(lines):
+                if ln.startswith("归属模块："):
+                    lines.insert(i + 1, "归属复核：locked（SE 复核后锁定，FO 不得再拒）")
+                    break
         content = "\n".join(lines) + "\n"
         note = (" ".join(rest[2:])).strip()
         content += f"- {now_iso()} SE 归属裁决 → {module}" + (f"（{note}）" if note else "") + "\n"
+        if _was_rejected:
+            content += "- %s SE 复核 FO 拒修：维持/改派归属 %s，归属已锁定（FO 不得再拒）\n" % (now_iso(), module)
         with open(p, "w", encoding="utf-8") as f:
             f.write(content)
         log(f"ISSUE_ASSIGN {project}/{iid} -> {module}")
+        return 0
+    if action == "reject":
+        # FO 拒修（P1-2，2026-09-11）：根因不在本模块/单不合理 → 退回并重新裁决
+        # 触发点=命令入口；兜底=tick 检测待归属单自动 spawn SE 重新裁决
+        cur = _issue_status(content)
+        if cur != "open":
+            print(f"问题单 {iid} 非 open（当前 {cur}），不可拒修", file=sys.stderr)
+            return 1
+        if _issue_owner_locked(content):
+            print(f"❌ 问题单 {iid} 归属已由 SE 复核锁定，FO 不得再拒修——"
+                  f"如仍有异议请升级人工处理（勿沉默不标）", file=sys.stderr)
+            return 1
+        owner = _issue_owner(content)
+        if not owner:
+            print(f"问题单 {iid} 尚未裁决归属（无需拒修——调度会交 SE 分单）", file=sys.stderr)
+            return 1
+        reason = " ".join(rest[1:]).strip() or "未注明理由"
+        lines = content.splitlines()
+        for i, ln in enumerate(lines):
+            if ln.startswith("归属模块："):
+                lines[i] = "归属模块：待定"
+                break
+        content = "\n".join(lines) + "\n"
+        content += f"- {now_iso()} FO 拒修（原归属 {owner}）：{reason}（退回重新裁决）\n"
+        n_rej = content.count("FO 拒修")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+        log(f"ISSUE_REJECT {project}/{iid}（原归属 {owner}）：{reason}")
+        if n_rej >= 2:
+            try:
+                with open(ALARM_FILE, "a", encoding="utf-8") as _af:
+                    _af.write(f"问题单 {iid} 已被 FO 拒修 {n_rej} 次——请人工核查归属裁决是否反复不准\n")
+            except OSError:
+                pass
         return 0
     if action == "pend":
         # 挂起（待下版本处理）：issue {project} pend <iid> <目标版本> [理由]
@@ -1267,6 +1314,57 @@ def cmd_issue(project: str, action: str, rest: list) -> int:
         if _issue_status(content) != "open":
             print(f"问题单 {iid} 非 open 状态", file=sys.stderr)
             return 1
+        # 修复证据校验（2026-09-11 P1-1，触发点=命令入口·不可绕过）：
+        # 归属模块代码目录须存在 mtime 晚于提单时间的文件；否则拒绝（兜底：单停留 open → tick 续派）。
+        # 依据：SOCSIM-05/06 复测方代码核证「调用点仍 1 处」「常量仍 4096」，但单已被标 fixed（假修复）。
+        # 确属无需改码的修复（纯文档判定/环境类）：issue fix <iid> --force <理由>（留审计 + 告警人工复核）。
+        force = bool(len(rest) > 1 and rest[1] == "--force")
+        owner = _issue_owner(content)
+        if not owner:
+            print(f"❌ 问题单 {iid} 未裁决归属，禁止标 fixed——请先由 SE 分单："
+                  f"issue {project} assign {iid} <模块>", file=sys.stderr)
+            return 1
+        if force:
+            _reason = " ".join(rest[2:]) or "未注明理由"
+            log(f"ISSUE_FIX_FORCE {project}/{iid}（跳过修复证据校验：{_reason}）")
+            try:
+                with open(ALARM_FILE, "a", encoding="utf-8") as _af:
+                    _af.write(f"问题单 {iid} 以 --force 跳过修复证据校验（{_reason}）——请人工复核\n")
+            except OSError:
+                pass
+        else:
+            _tline = next((l.split("：", 1)[1].strip() for l in content.splitlines()[:15]
+                           if l.startswith("时间：")), "")
+            _its_ts = 0.0
+            if _tline:
+                try:
+                    _its_ts = datetime.strptime(_tline, "%Y-%m-%dT%H:%M:%SZ").replace(
+                        tzinfo=timezone.utc).timestamp()
+                except ValueError:
+                    _its_ts = 0.0
+            _cdir = os.path.join(project_dir(project), "code", owner)
+            _newest, _newest_mt = None, 0.0
+            _SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".mypy_cache", ".ruff_cache", "dist", "build"}
+            _SKIP_EXT = {".pyc", ".pyo", ".log", ".tmp", ".lock"}
+            for _root, _dirs, _files in os.walk(_cdir):
+                _dirs[:] = [d for d in _dirs if d not in _SKIP_DIRS]
+                for _fn in _files:
+                    if os.path.splitext(_fn)[1] in _SKIP_EXT:
+                        continue  # 缓存/日志不算代码改动（防 pytest 缓存刷新被当修复证据）
+                    _fp = os.path.join(_root, _fn)
+                    try:
+                        _mt = os.path.getmtime(_fp)
+                    except OSError:
+                        continue
+                    if _mt > _newest_mt:
+                        _newest_mt, _newest = _mt, os.path.relpath(_fp, _cdir)
+            if _newest_mt <= _its_ts:
+                print(f"❌ 修复证据校验未通过：模块 {owner} 代码目录（{_cdir}）无 mtime 晚于提单时间"
+                      f"（{_tline or '未知'}）的文件（最新改动：{_newest or '无'}）。\n"
+                      f"   请先真正修复代码；确属无需改码（纯文档判定/环境类）用："
+                      f"issue {project} fix {iid} --force <理由>", file=sys.stderr)
+                return 1
+            log(f"ISSUE_FIX_VERIFY {project}/{iid} ok（{owner} 最新改动：{_newest}）")
         content = content.replace("状态：open", "状态：fixed", 1)
         content += f"- {now_iso()} FO 修复完成\n"
     elif action == "close":
@@ -1603,6 +1701,18 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
             if conclusion not in ("PASS", "FAIL"):
                 print("case 结论必须为 PASS/FAIL", file=sys.stderr)
                 return 1
+            if conclusion == "PASS":
+                # 判据可达性门禁（P1-9，2026-09-11，同 release_st_case）
+                try:
+                    _casedoc = open(product_path(product), encoding="utf-8", errors="replace").read()
+                except OSError as e:
+                    print(f"用例读取失败：{e}", file=sys.stderr)
+                    return 1
+                if "实现依据" not in _casedoc:
+                    print("❌ 判据可达性门禁未通过：用例文档缺少「实现依据」字段（判据须引用实现依据）",
+                          file=sys.stderr)
+                    log(f"MODULE_CASE_GATE_FAIL {project}/{module}/it{iter_n}（缺实现依据）")
+                    return 1
             it.setdefault("case_reviews", []).append(norm_product(product))
             if conclusion == "PASS":
                 it["case_passed"] = True
@@ -1617,6 +1727,12 @@ def release_module(project: str, module: str, iter_n: str, action: str, product:
         elif action == "it":
             if conclusion != "DONE" or status != "it_working":
                 print(f"it DONE 需 it_working（当前 {status}）", file=sys.stderr)
+                return 1
+            # 静态锚定门禁（P1-3）：必须存在的调用点/常量上限（配置 {work_path}/module_checks.json）
+            _mc = _module_checks(project, module)
+            if _mc:
+                print("❌ 静态锚定检查未通过，禁止 IT 登记：\n  - " + "\n  - ".join(_mc), file=sys.stderr)
+                log(f"MODULE_CHECK_FAIL {project}/{module}: {_mc[:2]}")
                 return 1
             it["it_report"] = norm_product(product)
             it["it_product"] = norm_product(product)
@@ -1672,6 +1788,40 @@ def _module_stale_recovery(project: str, md: dict, alarms: list) -> None:
                     it["status"] = "blocked"
                     with open(ALARM_FILE, "a", encoding="utf-8") as f:
                         f.write(f"[BLOCKED] 模块 {project}/{m['name']} 迭代 {it['n']} 连续失败 3 次，已停止。\n")
+            # 活但无输出超时（P2-6，2026-09-11）：进程存活但 worker 日志 >N 分钟无写入 → 判卡死，kill + 重置。
+            # 阈值默认 60 分钟（长任务如 ST 长稳天然长时间无输出，须宽松；可用 WORKER_IDLE_MAX_MIN 覆盖）
+            _idle_max = int(os.environ.get("WORKER_IDLE_MAX_MIN", "60")) * 60
+            for _cf, _pf, _rid, _role in (
+                    ("fix_claimed", "fix_claimed_pid", f"__fix-{m['name']}-it{it['n']}", "fo"),
+                    ("retest_claimed", "retest_claimed_pid", f"__retest-{m['name']}-it{it['n']}", None)):
+                if not it.get(_cf):
+                    continue
+                _pid = it.get(_pf)
+                if not (_pid and pid_alive(_pid)):
+                    continue
+                _ldir = project_log_dir(project)
+                _cands = []
+                if os.path.isdir(_ldir):
+                    if _role:
+                        _one = os.path.join(_ldir, worker_log_name(project, _rid, 1, _role))
+                        _cands = [_one] if os.path.exists(_one) else []
+                    else:
+                        _cands = [os.path.join(_ldir, f) for f in os.listdir(_ldir)
+                                  if f.startswith(f"worker-{_rid}-r1-")]
+                try:
+                    _mt = max(os.path.getmtime(c) for c in _cands)
+                except ValueError:
+                    continue  # 无日志可判 → 跳过（不误杀）
+                if (time.time() - _mt) > _idle_max:
+                    try:
+                        os.kill(int(_pid), 9)
+                    except OSError:
+                        pass
+                    it[_cf] = False
+                    it.pop(_pf, None)
+                    it["failures"] = int(it.get("failures", 0)) + 1
+                    log(f"MODULE_IDLE_KILL {project}/{m['name']} iter-{it['n']} {_cf} 存活但 {_idle_max // 60} 分钟无输出 → 终止重置")
+                    alarms.append(f"模块 {m['name']} 迭代 {it['n']} worker 疑似卡死（{_idle_max // 60} 分钟无输出）已终止重置")
             # 评审 claim（design_reviewing SE 评审 / dev_reviewing MDE 检视）
             for rclaim, rpid in (("design_review_claimed", "design_review_claimed_pid"),
                                  ("review_claimed", "review_claimed_pid")):
@@ -2133,7 +2283,10 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                                 f"②修复必须在**真链运行路径**生效（UT 全绿 ≠ 闭环——UT 常只覆盖单路径而漏真链调用链）；③自证方式：核证复测方指出的调用点/常量/路径（如 L1366 调用点、WRITE_CHUNK_BYTES）确实已改；\n"
                                 f"④上一轮已被复测打回的，先读单末尾「复测记录」里的重申建议——**未落实即视为未修复**。\n"
                                 f"2. 每个修复完成执行：\\n{fix_cmds}\\n"
-                                f"3. 全部修复后无需汇报。"
+                                f"⚠️ 若某单根因**不在本模块**（或单不合理），**必须**执行 issue {project} reject <iid> <理由：根因模块+证据>（禁止沉默不标=空转、禁止硬改凑数=假修复）；修复须真正改码（issue fix 有证据校验；纯文档判定类用 --force <理由>）；\\n"
+                                f"3. **续跑提示**：单内若已有「修复记录/复测记录」（前轮处理痕迹），先读它避免重复劳动；"
+                                f"本轮只处理仍为 open 的单（已 fixed 的已不在清单，调度天然续跑）；被截断时调度会重新派发，无需从头分析。\\n"
+                                f"4. 全部修复后无需汇报。"
                             )
                             pid = spawn_worker("fo", f"{project}/__fix-{m['name']}-it{it['n']}", 1, query)
                             it["fix_claimed_pid"] = pid
@@ -2212,6 +2365,92 @@ def release_st_v2(project: str, version: str, product: str, conclusion: str) -> 
     return 0
 
 
+def _module_checks(project: str, module: str) -> list:
+    """模块静态锚定检查（P1-3，2026-09-11）：把复测方发现的"必须存在的调用点/常量上限"配置化为门禁。
+    触机=release_module it DONE（命令入口）；触发者=命令入口；兜底=拒绝登记（迭代不收口）。
+    配置：{work_path}/module_checks.json  形如
+      {"soc-sim": [{"file":"engine_worker.py","pattern":"poll_mem_watches|_diff_watch_callbacks",
+                    "min_count":2,"why":"SOCSIM-05"}, {...}]}
+    依据：SOCSIM-06 UT 用假监视器全绿但真链 503（WRITE_CHUNK_BYTES 仍 4096）；SOCSIM-05 UT 只覆盖单路径。"""
+    cfg_p = os.path.join(project_dir(project), "module_checks.json")
+    if not os.path.exists(cfg_p):
+        return []
+    try:
+        cfg = json.load(open(cfg_p, encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return [f"module_checks.json 解析失败：{e}"]
+    rules = cfg.get(module) or []
+    fails = []
+    base = os.path.join(project_dir(project), "code", module)
+    for r in rules:
+        rel = r.get("file", "")
+        target = None
+        for root, _dirs, files in os.walk(base):
+            if rel in files:
+                target = os.path.join(root, rel)
+        if target is None:
+            fails.append(f"找不到文件 {rel}（规则：{r.get('why', '')}）")
+            continue
+        txt = open(target, encoding="utf-8", errors="replace").read()
+        pat = r.get("pattern", "")
+        n = len(re.findall(pat, txt))
+        if r.get("min_count") is not None and n < int(r["min_count"]):
+            fails.append(f"{rel} 匹配 {pat!r} 次数 {n} < {r['min_count']}（{r.get('why', '')}）")
+        if r.get("max_value") is not None:
+            m = re.search(pat, txt)
+            if not m:
+                fails.append(f"{rel} 未匹配 {pat!r}")
+            else:
+                try:
+                    val = int(m.group(1))
+                    if val > int(r["max_value"]):
+                        fails.append(f"{rel} {pat} 当前值 {val} > 上限 {r['max_value']}（{r.get('why', '')}）")
+                except (IndexError, ValueError):
+                    fails.append(f"{rel} 规则 pattern 需含一个数字捕获组")
+    return fails
+
+
+def _mechanism_selftest(project: str) -> list:
+    """机制回归自检（P0-8，2026-09-11）：发布前机检结构不变式，返回失败项（空=通过）。
+    触机=release_qa DONE（命令入口）；触发者=命令入口；兜底=拒绝发布（QA_DONE 不落状态）。
+    依据：v1.0.0 期间 3 次"机制半通"（再激活未回 in_dev→静默停滞、st 无续跑、FO 上下文截断），
+    上线缺少强制回归环节。此自检把"触机三要素"里可机器判定的部分固化为发布门禁。"""
+    fails = []
+    try:
+        vd = read_versions(project)
+        md = read_modules(project)
+    except Exception as e:  # noqa: BLE001
+        return [f"状态文件读取失败：{e}"]
+    # ① 版本状态必须在可达性表内
+    for v in vd.get("versions", []):
+        s = v.get("status")
+        if s and s not in VERSION_FLOW:
+            fails.append(f"版本 {v['name']} 状态 {s} 不在可达性表（VERSION_FLOW）")
+    # ② 结构不变式：存在进行中迭代（非 it_passed/blocked）时版本必须 in_dev
+    busy = [f"{m['name']}/it{it['n']}={it.get('status')}" for m in md.get("modules", [])
+            for it in m.get("iterations", []) if it.get("status") not in ("it_passed", "blocked")]
+    for v in vd.get("versions", []):
+        if busy and v.get("status") in ("st", "st_pending", "st_done", "qa", "qa_reviewing"):
+            fails.append(f"不变式违反：版本 {v['name']}={v.get('status')} 但存在进行中迭代 {busy[:3]}")
+    # ③ 发布前提：ST 之后阶段的版本，全部模块迭代必须 it_passed
+    for v in vd.get("versions", []):
+        if v.get("status") not in ("st", "st_pending", "st_done", "qa", "qa_reviewing", "released"):
+            continue
+        notpass = [f"{m['name']}/it{it['n']}={it.get('status')}" for m in md.get("modules", [])
+                   for it in m.get("iterations", []) if it.get("status") != "it_passed"]
+        if notpass:
+            fails.append(f"版本 {v['name']} 存在未通过迭代：{notpass[:3]}")
+    # ④ 问题单状态合法：open/fixed 单必须已有归属（未裁决=绕过分单流程）
+    for iid in open_issues(project):
+        try:
+            c = open(_issue_path(project, iid), encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if not _issue_owner(c):
+            fails.append(f"问题单 {iid} 归属未裁决（未走 SE 分单流程）")
+    return fails
+
+
 def release_qa(project: str, version: str, product: str, conclusion: str) -> int:
     """QA 发布状态命令（v2 M5）：QA 产出 → release_qa {p} {v} {发布目录} DONE
     → qa_reviewing（等用户指南用户评审）；用户确认 → confirm_guide → released。"""
@@ -2234,6 +2473,13 @@ def release_qa(project: str, version: str, product: str, conclusion: str) -> int
             return 1
         v["release_pkg"] = norm_product(product)
         v["qa_claimed"] = False
+        # 机制回归门禁（P0-8）：发布前机检结构不变式，未通过则拒绝（不落 qa_reviewing）
+        _msf = _mechanism_selftest(project)
+        if _msf:
+            print("❌ 机制回归自检未通过，禁止 QA_DONE：\n  - " + "\n  - ".join(_msf), file=sys.stderr)
+            log(f"QA_SELFTEST_FAIL {project}/{version}: {_msf[:3]}")
+            return 1
+        log(f"QA_SELFTEST_OK {project}/{version}（机制回归通过）")
         v["status"] = "qa_reviewing"  # 用户指南等用户评审
         write_versions(project, vd)
         log(f"QA_DONE {project}/{version} pkg={v['release_pkg']}")
@@ -2377,6 +2623,21 @@ def release_st_case(project: str, version: str, product: str, conclusion: str) -
         if not os.path.exists(full):
             print(f"用例不存在: {full}", file=sys.stderr)
             return 1
+        if conclusion == "PASS":
+            # 判据可达性门禁（P1-9，2026-09-11）：用例文档须含「实现依据」字段——
+            # 判据必须数学可达并引用实现（字段/常量/语义）。依据：STB-03「RSS 首末增幅 ≤20%」对有界
+            # 环形缓冲（环未满必然增长）数学不可达，白判 FAIL 一轮。
+            try:
+                _doc = open(full, encoding="utf-8", errors="replace").read()
+            except OSError as e:
+                print(f"用例读取失败：{e}", file=sys.stderr)
+                return 1
+            if "实现依据" not in _doc:
+                print("❌ 判据可达性门禁未通过：用例文档缺少「实现依据」字段——"
+                      "每条判据须引用实现依据（具体字段/常量/语义），确保判据在实现语义下可达。"
+                      "（STB-03 教训：判据与实现语义脱节会误判 FAIL）", file=sys.stderr)
+                log(f"ST_CASE_GATE_FAIL {project}/{version}（缺实现依据）")
+                return 1
         v.setdefault("st_case_reviews", []).append(norm_product(product))
         v["st_case_passed"] = conclusion == "PASS"
         write_versions(project, vd)
@@ -3407,7 +3668,18 @@ def drain_alarms(new_alarms: list) -> str:
             lines += [l.strip() for l in f if l.strip()]
     with open(ALARM_FILE, "w", encoding="utf-8") as f:
         f.write("")
-    return "\n".join(lines)
+    # 告警分级（P2-5，2026-09-11）：ALERT=需人决策 / INFO=正常兜底噪音 / ·=其他
+    _ALERT_KW = ("blocked", "卡死", "停滞", "STUCK", "FAIL", "失败", "异常", "失控")
+    _INFO_KW = ("死亡已重置", "已重置", "补挂", "再激活", "启动", "进入", "闭环", "通过")
+    out = []
+    for l in lines:
+        if any(k in l for k in _ALERT_KW):
+            out.append("🔴 " + l)
+        elif any(k in l for k in _INFO_KW):
+            out.append("ℹ️ " + l)
+        else:
+            out.append("· " + l)
+    return "\n".join(out)
 
 
 def write_artifact(key: str, e: dict) -> None:
@@ -4653,6 +4925,17 @@ def diagnose() -> int:
         add("FAIL", "D17", "迭代/版本状态不自洽（进行中迭代要求版本 in_dev）: " + "; ".join(d17_bad[:3]))
     else:
         add("PASS", "D17", "迭代/版本状态自洽（有进行中迭代时版本在 in_dev）")
+
+    # D18 并发引擎实例检测（P1-7，2026-09-11）：4 vCPU 节点下多引擎并存会致 504 假失败（STO 实测）
+    try:
+        _psr = subprocess.run(["pgrep", "-fc", "renode.*--disable-xwt"], capture_output=True, text=True)
+        _neng = int((_psr.stdout or "0").strip() or 0)
+    except Exception:  # noqa: BLE001
+        _neng = 0
+    if _neng > 1:
+        add("WARN", "D18", f"检测到 {_neng} 个 renode 引擎实例并存——4 vCPU 节点多引擎并发易致 504 假失败，建议单实例串行")
+    else:
+        add("PASS", "D18", f"renode 引擎实例数正常（{_neng}）")
 
     print("== zteam 诊断报告 ==")
     for level, code, msg in rows:

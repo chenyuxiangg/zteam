@@ -167,6 +167,29 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 - **版本同步**：版本 released（confirm_guide）自动更新 latest_version（脚本守护）；
 - **zbot 必守**：/new 第一步执行 `project list`；用户未指定项目→提示默认项目；项目操作需用户确认后执行。
 
+## 机制设计与上线规范（2026-09-11，v1.0.0 复盘产出）
+
+**触机三要素（每个机制必须声明，缺一不可）**：**触发点**（命令入口 / tick 巡检 / 状态迁移 / 门禁）、
+**触发者**（调度器 / 命令入口 / worker）、**兜底**（没触发怎么办）。能挂命令入口或 tick 的，绝不依赖 AI 自觉。
+规范全文：`docs/mechanism-checklist.md`；问题与方案跟踪：`docs/issue-plans.md`。
+
+**本轮新增门禁/命令（v1.0.0 复盘后实施，均含真实验证）**：
+- `issue fix <iid>` **修复证据校验**：归属模块代码目录须有 mtime 晚于提单时间的文件，否则拒绝（防"标 fixed 不改码"假修复）；
+  纯文档判定/环境类用 `issue fix <iid> --force <理由>`（留审计 + 告警人工复核）；未裁决归属的单禁止 fix。
+- `issue reject <iid> <理由>` **FO 拒修通道**：根因不在本模块时显式退回 → 归属清空 → 自动重新 SE 裁决；
+  SE 复核后单内写 `归属复核：locked`，**FO 不得再拒**（≥2 次拒修告警）——堵"沉默不标 → 死循环空转"。
+- `release_module it DONE` **静态锚定门禁**：读 `{work_path}/module_checks.json`，校验"必须存在的调用点/常量上限"
+  （如 soc-sim：`_diff_watch_callbacks` 调用点 ≥2、`WRITE_CHUNK_BYTES ≤2048`）——把复测方发现固化为机器检查。
+- `release_st_case` / `release_module case` **判据可达性门禁**：用例文档须含「实现依据」字段，否则拒 PASS
+  （STB-03 教训：判据与实现语义脱节会误判 FAIL）。
+- `release_qa DONE` **机制回归门禁**：`_mechanism_selftest` 机检（版本状态合法 / 不变式 / 发布前提 / 单归属已裁决），失败则拒绝发布。
+- `diagnose` 新增 **D17**（迭代↔版本不变式）、**D18**（renode 引擎并发实例检测 → 504 假失败风险）。
+- **通知分级**：`drain_alarms` 输出带前缀（🔴 需人决策 / ℹ️ 正常兜底 / · 其他）。
+- **僵尸 worker 兜底**：进程存活但 worker 日志 >60 分钟无写入（`WORKER_IDLE_MAX_MIN` 可调）→ kill + 重置。
+
+**机制规则校准提示**：`module_checks.json` 规则须以**真实修复**为准（本次初版按复测方建议①写、实际修复为方案②变体
+→ 首次校验误报；应以修复后的代码特征为准）。
+
 ## 问题单归属与分单机制（2026-09-11，错挂根治）
 
 **背景**：问题单原无归属字段 → `release_module it` 把**项目级全部 open 单**挂进迭代 waiting → 错挂五连犯
