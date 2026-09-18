@@ -167,6 +167,29 @@ python3 scripts/statectl.py diagnose   # 15 项健康检查，任一 FAIL → �
 - **版本同步**：版本 released（confirm_guide）自动更新 latest_version（脚本守护）；
 - **zbot 必守**：/new 第一步执行 `project list`；用户未指定项目→提示默认项目；项目操作需用户确认后执行。
 
+## 发布物交付规范（2026-09-11 冷启动实测教训）
+
+**铁律：发布包必须过"用户视角冷启动验证"**——解包 → 照文档启动 → 健康检查 200。
+本地开发/ST 跑通 ≠ 发布包可用（依赖、配置、默认值都可能不同）。
+
+**实例（v1.0.0 踩坑）**：ST 用 `st_serve.py` 显式设 `renode_mode=subprocess` 跑通；
+而正式入口 `python3 -m web_api` 默认 `inprocess`（需 pythonnet/pyrenode3），发布包 `requirements.txt` 又没列
+→ 用户照指南 `./run.sh` 直接 `EngineBootError: pythonnet 未安装`（且 pyrenode3 未必在 PyPI 可得）。
+
+**引擎模式（semulate/soc-sim）**：
+- `SOC_SIM_RENODE_MODE=subprocess`（**推荐/默认**）：直接拉起 Renode 进程 + 监视器 socket，**无需额外依赖**
+- `inprocess`：需 `pythonnet` + `pyrenode3`
+
+**交付资产（项目侧 `packaging/`）**：
+- `start.sh` + `start.py`：一键启动（自动探测 Renode 路径 → 依赖自检 → subprocess 模式 → 127.0.0.1:8000）
+- `make_release.sh`：打包 = 自动收集各模块**最高迭代** → **依赖对齐校验**（AST 扫 import vs requirements）
+  → **冷启动门禁**（解包起服务 `/api/state` 须 200，否则中止出包）→ tar + SHA256SUMS
+- 打包脚本坑：**不要用宽泛 `pkill -f`** 停止验证服务（会匹配到会话自身命令行 → 自杀式 SIGTERM）；
+  用 pid 文件 + `pkill -P <pid>` 精确清理。
+
+**zteam 侧门禁**：`_mechanism_selftest` 检查 `release/{v}/` 的 `.tar.gz` + `SHA256SUMS` + 冷启动验证记录
+（挂 `release_qa DONE`，不满足拒绝发布）。
+
 ## 机制设计与上线规范（2026-09-11，v1.0.0 复盘产出）
 
 **触机三要素（每个机制必须声明，缺一不可）**：**触发点**（命令入口 / tick 巡检 / 状态迁移 / 门禁）、
