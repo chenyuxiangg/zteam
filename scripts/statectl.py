@@ -1540,7 +1540,7 @@ def _schedule_arch_te(project: str, vd: dict, st: dict, alarms: list) -> None:
                     f"   python3 {WORKDIR}/scripts/statectl.py module {project} iter <模块名> <迭代号,逗号分隔>（SE 排迭代计划）\n"
                     f"3. 输出功能模块分工表到 {product_path(out)}功能模块分工表.md（模块/职责/需求/依赖/迭代计划）；\n"
                     f"4. 运行 python3 {WORKDIR}/scripts/statectl.py release_arch {project} {v['name']} {out} DONE 完成状态更新；\n"
-                    f"5. 完成后无需汇报。"
+                    f"6. 完成后无需汇报。"
                 )
                 pid = spawn_worker("se", f"{project}/__arch{v['name']}", 1, query)
                 v["arch_claimed_pid"] = pid
@@ -2209,7 +2209,7 @@ def _schedule_module_iter(project: str, vd: dict, md: dict, st: dict, alarms: li
                             f"3. 用例评审通过后写测试代码并执行模块 IT，输出模块测试报告到 {product_path(out)}；发现缺陷提问题单（issue open）；\n"
                             f"4. 运行 python3 {WORKDIR}/scripts/statectl.py release_module {project} {m['name']} {it['n']} it {out} DONE 完成登记"
                             f"（该命令=**IT 执行完毕登记**：发现问题时也必须执行——系统据 open 问题单挂载 waiting 并启动修复链，非宣告通过；无 open 单则自动 it_passed。切勿因存在 open 问题单而跳过登记）；\n"
-                            f"5. 完成后无需汇报。"
+                            f"6. 完成后无需汇报。"
                         )
                         it["claimed"] = True
                         it["claimed_pid"] = 0
@@ -2453,7 +2453,9 @@ def _mechanism_selftest(project: str) -> list:
         for fn in files:
             if fn.endswith(".md"):
                 try:
-                    if "冷启动" in open(os.path.join(rel_dir, fn), encoding="utf-8", errors="replace").read():
+                    _txt = open(os.path.join(rel_dir, fn), encoding="utf-8", errors="replace").read()
+                    # 用户铁律：QA 回归必须基于全新（隔离）环境——记录须同时含两个锚点
+                    if "全新环境" in _txt and "冷启动" in _txt:
                         has_cold = True
                         break
                 except OSError:
@@ -2461,7 +2463,7 @@ def _mechanism_selftest(project: str) -> list:
         if not (has_pkg and has_sha):
             fails.append(f"版本 {v['name']} 发布物不完整（需 .tar.gz + SHA256SUMS——请用 packaging/make_release.sh 打包）")
         elif not has_cold:
-            fails.append(f"版本 {v['name']} 缺冷启动验证记录（release/{v['name']}/ 需含「冷启动」证据——"
+            fails.append(f"版本 {v['name']} 缺全新环境冷启动记录（release/{v['name']}/ 需含「全新环境」+「冷启动」证据——"
                          f"用 packaging/make_release.sh 的冷启动门禁生成）")
     # ④ 问题单状态合法：open/fixed 单必须已有归属（未裁决=绕过分单流程）
     for iid in open_issues(project):
@@ -2619,8 +2621,11 @@ def _schedule_st_qa(project: str, vd: dict, md: dict, st: dict, alarms: list) ->
                     f"任务：1. 评审测试报告（功能实现率/功能测试通过率/覆盖率）+ 检查安全红线；\n"
                     f"2. 编写用户指南到 {product_path(out)}用户指南.md；\n"
                     f"3. 按构建规则制作 release 发布包到 {product_path(out)}（含发布说明/SHA256SUMS/可用性自检）；\n"
-                    f"4. 运行 python3 {WORKDIR}/scripts/statectl.py release_qa {project} {v['name']} {out} DONE（进入用户指南用户评审）；\n"
-                    f"5. 完成后无需汇报。"
+                    f"4. ★【全新环境回归（强制）】：`mktemp -d` 建隔离目录 → 解包 tar.gz → 按 requirements.txt 在干净环境装依赖"
+                    f"（不得以开发/测试环境跑通为准）→ 严格按用户指南步骤启动 → 健康检查（/api/state 须 200）"
+                    f"→ 命令与输出写入 release 目录「可用性自检.md」，须含「全新环境」与「冷启动」证据；未通过必须修复后重跑；\\n"
+                    f"5. 运行 python3 {WORKDIR}/scripts/statectl.py release_qa {project} {v['name']} {out} DONE（进入用户指南用户评审）；\n"
+                    f"6. 完成后无需汇报。"
                 )
                 pid = spawn_worker("qa", f"{project}/__qa{v['name']}", 1, query)
                 v["qa_claimed_pid"] = pid
