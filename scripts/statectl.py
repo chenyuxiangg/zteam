@@ -2460,6 +2460,20 @@ def _mechanism_selftest(project: str) -> list:
                         break
                 except OSError:
                     pass
+        # 一键脚本三件套（用户要求：发包必须含一键安装/卸载）
+        _pkg = next((os.path.join(rel_dir, f) for f in files if f.endswith(".tar.gz")), None)
+        if _pkg:
+            try:
+                import tarfile
+                with tarfile.open(_pkg) as _tf:
+                    _names = {os.path.basename(n) for n in _tf.getnames()}
+                _need = {"install.sh", "uninstall.sh", "start.sh"}
+                _miss = sorted(_need - _names)
+                if _miss:
+                    fails.append(f"版本 {v['name']} 发布包缺少一键脚本：{_miss}"
+                                 f"（发包硬性要求：一键安装 install.sh / 一键卸载 uninstall.sh / 一键启动 start.sh）")
+            except Exception as _e:  # noqa: BLE001
+                fails.append(f"版本 {v['name']} 发布包读取失败：{_e}")
         if not (has_pkg and has_sha):
             fails.append(f"版本 {v['name']} 发布物不完整（需 .tar.gz + SHA256SUMS——请用 packaging/make_release.sh 打包）")
         elif not has_cold:
@@ -2620,7 +2634,7 @@ def _schedule_st_qa(project: str, vd: dict, md: dict, st: dict, alarms: list) ->
                     f"输入：架构设计 {v.get('architecture')}；ST 报告 {v.get('st_product')}；模块设计见模块目录。\n"
                     f"任务：1. 评审测试报告（功能实现率/功能测试通过率/覆盖率）+ 检查安全红线；\n"
                     f"2. 编写用户指南到 {product_path(out)}用户指南.md；\n"
-                    f"3. 按构建规则制作 release 发布包到 {product_path(out)}（含发布说明/SHA256SUMS/可用性自检）；\n"
+                    f"3. 按构建规则制作 release 发布包到 {product_path(out)}（含发布说明/SHA256SUMS/可用性自检），**包内必须含一键脚本三件套：install.sh（一键安装）/ uninstall.sh（一键卸载）/ start.sh（一键启动）**；\n"
                     f"4. ★【全新环境回归（强制）】：`mktemp -d` 建隔离目录 → 解包 tar.gz → 按 requirements.txt 在干净环境装依赖"
                     f"（不得以开发/测试环境跑通为准）→ 严格按用户指南步骤启动 → 健康检查（/api/state 须 200）"
                     f"→ 命令与输出写入 release 目录「可用性自检.md」，须含「全新环境」与「冷启动」证据；未通过必须修复后重跑；\\n"
