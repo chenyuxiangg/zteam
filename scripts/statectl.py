@@ -2440,6 +2440,29 @@ def _mechanism_selftest(project: str) -> list:
                    for it in m.get("iterations", []) if it.get("status") != "it_passed"]
         if notpass:
             fails.append(f"版本 {v['name']} 存在未通过迭代：{notpass[:3]}")
+    # ⑤ 发布物冷启动验证（P0-8 补充，2026-09-11）：防"发布包未冷启动验证"复发
+    #    依据：v1.0.0 首次发布包 requirements.txt 漏列 inprocess 依赖，用户照指南启动即 EngineBootError。
+    for v in vd.get("versions", []):
+        if v.get("status") not in ("qa", "qa_reviewing", "released"):
+            continue
+        rel_dir = os.path.join(project_dir(project), "release", v["name"])
+        files = os.listdir(rel_dir) if os.path.isdir(rel_dir) else []
+        has_pkg = any(f.endswith(".tar.gz") for f in files)
+        has_sha = "SHA256SUMS" in files
+        has_cold = False
+        for fn in files:
+            if fn.endswith(".md"):
+                try:
+                    if "冷启动" in open(os.path.join(rel_dir, fn), encoding="utf-8", errors="replace").read():
+                        has_cold = True
+                        break
+                except OSError:
+                    pass
+        if not (has_pkg and has_sha):
+            fails.append(f"版本 {v['name']} 发布物不完整（需 .tar.gz + SHA256SUMS——请用 packaging/make_release.sh 打包）")
+        elif not has_cold:
+            fails.append(f"版本 {v['name']} 缺冷启动验证记录（release/{v['name']}/ 需含「冷启动」证据——"
+                         f"用 packaging/make_release.sh 的冷启动门禁生成）")
     # ④ 问题单状态合法：open/fixed 单必须已有归属（未裁决=绕过分单流程）
     for iid in open_issues(project):
         try:
