@@ -2633,7 +2633,8 @@ def _schedule_st_qa(project: str, vd: dict, md: dict, st: dict, alarms: list) ->
                     f"你是本流水线的【QA（质量专员）】。严格遵循 {WORKDIR}/roles/qa.md 为项目 {project} 版本 {v['name']} 执行发布评审。\n"
                     f"输入：架构设计 {v.get('architecture')}；ST 报告 {v.get('st_product')}；模块设计见模块目录。\n"
                     f"任务：1. 评审测试报告（功能实现率/功能测试通过率/覆盖率）+ 检查安全红线；\n"
-                    f"2. 编写用户指南到 {product_path(out)}用户指南.md；\n"
+                    f"2. 编写用户指南到 {product_path(out)}用户指南.md（安装/卸载章节须指向包内一键脚本）；\n",
+                    f"2.5 打包含前端时：`install.sh` 的前端构建必须实际跑通（npm run build 含类型检查）；**包内不得混入 tests/ 或 *.test.ts**（会致 vue-tsc 失败、用户装不上）；\n"
                     f"3. 按构建规则制作 release 发布包到 {product_path(out)}（含发布说明/SHA256SUMS/可用性自检），**包内必须含一键脚本三件套：install.sh（一键安装）/ uninstall.sh（一键卸载）/ start.sh（一键启动）**；\n"
                     f"4. ★【全新环境回归（强制）】：`mktemp -d` 建隔离目录 → 解包 tar.gz → 按 requirements.txt 在干净环境装依赖"
                     f"（不得以开发/测试环境跑通为准）→ 严格按用户指南步骤启动 → 健康检查（/api/state 须 200）"
