@@ -37,7 +37,7 @@
 
 ## zbot 模型 / 认知排障（2026-08-13 实测）
 
-- **zbot 模型 = gateway channel_overrides per-channel**（gateway.json `platforms.telegram.channel_overrides.<chat_id>` 的 `model`/`provider` 字段，ChannelOverride 支持；优先级：session `/model` → channel_overrides → config.yaml default）；bot_config.py install 已注入 `model=deepseek-v4-flash, provider=deepseek`；**不动 config.yaml 全局 default**；
+- **zbot 模型 = gateway channel_overrides per-channel**（gateway.json `platforms.telegram.channel_overrides.<chat_id>` 的 `model`/`provider` 字段，ChannelOverride 支持；优先级：session `/model` → channel_overrides → config.yaml default）；bot_config.py install 已注入 `model=deepseek-flash, provider=deepseek`；**不动 config.yaml 全局 default**；
 - **session DB 是模型/认知的铁证**：`~/.hermes/state.db` 表 `sessions` 的 `model`/`system_prompt` 字段（按 chat_id 查最新行）——**zbot 自报模型不可信**（它被问时读 config.yaml 的 default 自报，如报 minimax-m3 但实际是 flash）；验证实际模型查 session DB，不要信自报；
 - **zbot 认知旧（还提分析师/方案设计者等旧角色）**：system_prompt 是每轮动态加载的（`_get_system_prompt_for_channel`），注入新 bot.md 后**旧会话历史上下文仍会覆盖新认知** → 让用户给 zbot 发 `/new`（或 `/reset`）重置会话（`_handle_reset_command`）即加载新认知；
 - **改 bot.md 后**：`python3 scripts/bot_config.py install` 注入（system_prompt 动态加载无需重启；改 model 需重启 gateway）；**配套步骤 = 提醒用户 /new**；
