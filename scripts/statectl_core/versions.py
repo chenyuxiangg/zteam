@@ -16,7 +16,7 @@ import re
 import sys
 
 from . import paths as _paths
-from .paths import WORKDIR, now_iso, project_dir, rel_artifact, split_key
+from .paths import WORKDIR, now_iso, project_dir, read_projects, rel_artifact, split_key, write_projects
 from .pipeline import norm_product, product_path, spawn_worker
 from .status import (
     acquire_lock,
@@ -32,7 +32,7 @@ __all__ = [
     "_parse_req_meta", "advance_versions",
     "_it_inputs", "_schedule_it_st", "_advance_v2",
     "release_it", "release_st",
-    "cmd_confirm", "cmd_reject",
+    "cmd_confirm", "cmd_reject", "_sync_project_version",
 ]
 
 VERSIONS_FILE = "versions.json"
@@ -194,11 +194,12 @@ def advance_current(project: str) -> str:
 
 
 def write_versions(project: str, vd: dict) -> None:
-    os.makedirs(project_dir(project), exist_ok=True)
-    tmp = versions_path(project) + ".tmp"
+    p = versions_path(project)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(vd, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, versions_path(project))
+    os.replace(tmp, p)
 
 
 def _parse_req_meta(path: str) -> dict:
@@ -407,6 +408,16 @@ def cmd_confirm(rid: str) -> int:
         write_status(st)
         log(f"USER_CONFIRM {rid} -> approved (规格锁定)")
     return 0
+
+
+def _sync_project_version(project: str, version: str) -> None:
+    """版本 released → 更新项目映射表 latest_version（脚本守护，AI 不自保证）。"""
+    pj = read_projects()
+    p = next((x for x in pj.get("projects", []) if x["name"] == project), None)
+    if p:
+        p["latest_version"] = version
+        write_projects(pj)
+        log(f"PROJECT_VERSION {project} -> {version}")
 
 
 def cmd_reject(rid: str, reason: str) -> int:
