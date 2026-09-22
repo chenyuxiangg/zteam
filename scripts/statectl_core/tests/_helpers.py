@@ -26,8 +26,9 @@ from typing import Any, Iterable
 # Ensure `scripts/` is on sys.path so both `import statectl` (CLI shim) and
 # `import statectl_core` resolve when tests are launched via
 # `python3 -m unittest` from any cwd.
+#   helpers.py → tests/ → statectl_core/ → scripts/  (三层 dirname)
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_SCRIPTS = os.path.dirname(os.path.dirname(_HERE))
+_SCRIPTS = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 

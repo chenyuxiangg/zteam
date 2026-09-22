@@ -40,6 +40,8 @@ __all__ = [
     # 相对路径工具
     "rel_input", "rel_analysis", "rel_review", "rel_artifact",
     "rel_stage_product", "rel_stage_review", "worker_log_name",
+    # 绝对路径工具
+    "abs_input", "abs_artifact",
     # 时间
     "now_iso",
 ]
@@ -161,3 +163,13 @@ def rel_stage_review(cfg: dict, project: str, rid: str, n: int) -> str:
 def worker_log_name(project: str, rid: str, n: int, role: str = None) -> str:
     """worker 日志名（含角色，排查不再混写）：worker-{rid}-r{n}-{role}.log。"""
     return f"worker-{rid}-r{n}" + (f"-{role}" if role else "") + ".log"
+
+
+def abs_input(project: str, rid: str) -> str:
+    """需求输入文件绝对路径（解耦后查表）。"""
+    return os.path.join(project_dir(project), "input", rid + ".md")
+
+
+def abs_artifact(project: str, rid: str) -> str:
+    """归档文件绝对路径（解耦后查表）。"""
+    return os.path.join(project_dir(project), "artifacts", rid + ".md")
