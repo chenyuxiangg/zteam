@@ -21,6 +21,7 @@ STATUS_FILE = os.path.join(WORKSPACE_DIR, "status.json")     # 兼容引用（�
 LOCK_FILE = os.path.join(WORKDIR, "status.lock")             # 全局锁（映射表/register）
 LOG_FILE = os.path.join(LOG_DIR, "pipeline.log")
 ALARM_FILE = os.path.join(LOG_DIR, "alarms.txt")
+QUOTA_SCRIPT = os.path.join(_SCRIPTS_DIR, "check_minimax_quota.py")
 
 DEFAULT_PROJECT = "default"                                  # 未指定项目时的兜底
 PROJECTS_FILE = os.path.join(WORKDIR, "projects.json")       # 项目映射表唯一真理源

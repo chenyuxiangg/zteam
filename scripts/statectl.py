@@ -48,6 +48,8 @@ from statectl_core.qa import (
     release_st_case as release_st_case_impl,
 )
 from statectl_core.versions import _sync_project_version as _sync_project_version_impl
+from statectl_core.ticks import quota_tick as quota_tick_impl, _format_beijing, _parse_zlog_message
+from statectl_core.diagnose import diagnose as diagnose_impl
 
 # ---------------- 路径与常量 ----------------
 
@@ -2917,6 +2919,8 @@ def _parse_zlog_message(line: str) -> str:
 
 
 def quota_tick() -> int:
+    # ↑ 已迁移 statectl_core.ticks（commit 5 兼容 shim）
+    return quota_tick_impl()
     """调用 check_minimax_quota.py，根据退出码生成告警；脚本不可用或调用失败时静默（避免与上游重复告警）。
 
     退出码语义（脚本约定）：
@@ -3656,8 +3660,8 @@ def _sh(args, timeout=15) -> str:
 
 
 def diagnose() -> int:
-    """一键健康检查（DFx 落地）。任一 FAIL → 退出码 1。详细排查见 docs/troubleshooting.md。"""
-    rows = []
+    # ↑ 已迁移 statectl_core.diagnose（commit 5 兼容 shim）
+    return diagnose_impl()
 
     def add(level, code, msg):
         rows.append((level, code, msg))
