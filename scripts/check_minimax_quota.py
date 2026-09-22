@@ -15,16 +15,30 @@
   2 = 严重受限（5h 窗口 < 10% 或 status=受限）→ 暂停流水线
   3 = 调用失败（凭据/网络/格式）
 
-用 --quiet 只输出关键结论（脚本/CI 友好）。
+输出模式（全部走 zlog 管式分隔）：
+  默认 verbose   → 状态到 stdout、错误到 stderr
+  --quiet         → stdout 静默、错误到 stderr（statectl 调用此模式）
+  --json          → stdout 为一条 zlog INFO 行，message 字段是单行 JSON
+                    （statectl.quota_tick 通过 split('|', 5) 解析 message）
+
+Logger 配置走 zlog 懒加载机制：
+  scripts/zlog/config/check_minimax_quota.json 声明本脚本的两个 logger。
+  首次 ``get_logger(...)`` 时自动加载，后续零 IO。
 """
 import argparse
 import json
-import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
+
+from zlog import get_logger
+
+# Lazy init: get_logger will load scripts/zlog/config/check_minimax_quota.json
+# on first call. No explicit setup required.
+log = get_logger("check_minimax_quota")
+err = get_logger("check_minimax_quota.err")
 
 ENV_FILE = Path.home() / ".hermes" / ".env"
 URL = "https://www.minimaxi.com/v1/token_plan/remains"
@@ -85,49 +99,71 @@ def format_beijing(ts_ms: int) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="minimax 套餐余额查询")
     parser.add_argument("--quiet", "-q", action="store_true", help="只输出关键结论")
-    parser.add_argument("--json", action="store_true", help="原始 JSON 输出")
+    parser.add_argument("--json", action="store_true", help="通过 zlog 输出一条 JSON 行")
     args = parser.parse_args()
+
+    if args.quiet:
+        # Drop everything below ERROR so stdout is silent for status.
+        # Errors still flow through check_minimax_quota.err (stderr).
+        log.set_level("ERROR")
 
     api_key = get_api_key()
     if not api_key:
-        print("ERROR: ~/.hermes/.env 缺少 MINIMAX_CN_API_KEY", file=sys.stderr)
+        err.error(
+            "missing MINIMAX_CN_API_KEY in ~/.hermes/.env",
+            event="missing_credentials",
+        )
         return 3
 
     try:
         data = fetch_quota(api_key)
     except (HTTPError, URLError) as e:
-        print(f"ERROR: 调用失败 — {e}", file=sys.stderr)
+        err.error("fetch failed", event="fetch_failed", error=str(e))
         return 3
     except Exception as e:
-        print(f"ERROR: 未知错误 — {e}", file=sys.stderr)
+        err.error("unknown error during fetch", event="unknown_error", error=str(e))
         return 3
 
     if data.get("base_resp", {}).get("status_code") != 0:
-        print(f"ERROR: API 返回非成功 — {data}", file=sys.stderr)
+        err.error("API returned non-success", event="api_error")
         return 3
 
     if args.json:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-        return 0
+        # One-line JSON in the message slot; statectl parses via split("|", 5)[4].
+        one_line = json.dumps(data, ensure_ascii=False)
+        log.info(one_line, event="json_dumped", bytes=len(one_line))
+        general = find_general(data)
+        if general is None:
+            return 3
+        return judge(general)[0]
 
     general = find_general(data)
     if not general:
-        print("ERROR: 返回数据中找不到 model_name=general 的记录", file=sys.stderr)
+        err.error(
+            "model_name=general not found in response",
+            event="malformed_response",
+        )
         return 3
 
     code, verdict = judge(general)
     reset_beijing = format_beijing(general.get("end_time", 0))
 
     if args.quiet:
-        print(f"{code} {verdict}")
+        # stdout silent via set_level above; verdict still lives in trail.
+        log.info("quota verdict", event="quota_verdict", code=code, verdict=verdict)
         return code
 
-    print(f"5h 窗口剩余: {general.get('current_interval_remaining_percent', 0)}% "
-          f"(状态码 {general.get('current_interval_status')})")
-    print(f"周配额剩余:   {general.get('current_weekly_remaining_percent', 0)}% "
-          f"(状态码 {general.get('current_weekly_status')})")
-    print(f"5h 窗口重置: {reset_beijing} (北京时间)")
-    print(f"判定: {verdict}")
+    log.info(
+        "quota status",
+        event="quota_status",
+        interval_pct=general.get("current_interval_remaining_percent", 0),
+        interval_status=general.get("current_interval_status"),
+        weekly_pct=general.get("current_weekly_remaining_percent", 0),
+        weekly_status=general.get("current_weekly_status"),
+        reset_at=reset_beijing,
+        code=code,
+        verdict=verdict,
+    )
     return code
 
 

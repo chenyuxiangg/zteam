@@ -4041,6 +4041,21 @@ def _format_beijing(ts_ms: int) -> str:
     return (datetime.utcfromtimestamp(ts_ms / 1000) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _parse_zlog_message(line: str) -> str:
+    """Extract the message field from a pipe-delimited zlog line.
+
+    Format: ``{ts}|{level_name:8}|{func}:{lineno}|{role:10}|{message}|{kv}``
+
+    Returns the message portion (parts[4]) or raises ValueError if the
+    line is malformed. Use with subprocess stdout that is known to be a
+    single zlog record.
+    """
+    parts = line.rstrip("\n").split("|", 5)
+    if len(parts) != 6:
+        raise ValueError(f"unexpected zlog line shape: {line!r}")
+    return parts[4]
+
+
 def quota_tick() -> int:
     """调用 check_minimax_quota.py，根据退出码生成告警；脚本不可用或调用失败时静默（避免与上游重复告警）。
 
@@ -4063,9 +4078,12 @@ def quota_tick() -> int:
         # 调用失败：静默（凭据可能没配，不刷屏）
         return 0
     # code 1 (紧张) 或 2 (严重受限)：解析 JSON 取关键数值
+    # stdout 是一行 zlog pipe 格式：ts|level|func:lineno|role|message|kv
+    # JSON payload 在 message 字段（parts[4]）
     try:
         import json as _json
-        data = _json.loads(r.stdout)
+        message = _parse_zlog_message(r.stdout)
+        data = _json.loads(message)
         general = next((m for m in data.get("model_remains", []) if m.get("model_name") == "general"), None)
     except Exception:
         general = None
