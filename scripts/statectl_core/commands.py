@@ -108,7 +108,7 @@ __all__ = [
     "cmd_register", "cmd_stale", "cmd_next", "cmd_claim", "cmd_setpid",
     "cmd_rollback", "cmd_record_product", "cmd_requeue", "cmd_set_status",
     "cmd_resume", "cmd_list", "cmd_get", "cmd_notify",
-    "cmd_halt", "cmd_unhalt",
+    "cmd_halt", "cmd_unhalt", "cmd_help",
     # 私有 helper
     "_find_block_stage", "_spec_summary", "_stage_order",
     # 入口
@@ -481,6 +481,74 @@ def cmd_notify() -> int:
 
 # ---------------- 入口 ----------------
 
+_HELP_TEXT = """\
+zteam 流水线状态机 CLI（commit 6+ · 5 行 shim）
+
+用法：python3 scripts/statectl.py <子命令> [参数...]
+
+┌─ tick（cron no_agent 触发）──────────────────────────────
+│  analyst_tick                 调度（与 worker_tick 同质）
+│  reviewer_tick                调度（与 worker_tick 同质）
+│  worker_tick                  主调度（项目锁 + claim + spawn）
+│  weekly_tick                  周度审计（归档/未登记/blocked 巡检）
+│  quota_tick                   minimax 配额巡检（5h 窗口 + 周配额）
+├─ 下半部 release_*（worker 完成产物后回调）────────────────
+│  release_analyze <rid> <product>
+│  release_review  <rid> <product> <PASS|FAIL>
+│  release_stage_design  <rid> <stage> <product>
+│  release_stage_review  <rid> <stage> <product> <PASS|FAIL>
+│  release_gate  <rid> <stage> <product> <PASS|FAIL>
+│  release_release  <rid> <product>
+│  release_it  <project> <version> <iter> <product> <DONE>
+│  release_st  <project> <version> <product> <DONE>
+│  release_arch  <project> <version> <product> <DONE>
+│  release_testplan_v2  <project> <version> <product> <DONE>
+│  release_module  <project> <module> <iter> <action> <product> <DONE>
+│  release_qa  <project> <version> <product> <DONE>
+│  release_st_v2  <project> <version> <product> <DONE>
+│  release_st_case  <project> <version> <product> <DONE>
+├─ 人工/调试 ──────────────────────────────────────────────
+│  register                      扫描 input/ 注册新需求
+│  stale                         stale 兜底（worker 失联 → 回滚/推进）
+│  next [role]                   看下一个可认领需求
+│  claim  <rid> <role>           手动认领
+│  setpid <rid> <pid>            手动设置 worker_pid
+│  rollback <rid> [reason]       回滚到上一阶段
+│  requeue <rid>                 从 block 阶段重跑（保留 done 阶段）
+│  record_product <rid> <stage> <product>
+│  set_status <rid> <stage> <state> [product]
+│                                state ∈ working|reviewing|done
+│  resume <rid> <stage> <phase>  phase ∈ designing|reviewing|gating|releasing|done
+│  list                          列出所有需求
+│  get <rid>                     打印需求完整 JSON
+│  halt [reason]                 暂停流水线调度
+│  unhalt                        恢复流水线调度
+│  notify                        推送评审/结果通知（cron 用）
+├─ 版本/项目/模块 ─────────────────────────────────────────
+│  versions [project]            版本聚合视图
+│  project list|info|add|setpath|default|rm ...
+│  assign <rid> version=v1 [iteration=2] [depends_on=a,b]
+│  unblock <project> <version>   解阻 blocked 版本
+│  module <project> <action> ... 模块管理（list/show/add/...）
+│  issue <project> <action> ...  issue 管理
+│  change_request <rid> modify|remove <desc>
+│  confirm <rid>                 用户确认需求规格
+│  reject <rid> <reason>         用户驳回需求规格
+│  confirm_guide <project> <version>
+│  reject_guide <project> <version> <reason>
+├─ 诊断 ───────────────────────────────────────────────────
+│  diagnose                      一键健康检查
+└──────────────────────────────────────────────────────────
+退出码：0=成功 / 1=运行错 / 2=参数错或未知子命令
+"""
+
+
+def cmd_help() -> int:
+    """打印 CLI 帮助（人类可读版）。"""
+    print(_HELP_TEXT, end="")
+    return 0
+
+
 def main(argv) -> int:
     """CLI 入口（commit 6：本地化形态）。
 
@@ -488,8 +556,9 @@ def main(argv) -> int:
     错误处理：IndexError/ValueError → 2（参数错），RuntimeError → 1（运行错），其他异常冒泡。
     """
     if not argv:
-        print(__doc__)
-        return 0
+        return cmd_help()
+    if argv == ["help"] or argv == ["--help"] or argv == ["-h"]:
+        return cmd_help()
     cmd, *rest = argv
     try:
         if cmd == "analyst_tick":
@@ -585,7 +654,10 @@ def main(argv) -> int:
             return cmd_list()
         if cmd == "get":
             return cmd_get(rest[0])
-        print(f"未知子命令: {cmd}\n{__doc__}", file=sys.stderr)
+        if cmd == "help":
+            return cmd_help()
+        print(f"未知子命令: {cmd}", file=sys.stderr)
+        cmd_help()
         return 2
     except (IndexError, ValueError) as exc:
         print(f"{cmd} 参数错误: {exc}", file=sys.stderr)

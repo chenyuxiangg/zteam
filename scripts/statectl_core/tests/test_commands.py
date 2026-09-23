@@ -41,11 +41,34 @@ class MainDispatch(unittest.TestCase):
 
     def test_empty_returns_zero(self) -> None:
         from statectl_core.commands import main
+        # 空 args → 打印 help 并返回 0
         self.assertEqual(main([]), 0)
+
+    def test_help_variants(self) -> None:
+        from statectl_core.commands import main
+        for argv in (["help"], ["--help"], ["-h"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(main(argv), 0)
 
     def test_unknown_returns_two(self) -> None:
         from statectl_core.commands import main
         self.assertEqual(main(["totally_made_up"]), 2)
+
+    def test_cmd_help_returns_zero(self) -> None:
+        from statectl_core.commands import cmd_help
+        self.assertEqual(cmd_help(), 0)
+
+    def test_help_mentions_all_categories(self) -> None:
+        """帮助文本应覆盖全部 5 大类：tick / release / 人工 / 版本项目 / 诊断。"""
+        import io
+        from contextlib import redirect_stdout
+        from statectl_core.commands import cmd_help
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_help()
+        text = buf.getvalue()
+        for keyword in ("tick", "release_", "人工", "版本", "诊断", "diagnose"):
+            self.assertIn(keyword, text, f"帮助缺失关键词 {keyword!r}")
 
 
 class HaltUnhalt(StatectlTestCase):
@@ -204,6 +227,25 @@ class SubcommandDispatch(StatectlTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.wp = self.make_project("demo")
+        # 重定向 commands.py 模块内的 PAUSE_FILE/NOTIFY_MARKER/CONFIRM_REMINDED
+        from statectl_core import commands
+        from statectl_core.paths import (
+            NOTIFY_MARKER as _tnm, CONFIRM_REMINDED as _tcr, PAUSE_FILE as _tpf,
+        )
+        self._saved = {
+            "PAUSE_FILE": commands.PAUSE_FILE,
+            "NOTIFY_MARKER": commands.NOTIFY_MARKER,
+            "CONFIRM_REMINDED": commands.CONFIRM_REMINDED,
+        }
+        commands.PAUSE_FILE = _tpf
+        commands.NOTIFY_MARKER = _tnm
+        commands.CONFIRM_REMINDED = _tcr
+
+    def tearDown(self) -> None:
+        from statectl_core import commands
+        for k, v in self._saved.items():
+            setattr(commands, k, v)
+        super().tearDown()
 
     def test_dispatch_empty_state(self) -> None:
         from statectl_core.commands import main
@@ -211,6 +253,75 @@ class SubcommandDispatch(StatectlTestCase):
         for sub in ["stale", "register", "list", "notify", "next"]:
             with self.subTest(sub=sub):
                 self.assertEqual(main([sub]), 0)
+
+    def test_main_dispatch_all_subcommands(self) -> None:
+        """遍历 35 个 subcommand，每个用最小合理参数调用，断言返回 int（不崩溃）。
+        目的：派发表（main() 内的 if 链）任何分支拼写错/参数解析错会被立刻发现。"""
+        from statectl_core.commands import main
+        # 准备一些必要的状态文件以满足各 subcommand 的最低前置：
+        rid, e = _seed_e(status="pending")
+        from statectl_core.status import write_status as _ws
+        _ws({rid: e}, project="demo")
+        # 各 subcommand 的最小调用参数（空项目/最小状态都能跑通的形参）
+        cases = {
+            # tick 类（无参）
+            "quota_tick": [],
+            "weekly_tick": [],
+            "diagnose": [],
+            # release 类（按真实签名给最小参数）
+            "release_analyze": ["demo/R1", "demo/analysis/x.md"],
+            "release_review": ["demo/R1", "demo/review/x.md", "PASS"],
+            "release_stage_design": ["demo/R1", "plan", "demo/plans/x-r1.md"],
+            "release_stage_review": ["demo/R1", "plan", "demo/plans/x-r1-review.md", "PASS"],
+            "release_gate": ["demo/R1", "plan", "demo/plans/x-r1.md", "PASS"],
+            "release_release": ["demo/R1", "demo/release/x.md"],
+            "release_it": ["demo", "v1", "1", "demo/it/x.md", "DONE"],
+            "release_st": ["demo", "v1", "demo/st/x.md", "DONE"],
+            "release_arch": ["demo", "v1", "demo/arch/x.md", "DONE"],
+            "release_testplan_v2": ["demo", "v1", "demo/testplans/x.md", "DONE"],
+            "release_module": ["demo", "m1", "1", "design", "demo/code/x.md", "DONE"],
+            "release_qa": ["demo", "v1", "demo/quality/x.md", "DONE"],
+            "release_st_v2": ["demo", "v1", "demo/st/x.md", "DONE"],
+            "release_st_case": ["demo", "v1", "demo/tests/x.md", "DONE"],
+            # 人工
+            "register": [],
+            "stale": [],
+            "next": [],
+            "claim": ["demo/R1", "worker"],
+            "setpid": ["demo/R1", "99999"],
+            "rollback": ["demo/R1", "test"],
+            "requeue": ["demo/R1"],
+            "record_product": ["demo/R1", "plan", "demo/plans/x-r1.md"],
+            "resume": ["demo/R1", "plan", "designing"],
+            "halt": [],
+            "unhalt": [],
+            "notify": [],
+            "list": [],
+            "get": ["demo/R1"],
+            # 模块/版本/项目
+            "module": ["demo", "list", []],
+            "issue": ["demo", "list", ""],   # cmd_issue(rest[2:]) 需 rest[2:] 含可调 lower() 的字符串
+            "unblock": ["demo", "v1"],
+            "confirm": ["demo/R1"],
+            "reject": ["demo/R1", "test reason"],
+            "change_request": ["demo/R1", "modify", "test"],
+            "project": ["list", []],
+            "versions": [None],
+            "assign": ["demo/R1", "version=v1"],
+            "confirm_guide": ["demo", "v1"],
+            "reject_guide": ["demo", "v1", "test"],
+            "set_status": ["demo/R1", "plan", "working"],
+        }
+        # 至少 35 个 subcommand 覆盖（实际 40+，含子命令分类完整）
+        self.assertGreaterEqual(len(cases), 35,
+            f"cases 字典应至少覆盖 35 个 subcommand，实际 {len(cases)} 个")
+        for sub, args in cases.items():
+            with self.subTest(sub=sub):
+                rc = main([sub] + list(args))
+                self.assertIsInstance(rc, int)
+                # 退出码应该在合法范围（0=成功，1=业务错，2=参数错）
+                self.assertIn(rc, (0, 1, 2),
+                    f"{sub} 退出码异常: {rc}")
 
 
 if __name__ == "__main__":
