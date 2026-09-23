@@ -15,12 +15,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import time
 from datetime import datetime, timezone
 
 from . import paths as _paths
-from . import status as _status
 from .model_config import (
     ANALYST_MODEL,
     ANALYST_PROVIDER,
@@ -54,7 +52,7 @@ __all__ = [
     # 流转
     "stage_cfg", "stage_after", "next_action",
     # 阶段四态机
-    "new_stages", "ensure_stages", "_stage_state",
+    "new_stages", "ensure_stages",
     "norm_product", "product_path",
     "set_stage_state", "prev_done_state",
     "rollback_entry", "stale_recovery",
@@ -227,12 +225,6 @@ def ensure_stages(e: dict) -> dict:
     s.setdefault("state_since", None)
     s.setdefault("timeline", [])
     return e["stages"]
-
-
-def _stage_state(st, rid, stage):
-    e = st.get(rid)
-    if not e:
-        return None
 
 
 def norm_product(p: str) -> str:

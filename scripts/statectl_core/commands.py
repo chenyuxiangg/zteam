@@ -23,10 +23,7 @@ import sys
 
 from .diagnose import diagnose
 from .issues import cmd_issue
-from .model_config import DEFAULT_MAX_ROUNDS
 from .modules import (
-    MODULE_TYPES,
-    _module_unblock,
     cmd_module,
     release_module,
     release_st_v2,
@@ -39,7 +36,6 @@ from .paths import (
     PAUSE_FILE,
     WORKDIR,
     WORKSPACE_DIR,
-    abs_artifact,
     now_iso,
     project_dir,
     read_projects,
@@ -50,6 +46,9 @@ from .paths import (
 from .pipeline import (
     MID_STATES,
     STAGES,
+    _find_block_stage,
+    _stage_order,
+    claim,
     ensure_stages,
     find_claimable,
     norm_product,
@@ -151,7 +150,6 @@ def cmd_next(role: str = None) -> int:
 
 
 def cmd_claim(rid: str, role: str) -> int:
-    from .pipeline import claim
     with acquire_lock() as _:
         st = read_status()
         ok = claim(st, rid, role)
@@ -207,31 +205,6 @@ def cmd_record_product(rid: str, stage: str, product: str) -> int:
         write_status(st)
         log(f"RECORD_PRODUCT {rid} {stage} product={s['product']} (manual)")
     return 0
-
-
-def _stage_order() -> list:
-    """阶段链顺序（含需求阶段）：req → plan → testplan → code → test → quality → security → release。"""
-    return ["req"] + [s["name"] for s in STAGES] + [g["name"] for g in __import__("statectl_core.pipeline", fromlist=["GATES"]).GATES] + [__import__("statectl_core.pipeline", fromlist=["RELEASE"]).RELEASE["name"]]
-
-
-def _find_block_stage(e: dict):
-    """找 block/中断发生阶段：stages 中第一个 state != done 的阶段。
-    该阶段及其后续需重做；之前的阶段已通过（done），产物与结论复用。
-    req 阶段特殊处理：顶层状态已越过需求阶段（approved/released/任一阶段态）即视为 req 已通过，
-    不依赖 stages.req.state 完整性（存量数据/评审路径可能不写 req 四态——曾致 requeue 兜底回 req 全链重跑）。
-    返回阶段名；stages 缺失/全 done 时返回 None（兜底全链重跑）。"""
-    stages = e.get("stages") or {}
-    s = e.get("status", "")
-    req_passed = (s in ("approved", "released")
-                  or s.startswith(("plan_", "testplan_", "code_", "test_",
-                                   "quality_", "security_", "release_", "releasing")))
-    for name in _stage_order():
-        if name == "req" and req_passed:
-            continue
-        stg = stages.get(name) or {}
-        if stg.get("state") != "done":
-            return name
-    return None
 
 
 def cmd_requeue(rid: str) -> int:

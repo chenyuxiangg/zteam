@@ -78,6 +78,16 @@ _KNOWN_DUPLICATES = [
 ]
 
 
+def _def_defined_in(mod, attr: str) -> bool:
+    """检查 attr 是否在 mod 中以 def 形式定义（而非仅通过 import 暴露）。"""
+    import inspect
+    obj = getattr(mod, attr, None)
+    if obj is None:
+        return False
+    # 如果是从其它模块 import 来的，__module__ != 当前模块
+    return getattr(obj, "__module__", None) == mod.__name__
+
+
 class TestNoDuplicateDefinitions(unittest.TestCase):
     """重复定义合并安全网：每个名字只有 live 位置还持有 def，dead 位置必须已删。"""
 
@@ -86,8 +96,8 @@ class TestNoDuplicateDefinitions(unittest.TestCase):
             with self.subTest(name=name, location="live"):
                 mod = importlib.import_module(f"statectl_core.{live_mod}")
                 self.assertTrue(
-                    hasattr(mod, live_attr),
-                    f"live 实现 statectl_core.{live_mod}.{live_attr} 不存在",
+                    _def_defined_in(mod, live_attr),
+                    f"live 实现 statectl_core.{live_mod}.{live_attr} 未以 def 形式定义",
                 )
 
     def test_dead_locations_removed(self) -> None:
@@ -95,8 +105,8 @@ class TestNoDuplicateDefinitions(unittest.TestCase):
             with self.subTest(name=name, location="dead"):
                 mod = importlib.import_module(f"statectl_core.{dead_mod}")
                 self.assertFalse(
-                    hasattr(mod, dead_attr),
-                    f"dead 副本 statectl_core.{dead_mod}.{dead_attr} 应已被删除",
+                    _def_defined_in(mod, dead_attr),
+                    f"dead 副本 statectl_core.{dead_mod}.{dead_attr} 仍以 def 形式定义",
                 )
 
     def test_duplicate_constants_removed(self) -> None:

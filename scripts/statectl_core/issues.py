@@ -40,7 +40,6 @@ __all__ = [
     "_issue_reporter", "_issue_path_reporter", "_issue_owner_locked",
     "_issue_brief_for_fix", "_issue_path_owner",
     "cmd_issue", "open_issues",
-    "release_arch", "release_testplan_v2",
     "_arch_inputs", "_schedule_arch_te",
 ]
 
@@ -415,99 +414,6 @@ def open_issues(project: str) -> list:
         if _issue_status(content) in ("open", "fixed"):
             out.append(f[:-3])
     return out
-
-
-def release_arch(project: str, version: str, product: str, conclusion: str) -> int:
-    """架构阶段状态命令（v2）：
-    SE 产出完成：release_arch {project} {version} {产物目录} DONE → arch_reviewing（等 PM 评审）
-    PM 评审：    release_arch {project} {version} {评审意见} PASS|FAIL → PASS: testplan（TE 启动）/ FAIL: arch 重做"""
-    conclusion = conclusion.strip().upper()
-    with acquire_lock() as _:
-        vd = read_versions(project)
-        v = next((x for x in vd["versions"] if x["name"] == version), None)
-        if not v:
-            print(f"版本 {version} 不存在", file=sys.stderr)
-            return 1
-        if conclusion == "DONE":
-            if v.get("status") != "arch":
-                print(f"版本状态非 arch（当前 {v.get('status')}）", file=sys.stderr)
-                return 1
-            full = product_path(product)
-            if not os.path.exists(full):
-                print(f"架构产物不存在: {full}", file=sys.stderr)
-                return 1
-            v["architecture"] = norm_product(product)
-            v["status"] = "arch_reviewing"
-            v["arch_claimed"] = False
-            write_versions(project, vd)
-            log(f"ARCH_DONE {project}/{version} product={v['architecture']}")
-            return 0
-        if conclusion not in ("PASS", "FAIL"):
-            print("conclusion 必须为 DONE/PASS/FAIL", file=sys.stderr)
-            return 1
-        if v.get("status") != "arch_reviewing":
-            print(f"评审仅对 arch_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
-            return 1
-        v["arch_reviews"] = v.get("arch_reviews", []) + [norm_product(product)]
-        v["arch_review_claimed"] = False  # 评审完成清 claim（防 stale 误判）
-        v["arch_review_claimed_pid"] = 0
-        if conclusion == "PASS":
-            v["status"] = "testplan"  # TE 测试方案阶段
-            v["test_plan_claimed"] = False
-        else:
-            v["status"] = "planning"  # FAIL → 回 planning（调度分支会自动重新 claim + spawn SE 重做；arch 无调度分支会卡死）
-            v["arch_claimed"] = False
-        v["arch_review_claimed"] = False
-        v["arch_review_claimed_pid"] = 0
-        write_versions(project, vd)
-        log(f"ARCH_REVIEW {project}/{version} {conclusion} by=PM")
-    return 0
-
-
-def release_testplan_v2(project: str, version: str, product: str, conclusion: str) -> int:
-    """整体测试方案状态命令（v2）：
-    TE 产出完成：release_testplan_v2 {project} {version} {产物} DONE → testplan_reviewing（等 SE 评审）
-    SE 评审：    release_testplan_v2 {project} {version} {评审意见} PASS|FAIL → PASS: in_dev（模块迭代）/ FAIL: testplan 重做"""
-    conclusion = conclusion.strip().upper()
-    with acquire_lock() as _:
-        vd = read_versions(project)
-        v = next((x for x in vd["versions"] if x["name"] == version), None)
-        if not v:
-            print(f"版本 {version} 不存在", file=sys.stderr)
-            return 1
-        if conclusion == "DONE":
-            if v.get("status") != "testplan":
-                print(f"版本状态非 testplan（当前 {v.get('status')}）", file=sys.stderr)
-                return 1
-            full = product_path(product)
-            if not os.path.exists(full):
-                print(f"测试方案产物不存在: {full}", file=sys.stderr)
-                return 1
-            v["test_plan"] = norm_product(product)
-            v["status"] = "testplan_reviewing"
-            v["test_plan_claimed"] = False
-            write_versions(project, vd)
-            log(f"TESTPLAN_DONE {project}/{version} product={v['test_plan']}")
-            return 0
-        if conclusion not in ("PASS", "FAIL"):
-            print("conclusion 必须为 DONE/PASS/FAIL", file=sys.stderr)
-            return 1
-        if v.get("status") != "testplan_reviewing":
-            print(f"评审仅对 testplan_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
-            return 1
-        v["test_plan_reviews"] = v.get("test_plan_reviews", []) + [norm_product(product)]
-        v["testplan_review_claimed"] = False  # 评审完成清 claim
-        v["testplan_review_claimed_pid"] = 0
-        if conclusion == "PASS":
-            v["status"] = "in_dev"  # 模块迭代开发
-        else:
-            v["status"] = "testplan"
-            v["test_plan_claimed"] = False
-        v["testplan_review_claimed"] = False
-        v["testplan_review_claimed_pid"] = 0
-        write_versions(project, vd)
-        log(f"TESTPLAN_REVIEW {project}/{version} {conclusion} by=SE")
-    return 0
 
 
 def _arch_inputs(project: str, reqs: list, st: dict) -> str:

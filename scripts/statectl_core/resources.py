@@ -23,7 +23,7 @@ from .versions import read_versions, write_versions
 
 __all__ = [
     "_version_unblock",
-    "_resource_blocked_reason", "_resource_unblock",
+    "_resource_unblock",
     "_minimax_quota_ok", "_log_matches", "_mark_blocked_reason",
 ]
 
@@ -53,34 +53,7 @@ def _version_unblock(project: str, version: str) -> int:
     return 0
 
 
-# ---- blocked 原因判定 + 资源感知自动恢复 ----
-
-def _resource_blocked_reason(project: str, it_or_v: dict, key: str) -> str:
-    """判定 blocked 原因：先看已标记 blocked_reason；未标 → 扫关联 worker 日志尾部（429/配额 → resource:minimax）。
-    其他 → 'other'（人工介入）。"""
-    r = it_or_v.get("blocked_reason") or ""
-    if r:
-        return r
-    # 扫项目 worker 日志（key 关联）+ errors.log 尾部
-    tail_buf: list = []
-    for d in (project_dir(project), os.path.join(project_dir(project), "logs"), LOG_DIR):
-        if not os.path.isdir(d):
-            continue
-        try:
-            for fn in sorted(os.listdir(d)):
-                if key.replace("/", "-") in fn or fn == "errors.log" or "errors" in fn:
-                    fp = os.path.join(d, fn)
-                    if os.path.getsize(fp) < 50 * 1024 * 1024:
-                        tail_buf.append(open(fp, encoding="utf-8", errors="replace").read()[-8000:])
-        except Exception:
-            continue
-    blob = " ".join(tail_buf).lower()
-    if any(w in blob for w in ("429", "quota", "配额已耗尽", "rate limit", "insufficient_quota")):
-        it_or_v["blocked_reason"] = "resource:minimax"
-        return "resource:minimax"
-    it_or_v["blocked_reason"] = "other"
-    return "other"
-
+# ---- 资源感知自动恢复 ----
 
 def _resource_unblock(project: str, md: dict, vd: dict, alarms: list) -> None:
     """资源感知自动恢复（用户需求）：blocked 且原因=资源/网络（临时性）→ 检查资源 → 恢复后自动 unblock（zbot 通知）。

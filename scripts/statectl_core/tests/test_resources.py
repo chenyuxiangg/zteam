@@ -11,7 +11,6 @@ from statectl_core.resources import (
     _log_matches,
     _mark_blocked_reason,
     _minimax_quota_ok,
-    _resource_blocked_reason,
     _resource_unblock,
     _version_unblock,
 )
@@ -77,53 +76,6 @@ class VersionUnblock(_SeedMixin):
     def test_non_blocked_returns_1(self) -> None:
         self._make_v(status="planning")
         self.assertEqual(_version_unblock("demo", "v1.0.0"), 1)
-
-
-# ---------------- _resource_blocked_reason ----------------
-
-class ResourceBlockedReason(_SeedMixin):
-    def test_existing_reason_returned_directly(self) -> None:
-        it = {"blocked_reason": "other"}
-        self.assertEqual(_resource_blocked_reason("demo", it, "mod1"), "other")
-        # 不应被改写
-        self.assertEqual(it["blocked_reason"], "other")
-
-    def test_429_in_log_marks_minimax(self) -> None:
-        # 在项目 logs 目录写 errors.log 含 "429 Too Many Requests"
-        logs = os.path.join(self.wp, "logs")
-        os.makedirs(logs, exist_ok=True)
-        with open(os.path.join(logs, "errors.log"), "w") as f:
-            f.write("HTTP 429 Too Many Requests")
-        it: dict = {}
-        reason = _resource_blocked_reason("demo", it, "mod1")
-        self.assertEqual(reason, "resource:minimax")
-        self.assertEqual(it["blocked_reason"], "resource:minimax")
-
-    def test_quota_keyword_marks_minimax(self) -> None:
-        logs = os.path.join(self.wp, "logs")
-        os.makedirs(logs, exist_ok=True)
-        with open(os.path.join(logs, "errors.log"), "w") as f:
-            f.write("配额已耗尽，请稍后重试")
-        it: dict = {}
-        self.assertEqual(_resource_blocked_reason("demo", it, "mod1"),
-                         "resource:minimax")
-
-    def test_no_match_marks_other(self) -> None:
-        it: dict = {}
-        self.assertEqual(_resource_blocked_reason("demo", it, "mod1"), "other")
-        self.assertEqual(it["blocked_reason"], "other")
-
-    def test_skips_large_log(self) -> None:
-        # 50MB+ 的 log 跳过（防爆内存）
-        logs = os.path.join(self.wp, "logs")
-        os.makedirs(logs, exist_ok=True)
-        big = os.path.join(logs, "errors.log")
-        with open(big, "wb") as f:
-            f.write(b"x" * (60 * 1024 * 1024))
-        it: dict = {}
-        # 扫描会跳过，返回 other（默认）
-        self.assertEqual(_resource_blocked_reason("demo", it, "mod1"), "other")
-        os.remove(big)
 
 
 # ---------------- _resource_unblock ----------------

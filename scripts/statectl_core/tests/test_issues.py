@@ -22,9 +22,9 @@ from statectl_core.issues import (
     cmd_issue,
     issues_dir,
     open_issues,
-    release_arch,
-    release_testplan_v2,
 )
+# release_arch / release_testplan_v2 已迁移到 versions.py（commit 8 死代码清理）
+from statectl_core.versions import release_arch, release_testplan_v2
 
 from ._helpers import StatectlTestCase
 

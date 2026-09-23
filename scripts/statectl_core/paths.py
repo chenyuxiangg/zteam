@@ -30,7 +30,6 @@ CONFIRM_REMINDED = os.path.join(LOG_DIR, ".confirm_reminded")  # 已提醒用户
 
 DEFAULT_PROJECT = "default"                                  # 未指定项目时的兜底
 PROJECTS_FILE = os.path.join(WORKDIR, "projects.json")       # 项目映射表唯一真理源
-VERSIONS_FILE = "versions.json"                              # 版本清单（项目目录下）
 MODULES_FILE = "modules.json"                                # 模块清单（项目目录下）
 
 __all__ = [

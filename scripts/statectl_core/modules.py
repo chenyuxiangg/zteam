@@ -22,7 +22,6 @@ from . import paths as _paths
 from .paths import (
     MODULES_FILE,
     WORKDIR,
-    abs_artifact,
     now_iso,
     project_dir,
     project_log_dir,

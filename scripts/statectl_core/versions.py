@@ -15,7 +15,6 @@ import os
 import re
 import sys
 
-from . import paths as _paths
 from .model_config import DEFAULT_MAX_ROUNDS
 from .paths import (
     DEFAULT_PROJECT,
@@ -25,7 +24,6 @@ from .paths import (
     project_dir,
     project_work_path,
     read_projects,
-    rel_artifact,
     split_key,
     write_projects,
 )
@@ -47,7 +45,7 @@ __all__ = [
     "release_it", "release_st", "release_arch", "release_testplan_v2",
     "cmd_confirm", "cmd_reject", "cmd_change_request",
     "cmd_project", "cmd_versions", "cmd_assign",
-    "_valid_work_path", "_sync_project_version", "_version_unblock",
+    "_valid_work_path", "_sync_project_version",
 ]
 
 VERSIONS_FILE = "versions.json"
@@ -701,11 +699,6 @@ def cmd_reject(rid: str, reason: str) -> int:
     return 0
 
 
-# 内部引用提示（保活 statectl.py 桥接兼容——发布期校验）。
-_ = (WORKDIR, now_iso, project_dir, rel_artifact, split_key, norm_product,
-     product_path, spawn_worker, acquire_lock, log, read_status, write_status)
-
-
 # ---- 变更三分场景 / 项目映射 / 版本视图 / 人工归属 ----
 
 def cmd_change_request(rid: str, action: str, desc: str) -> int:
@@ -932,27 +925,4 @@ def cmd_assign(rid: str, spec: str) -> int:
         e["updated_at"] = now_iso()
         write_status(st)
         log(f"ASSIGN {rid} {updates} (manual)")
-    return 0
-
-
-def _version_unblock(project: str, version: str) -> int:
-    """版本 unblock：blocked 版本 → 回**被打断阶段**（blocked_from，缺省 planning 兼容旧数据），清 failures/claim。无锁纯逻辑（调用方持锁）。"""
-    vd = read_versions(project)
-    v = next((x for x in vd["versions"] if x["name"] == version), None)
-    if not v:
-        print(f"版本 {version} 不存在", file=sys.stderr)
-        return 1
-    if v.get("status") != "blocked":
-        print(f"版本 {version} 非 blocked（当前 {v.get('status')}）", file=sys.stderr)
-        return 1
-    for k in ("arch_claimed", "arch_claimed_pid", "arch_review_claimed", "arch_review_claimed_pid",
-              "test_plan_claimed", "test_plan_claimed_pid", "testplan_review_claimed",
-              "testplan_review_claimed_pid", "st_claimed", "st_claimed_pid",
-              "qa_claimed", "qa_claimed_pid", "blocked_reason"):
-        v.pop(k, None)
-    back = v.pop("blocked_from", None) or "planning"
-    v["status"] = back
-    v["failures"] = 0
-    write_versions(project, vd)
-    log(f"VERSION_UNBLOCK {project}/{version} -> {back}（人工/资源恢复，回被打断阶段）")
     return 0
