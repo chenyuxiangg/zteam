@@ -23,6 +23,11 @@ LOG_FILE = os.path.join(LOG_DIR, "pipeline.log")
 ALARM_FILE = os.path.join(LOG_DIR, "alarms.txt")
 QUOTA_SCRIPT = os.path.join(_SCRIPTS_DIR, "check_minimax_quota.py")
 
+# 暂停/通知标记（cmd_halt / cmd_unhalt / cmd_notify 使用；不再在 statectl.py 重复定义）
+PAUSE_FILE = os.path.join(WORKDIR, ".pause")                   # 手动暂停标记：touch = 流水线整体停止调度
+NOTIFY_MARKER = os.path.join(LOG_DIR, ".notify_marker")        # 上次推送时间戳（避免重复推送历史归档）
+CONFIRM_REMINDED = os.path.join(LOG_DIR, ".confirm_reminded")  # 已提醒用户评审的规格 key 集
+
 DEFAULT_PROJECT = "default"                                  # 未指定项目时的兜底
 PROJECTS_FILE = os.path.join(WORKDIR, "projects.json")       # 项目映射表唯一真理源
 VERSIONS_FILE = "versions.json"                              # 版本清单（项目目录下）
@@ -32,6 +37,7 @@ __all__ = [
     # 常量
     "WORKDIR", "WORKSPACE_DIR", "LOG_DIR", "SCRIPTS_DIR",
     "STATUS_FILE", "LOCK_FILE", "LOG_FILE", "ALARM_FILE",
+    "PAUSE_FILE", "NOTIFY_MARKER", "CONFIRM_REMINDED",
     "DEFAULT_PROJECT", "PROJECTS_FILE",
     # 项目映射
     "read_projects", "write_projects", "project_work_path", "project_default",

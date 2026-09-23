@@ -1,4 +1,4 @@
-"""Tests for statectl_core.ticks: quota_tick + 辅助。"""
+"""Tests for statectl_core.ticks: quota_tick + 辅助 + tick 系列 + weekly_tick + guard_recovery。"""
 from __future__ import annotations
 
 import unittest
@@ -7,7 +7,11 @@ from unittest import mock
 from statectl_core.ticks import (
     _format_beijing,
     _parse_zlog_message,
+    analyst_tick,
     quota_tick,
+    reviewer_tick,
+    weekly_tick,
+    worker_tick,
 )
 
 
@@ -55,6 +59,34 @@ class QuotaTick(unittest.TestCase):
             with mock.patch("statectl_core.ticks.subprocess.run",
                              side_effect=TimeoutError("slow")):
                 self.assertEqual(quota_tick(), 0)
+
+
+class TickDispatch(unittest.TestCase):
+    """analyst_tick / reviewer_tick / worker_tick 都委托 _tick_common；通过 mock 验证。"""
+
+    def test_analyst_tick_delegates(self) -> None:
+        with mock.patch("statectl_core.ticks._tick_common", return_value=0) as m:
+            self.assertEqual(analyst_tick(), 0)
+            m.assert_called_once()
+
+    def test_reviewer_tick_delegates(self) -> None:
+        with mock.patch("statectl_core.ticks._tick_common", return_value=0) as m:
+            self.assertEqual(reviewer_tick(), 0)
+            m.assert_called_once()
+
+    def test_worker_tick_delegates(self) -> None:
+        with mock.patch("statectl_core.ticks._tick_common", return_value=0) as m:
+            self.assertEqual(worker_tick(), 0)
+            m.assert_called_once()
+
+
+class WeeklyTick(unittest.TestCase):
+    def test_returns_zero_with_empty_state(self) -> None:
+        # 无状态时：weekly_tick 应该正常返回 0（即使无审计项可报）
+        with mock.patch("statectl_core.ticks.read_status", return_value={}):
+            with mock.patch("statectl_core.ticks.read_projects", return_value={"projects": []}):
+                with mock.patch("os.path.isdir", return_value=False):
+                    self.assertEqual(weekly_tick(), 0)
 
 
 if __name__ == "__main__":

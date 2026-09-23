@@ -16,8 +16,20 @@ import re
 import sys
 
 from . import paths as _paths
-from .paths import WORKDIR, now_iso, project_dir, read_projects, rel_artifact, split_key, write_projects
-from .pipeline import norm_product, product_path, spawn_worker
+from .model_config import DEFAULT_MAX_ROUNDS
+from .paths import (
+    DEFAULT_PROJECT,
+    WORKDIR,
+    WORKSPACE_DIR,
+    now_iso,
+    project_dir,
+    project_work_path,
+    read_projects,
+    rel_artifact,
+    split_key,
+    write_projects,
+)
+from .pipeline import new_stages, norm_product, product_path, spawn_worker
 from .status import (
     acquire_lock,
     log,
@@ -31,8 +43,11 @@ __all__ = [
     "ensure_versions", "read_versions", "advance_current", "write_versions",
     "_parse_req_meta", "advance_versions",
     "_it_inputs", "_schedule_it_st", "_advance_v2",
-    "release_it", "release_st",
-    "cmd_confirm", "cmd_reject", "_sync_project_version",
+    "_assign_iteration", "_register_one", "register_new_inputs",
+    "release_it", "release_st", "release_arch", "release_testplan_v2",
+    "cmd_confirm", "cmd_reject", "cmd_change_request",
+    "cmd_project", "cmd_versions", "cmd_assign",
+    "_valid_work_path", "_sync_project_version", "_version_unblock",
 ]
 
 VERSIONS_FILE = "versions.json"
@@ -200,6 +215,157 @@ def write_versions(project: str, vd: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(vd, f, ensure_ascii=False, indent=2)
     os.replace(tmp, p)
+
+
+def _assign_iteration(e: dict, st: dict, vd: dict) -> int:
+    """惰性自动排迭代（用户拍板：自动排 + assign 可覆盖）：
+    iteration=None 时按依赖拓扑分配（max(依赖迭代)+1），无依赖则版本内最大迭代 +1。
+    已显式指定（文件头/assign）的不覆盖。"""
+    if e.get("iteration") is not None:
+        return e["iteration"]
+    project = e.get("_project") or ""
+    ver = e.get("version")
+    dep_iters = []
+    for dep in e.get("depends_on") or []:
+        de = st.get(f"{project}/{dep}")
+        if de and de.get("iteration") is not None:
+            dep_iters.append(de["iteration"])
+    if dep_iters:
+        it = max(dep_iters) + 1
+    else:
+        it = 1  # 无依赖 → 迭代 1（迭代内需求并行；有依赖才排后续迭代）
+    v = next((x for x in vd.get("versions", []) if x["name"] == ver), None)
+    if v and it not in v.get("iterations", []):
+        v.setdefault("iterations", []).append(it)
+    e["iteration"] = it
+    return it
+
+
+def _register_one(st: dict, proj: str, rid: str, full: str, registered: list) -> None:
+    """单条需求注册为 pending（版本归属/冻结校验/落盘）——映射表与存量扫描共用。"""
+    key = f"{proj}/{rid}"
+    vd = ensure_versions(proj)
+    meta = _parse_req_meta(full)
+    ver = meta["version"]
+    if not ver:
+        ver = advance_current(proj)  # 未指定 → current；current released 时自动开新版本
+        vd = read_versions(proj)  # advance 可能已落盘，重读
+    else:
+        # 显式指定 released 版本 → 拒绝（版本冻结，需开新版本承载）
+        if ver in [x["name"] for x in vd["versions"]] and \
+                next(x for x in vd["versions"] if x["name"] == ver).get("status") == "released":
+            print(f"注册拒绝: {key} 指定版本 {ver} 已 released（冻结），请开新版本或 assign 到新版本", file=sys.stderr)
+            log(f"REGISTER_REJECT {key} version={ver} released(冻结)")
+            return
+    if ver not in [x["name"] for x in vd["versions"]]:
+        vd["versions"].append({"name": ver, "status": "planning",
+                               "iterations": [], "reqs": [], "released_at": None})
+    for x in vd["versions"]:
+        if x["name"] == ver and rid not in x.get("reqs", []):
+            x.setdefault("reqs", []).append(rid)
+    write_versions(proj, vd)
+    st[key] = {
+        "status": "pending",
+        "round": 0,
+        "max_rounds": DEFAULT_MAX_ROUNDS,
+        "forced": False,
+        "analysis": None,
+        "reviews": [],
+        "failures": 0,
+        "version": ver,
+        "iteration": meta["iteration"],
+        "depends_on": meta["depends_on"],
+        "stages": new_stages(),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    registered.append(key)
+    log(f"REGISTER {key} status=pending round=0 project={proj} version={ver}")
+
+
+def register_new_inputs(st: dict) -> list:
+    """扫描各项目 input/ 下未登记文件自动注册为 pending（项目目录自动创建）。
+    结构：workspace/<project>/input/<req_id>.md（每个项目独立 input/）。
+    兼容旧结构：workspace/input/<project>/<req_id>.md 与平铺 workspace/input/<req_id>.md（迁移前数据仍可注册）。
+    返回新注册的 key（'<project>/<req_id>'）列表。"""
+    registered = []
+    # 新结构（项目工作路径解耦）：遍历映射表项目 → 扫 {work_path}/input/*.md（未登记项目不扫=强制先 project add）
+    for p in read_projects().get("projects", []):
+        idir = os.path.join(p["work_path"], "input")
+        if not os.path.isdir(idir):
+            continue
+        for name in sorted(os.listdir(idir)):
+            if not name.endswith(".md"):
+                continue
+            rid = name[:-3]
+            key = f"{p['name']}/{rid}"
+            if key in st:
+                continue
+            _register_one(st, p["name"], rid, os.path.join(idir, name), registered)
+    # 存量兼容：workspace/<project>/input/*.md（迁移期旧数据仍可注册）
+    if os.path.isdir(WORKSPACE_DIR):
+        for proj in sorted(os.listdir(WORKSPACE_DIR)):
+            if proj in ("logs",) or proj.startswith("."):
+                continue
+            pdir = os.path.join(WORKSPACE_DIR, proj)
+            idir = os.path.join(pdir, "input")
+            if not os.path.isdir(idir):
+                continue
+            for name in sorted(os.listdir(idir)):
+                if not name.endswith(".md"):
+                    continue
+                rid = name[:-3]
+                key = f"{proj}/{rid}"
+                if key in st:
+                    continue
+                _register_one(st, proj, rid, os.path.join(idir, name), registered)
+    # 兼容旧结构：workspace/input/<project>/*.md 与平铺 input/<req_id>.md（迁移前）
+    legacy_input = os.path.join(WORKSPACE_DIR, "input")
+    if os.path.isdir(legacy_input):
+        for proj in sorted(os.listdir(legacy_input)):
+            pdir = os.path.join(legacy_input, proj)
+            if os.path.isdir(pdir):
+                for name in sorted(os.listdir(pdir)):
+                    if not name.endswith(".md"):
+                        continue
+                    rid = name[:-3]
+                    key = f"{proj}/{rid}"
+                    if key in st:
+                        continue
+                    st[key] = {
+                        "status": "pending",
+                        "round": 0,
+                        "max_rounds": DEFAULT_MAX_ROUNDS,
+                        "forced": False,
+                        "analysis": None,
+                        "reviews": [],
+                        "failures": 0,
+                        "stages": new_stages(),
+                        "created_at": now_iso(),
+                        "updated_at": now_iso(),
+                    }
+                    registered.append(key)
+                    log(f"REGISTER {key} status=pending round=0 project={proj} (legacy input/)")
+            elif pdir.endswith(".md"):
+                rid = proj[:-3]
+                key = f"{DEFAULT_PROJECT}/{rid}"
+                if key in st:
+                    continue
+                st[key] = {
+                    "status": "pending",
+                    "round": 0,
+                    "max_rounds": DEFAULT_MAX_ROUNDS,
+                    "forced": False,
+                    "analysis": None,
+                    "reviews": [],
+                    "failures": 0,
+                    "stages": new_stages(),
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                }
+                registered.append(key)
+                log(f"REGISTER {key} status=pending round=0 project={DEFAULT_PROJECT} (legacy flat)")
+    return registered
 
 
 def _parse_req_meta(path: str) -> dict:
@@ -387,6 +553,99 @@ def release_st(project: str, version: str, product: str, conclusion: str) -> int
     return 0
 
 
+def release_arch(project: str, version: str, product: str, conclusion: str) -> int:
+    """架构阶段状态命令（v2）：
+    SE 产出完成：release_arch {project} {version} {产物目录} DONE → arch_reviewing（等 PM 评审）
+    PM 评审：    release_arch {project} {version} {评审意见} PASS|FAIL → PASS: testplan（TE 启动）/ FAIL: arch 重做"""
+    conclusion = conclusion.strip().upper()
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if conclusion == "DONE":
+            if v.get("status") != "arch":
+                print(f"版本状态非 arch（当前 {v.get('status')}）", file=sys.stderr)
+                return 1
+            full = product_path(product)
+            if not os.path.exists(full):
+                print(f"架构产物不存在: {full}", file=sys.stderr)
+                return 1
+            v["architecture"] = norm_product(product)
+            v["status"] = "arch_reviewing"
+            v["arch_claimed"] = False
+            write_versions(project, vd)
+            log(f"ARCH_DONE {project}/{version} product={v['architecture']}")
+            return 0
+        if conclusion not in ("PASS", "FAIL"):
+            print("conclusion 必须为 DONE/PASS/FAIL", file=sys.stderr)
+            return 1
+        if v.get("status") != "arch_reviewing":
+            print(f"评审仅对 arch_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        v["arch_reviews"] = v.get("arch_reviews", []) + [norm_product(product)]
+        v["arch_review_claimed"] = False  # 评审完成清 claim（防 stale 误判）
+        v["arch_review_claimed_pid"] = 0
+        if conclusion == "PASS":
+            v["status"] = "testplan"  # TE 测试方案阶段
+            v["test_plan_claimed"] = False
+        else:
+            v["status"] = "planning"  # FAIL → 回 planning（调度分支会自动重新 claim + spawn SE 重做；arch 无调度分支会卡死）
+            v["arch_claimed"] = False
+        v["arch_review_claimed"] = False
+        v["arch_review_claimed_pid"] = 0
+        write_versions(project, vd)
+        log(f"ARCH_REVIEW {project}/{version} {conclusion} by=PM")
+    return 0
+
+
+def release_testplan_v2(project: str, version: str, product: str, conclusion: str) -> int:
+    """整体测试方案状态命令（v2）：
+    TE 产出完成：release_testplan_v2 {project} {version} {产物} DONE → testplan_reviewing（等 SE 评审）
+    SE 评审：    release_testplan_v2 {project} {version} {评审意见} PASS|FAIL → PASS: in_dev（模块迭代）/ FAIL: testplan 重做"""
+    conclusion = conclusion.strip().upper()
+    with acquire_lock() as _:
+        vd = read_versions(project)
+        v = next((x for x in vd["versions"] if x["name"] == version), None)
+        if not v:
+            print(f"版本 {version} 不存在", file=sys.stderr)
+            return 1
+        if conclusion == "DONE":
+            if v.get("status") != "testplan":
+                print(f"版本状态非 testplan（当前 {v.get('status')}）", file=sys.stderr)
+                return 1
+            full = product_path(product)
+            if not os.path.exists(full):
+                print(f"测试方案产物不存在: {full}", file=sys.stderr)
+                return 1
+            v["test_plan"] = norm_product(product)
+            v["status"] = "testplan_reviewing"
+            v["test_plan_claimed"] = False
+            write_versions(project, vd)
+            log(f"TESTPLAN_DONE {project}/{version} product={v['test_plan']}")
+            return 0
+        if conclusion not in ("PASS", "FAIL"):
+            print("conclusion 必须为 DONE/PASS/FAIL", file=sys.stderr)
+            return 1
+        if v.get("status") != "testplan_reviewing":
+            print(f"评审仅对 testplan_reviewing 有效（当前 {v.get('status')}）", file=sys.stderr)
+            return 1
+        v["test_plan_reviews"] = v.get("test_plan_reviews", []) + [norm_product(product)]
+        v["testplan_review_claimed"] = False  # 评审完成清 claim
+        v["testplan_review_claimed_pid"] = 0
+        if conclusion == "PASS":
+            v["status"] = "in_dev"  # 模块迭代开发
+        else:
+            v["status"] = "testplan"
+            v["test_plan_claimed"] = False
+        v["testplan_review_claimed"] = False
+        v["testplan_review_claimed_pid"] = 0
+        write_versions(project, vd)
+        log(f"TESTPLAN_REVIEW {project}/{version} {conclusion} by=SE")
+    return 0
+
+
 def cmd_confirm(rid: str) -> int:
     """用户确认需求规格：confirm {req_id} → awaiting_user_confirm → approved（规格锁定）。
     用户是规格唯一拍板人；脚本校验规格产物真实存在。"""
@@ -445,3 +704,255 @@ def cmd_reject(rid: str, reason: str) -> int:
 # 内部引用提示（保活 statectl.py 桥接兼容——发布期校验）。
 _ = (WORKDIR, now_iso, project_dir, rel_artifact, split_key, norm_product,
      product_path, spawn_worker, acquire_lock, log, read_status, write_status)
+
+
+# ---- 变更三分场景 / 项目映射 / 版本视图 / 人工归属 ----
+
+def cmd_change_request(rid: str, action: str, desc: str) -> int:
+    """变更三分场景（P1-02）：change_request {req_id} modify|remove <描述>
+    - modify：需求回 analyzing（重细化规格）→ 用户评审 → 重新分发/重跑（原草稿与旧规格留档）
+    - remove：忽略该需求（removed 状态；从版本/模块 reqs 移除；依赖它的需求自动解锁）
+    版本冻结：released 版本下的需求变更被拒绝（需开新版本承载）。"""
+    action = action.strip().lower()
+    if action not in ("modify", "remove"):
+        print("change_request 动作必须为 modify/remove", file=sys.stderr)
+        return 1
+    if action == "modify" and not desc.strip():
+        print("modify 需要变更描述: change_request {req_id} modify <描述>", file=sys.stderr)
+        return 1
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        project, rid_short = split_key(rid)
+        vd = read_versions(project)
+        ver = e.get("version")
+        v = next((x for x in vd["versions"] if x["name"] == ver), None)
+        if v and v.get("status") == "released":
+            print(f"版本 {ver} 已 released（冻结），变更需开新版本承载（assign {rid} version=新版本 后处理）", file=sys.stderr)
+            return 1
+        if action == "modify":
+            if e.get("status") not in ("approved", "dispatched", "released"):
+                print(f"modify 仅对 approved/dispatched/released 需求有效（当前 {e.get('status')}）", file=sys.stderr)
+                return 1
+            e["status"] = "analyzing"  # 重细化（规格重做）
+            e["change_log"] = e.get("change_log", []) + [{"t": now_iso(), "action": "modify", "desc": desc.strip()}]
+            e["updated_at"] = now_iso()
+            write_status(st)
+            log(f"CHANGE_MODIFY {rid} -> analyzing（{desc.strip()[:60]}）")
+        else:  # remove
+            if e.get("status") == "removed":
+                print(f"{rid} 已是 removed", file=sys.stderr)
+                return 1
+            e["status"] = "removed"
+            e["change_log"] = e.get("change_log", []) + [{"t": now_iso(), "action": "remove", "desc": desc.strip() or "删除需求"}]
+            e["updated_at"] = now_iso()
+            # 从版本/模块 reqs 移除
+            if v and rid_short in v.get("reqs", []):
+                v["reqs"] = [r for r in v["reqs"] if r != rid_short]
+            # 延迟导入避免循环依赖（versions ↔ modules）
+            from .modules import read_modules, write_modules
+            md = read_modules(project)
+            changed = False
+            for m in md.get("modules", []):
+                if rid_short in m.get("reqs", []):
+                    m["reqs"] = [r for r in m["reqs"] if r != rid_short]
+                    changed = True
+            if changed:
+                write_modules(project, md)
+            write_versions(project, vd)
+            write_status(st)
+            log(f"CHANGE_REMOVE {rid} -> removed（从版本/模块移除，依赖自动解锁）")
+    return 0
+
+
+def _valid_work_path(path: str) -> bool:
+    """工作路径校验：绝对路径 + 禁止 zteam 内部（防污染 git 仓）。"""
+    if not os.path.isabs(path):
+        print("工作路径必须是绝对路径", file=sys.stderr)
+        return False
+    real_wd = os.path.realpath(path)
+    if real_wd == os.path.realpath(WORKDIR) or real_wd.startswith(os.path.realpath(WORKDIR) + os.sep):
+        print(f"工作路径不能在 zteam 内部（{WORKDIR}）——会污染 git 仓", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_project(project: str, rest: list) -> int:
+    """项目映射表命令（唯一真理源，用户明确修改才可写）：
+    project list / info {name} / add {name} {path?} / setpath {name} {path} / default {name} / rm {name}"""
+    if project == "list":
+        pj = read_projects()
+        ps = pj.get("projects", [])
+        if not ps:
+            print("（尚无项目——用 `project add {name} {path?}` 登记，或让 zbot 帮你创建）")
+            return 0
+        for p in sorted(ps, key=lambda x: x["name"]):
+            mark = " [默认]" if p.get("default") else ""
+            print(f"{p['name']} | 最新 {p.get('latest_version') or '—'} | {p.get('work_path')}{mark}")
+        return 0
+    if not rest:
+        print("project list / info <name> / add <name> <path?> / setpath <name> <path> / default <name> / rm <name>", file=sys.stderr)
+        return 1
+    name = rest[0]
+    if project == "info":
+        wp = project_work_path(name)
+        if not wp:
+            print(f"项目 {name} 未登记", file=sys.stderr)
+            return 1
+        pj = read_projects()
+        p = next(x for x in pj["projects"] if x["name"] == name)
+        print(f"项目 {name}")
+        print(f"  成立时间: {p.get('created_at')}")
+        print(f"  最新版本: {p.get('latest_version') or '—'}")
+        print(f"  工作路径: {p.get('work_path')}")
+        print(f"  默认标记: {'是' if p.get('default') else '否'}")
+        return 0
+    if not re.match(r"^[A-Za-z0-9_-]+$", name):
+        print("项目名仅允许 [A-Za-z0-9_-]", file=sys.stderr)
+        return 1
+    if project in ("add", "setpath", "default", "rm"):
+        with acquire_lock() as _:  # 映射表为全局资产，用全局锁
+            pj = read_projects()
+            ps = pj.setdefault("projects", [])
+            if project == "add":
+                if any(p["name"] == name for p in ps):
+                    print(f"项目 {name} 已登记", file=sys.stderr)
+                    return 1
+                path = rest[1] if len(rest) > 1 else os.path.join(os.path.expanduser("~"), "project", name)
+                if not _valid_work_path(path):
+                    return 1
+                ps.append({"name": name, "created_at": now_iso(), "latest_version": None,
+                           "work_path": path, "default": False})
+                write_projects(pj)
+                log(f"PROJECT_ADD {name} path={path}")
+                print(f"已登记项目 {name} → {path}")
+                return 0
+            p = next((x for x in ps if x["name"] == name), None)
+            if not p:
+                print(f"项目 {name} 未登记", file=sys.stderr)
+                return 1
+            if project == "setpath":
+                if len(rest) < 2:
+                    print("project setpath <name> <path>", file=sys.stderr)
+                    return 1
+                if not _valid_work_path(rest[1]):
+                    return 1
+                old = p["work_path"]
+                p["work_path"] = rest[1]
+                write_projects(pj)
+                log(f"PROJECT_SETPATH {name} {old} -> {rest[1]}")
+                print(f"已迁移项目 {name}：{old} → {rest[1]}")
+                return 0
+            if project == "default":
+                for q in ps:
+                    q["default"] = (q["name"] == name)
+                write_projects(pj)
+                log(f"PROJECT_DEFAULT {name}")
+                print(f"默认项目已设为 {name}")
+                return 0
+            if project == "rm":
+                ps.remove(p)
+                write_projects(pj)
+                log(f"PROJECT_RM {name}（仅解除登记，数据未删）")
+                print(f"已解除登记 {name}（工作路径数据未删除）")
+                return 0
+    print(f"未知 project 动作 {project}", file=sys.stderr)
+    return 1
+
+
+def cmd_versions(project: str = None) -> int:
+    """版本聚合视图：statectl versions [project]（无参 = 全部项目）。"""
+    projects = [project] if project else [p["name"] for p in read_projects().get("projects", [])]
+    st = read_status()
+    for proj in projects:
+        vd = read_versions(proj)
+        advance_versions(proj, st)
+        vd = read_versions(proj)  # 推进后重读
+        print(f"== 项目 {proj}（当前开发版本: {vd.get('current')}） ==")
+        for v in vd.get("versions", []):
+            reqs = v.get("reqs") or []
+            done = sum(1 for r in reqs if st.get(f"{proj}/{r}", {}).get("status") == "released")
+            print(f"  {v.get('name'):10s} {v.get('status'):9s} 迭代={v.get('iterations')} 需求 {done}/{len(reqs)}"
+                  + (f"  released_at={v.get('released_at')}" if v.get("released_at") else ""))
+            for r in reqs:
+                print(f"      - {r}: {st.get(f'{proj}/{r}', {}).get('status', '?')}")
+    return 0
+
+
+def cmd_assign(rid: str, spec: str) -> int:
+    """人工干预需求归属（v2）：assign <req_id> version=v1.1.0 [iteration=2] [depends_on=a,b]。
+    覆盖自动排期（用户拍板：自动排 + 保留人工干预途径）。"""
+    with acquire_lock() as _:
+        st = read_status()
+        e = st.get(rid)
+        if not e:
+            print(f"{rid} 不存在", file=sys.stderr)
+            return 1
+        project, _ = split_key(rid)
+        vd = ensure_versions(project)
+        updates = {}
+        for kv in spec.split():
+            if "=" not in kv:
+                continue
+            k, _, v = kv.partition("=")
+            k = k.strip().lower()
+            v = v.strip()
+            if k == "version":
+                if v not in [x["name"] for x in vd["versions"]]:
+                    vd["versions"].append({"name": v, "status": "planning",
+                                           "iterations": [], "reqs": [], "released_at": None})
+                updates["version"] = v
+            elif k == "iteration":
+                try:
+                    updates["iteration"] = int(v)
+                except ValueError:
+                    print(f"iteration 必须为数字: {v}", file=sys.stderr)
+                    return 1
+            elif k == "depends_on":
+                updates["depends_on"] = [x.strip() for x in v.split(",") if x.strip()]
+        if "version" in updates:
+            old_v = e.get("version")
+            e["version"] = updates["version"]
+            # 维护 versions.json 的 reqs 归属（旧版本移除、新版本加入）
+            for x in vd["versions"]:
+                if x["name"] == old_v and rid.split("/", 1)[1] in x.get("reqs", []):
+                    x["reqs"] = [r for r in x["reqs"] if r != rid.split("/", 1)[1]]
+            for x in vd["versions"]:
+                if x["name"] == updates["version"]:
+                    rid_short = rid.split("/", 1)[1]
+                    if rid_short not in x.get("reqs", []):
+                        x.setdefault("reqs", []).append(rid_short)
+        for k, val in updates.items():
+            if k != "version":
+                e[k] = val
+        write_versions(project, vd)
+        e["updated_at"] = now_iso()
+        write_status(st)
+        log(f"ASSIGN {rid} {updates} (manual)")
+    return 0
+
+
+def _version_unblock(project: str, version: str) -> int:
+    """版本 unblock：blocked 版本 → 回**被打断阶段**（blocked_from，缺省 planning 兼容旧数据），清 failures/claim。无锁纯逻辑（调用方持锁）。"""
+    vd = read_versions(project)
+    v = next((x for x in vd["versions"] if x["name"] == version), None)
+    if not v:
+        print(f"版本 {version} 不存在", file=sys.stderr)
+        return 1
+    if v.get("status") != "blocked":
+        print(f"版本 {version} 非 blocked（当前 {v.get('status')}）", file=sys.stderr)
+        return 1
+    for k in ("arch_claimed", "arch_claimed_pid", "arch_review_claimed", "arch_review_claimed_pid",
+              "test_plan_claimed", "test_plan_claimed_pid", "testplan_review_claimed",
+              "testplan_review_claimed_pid", "st_claimed", "st_claimed_pid",
+              "qa_claimed", "qa_claimed_pid", "blocked_reason"):
+        v.pop(k, None)
+    back = v.pop("blocked_from", None) or "planning"
+    v["status"] = back
+    v["failures"] = 0
+    write_versions(project, vd)
+    log(f"VERSION_UNBLOCK {project}/{version} -> {back}（人工/资源恢复，回被打断阶段）")
+    return 0
