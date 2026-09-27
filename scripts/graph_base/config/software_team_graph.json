@@ -1,0 +1,65 @@
+{
+    "name": "software_team",
+    "graph_mode": "directed_cycle",
+    "pre_handle": "",
+    "post_handle": "",
+    "nodes": [
+        {
+            "name": "planer",
+            "iport": [
+                ["doc/input.md"]
+            ],
+            "oport": [
+                ["doc/specification.md"]
+            ],
+            "attr": {
+                "is_src": true,
+                "is_sink": false,
+                "role": "PM"
+            },
+            "proc": "planer_proc"
+        },
+        {
+            "name": "archer",
+            "iport": [
+                ["doc/specification.md"]
+            ],
+            "oport": [
+                ["doc/architectural_design.md", "doc/organizational_structure.md"]
+            ],
+            "attr": {
+                "is_src": false,
+                "role": "SE",
+                "is_sink": true
+            },
+            "proc": "archer_proc"
+        }
+    ],
+    "gates": [
+        {
+            "name": "planer_oput_gate",
+            "op": "check_output",
+            "enum_dir": [true, false]
+        }
+    ],
+    "edges": [
+        {
+            "name": "planer_to_archer",
+            "inode": "planer",
+            "onode": "archer",
+            "driver": "tick",
+            "gate": "planer_oput_gate",
+            "gate_value": true,
+            "cmd": "cmd_push_spec_to_archer"
+        },
+        {
+            "name": "planer_loop",
+            "inode": "planer",
+            "onode": "planer",
+            "driver": "tick",
+            "gate": "planer_oput_gate",
+            "gate_value": false,
+            "cmd": "cmd_back"
+        }
+    ]
+}
