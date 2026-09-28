@@ -24,6 +24,7 @@ def _build_graph_with_post_handle(post_handle: str = "") -> Graph:
         name="t", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle=post_handle,
         nodes=[n1], gates=[], edges=[],
+        tick_period_s=1.0,
     )
 
 
@@ -77,6 +78,7 @@ def test_is_sop_done_false_when_current_not_sink() -> None:
         name="t", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n1, n2, n3], gates=[], edges=[],
+        tick_period_s=1.0,
     )
     state = State(sop_name="t", instance_id="i", graph_name="t", current_node="b")
     assert is_sop_done(g, state) is False
@@ -101,6 +103,7 @@ def test_is_sop_done_false_when_sink_has_oport_but_no_outputs() -> None:
         name="t", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n1], gates=[], edges=[],
+        tick_period_s=1.0,
     )
     state = State(sop_name="t", instance_id="i", graph_name="t",
                   current_node="a", last_output={})
@@ -125,6 +128,7 @@ def test_is_sop_done_true_when_sink_has_oport_and_outputs() -> None:
         name="t", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n1], gates=[], edges=[],
+        tick_period_s=1.0,
     )
     state = State(sop_name="t", instance_id="i", graph_name="t",
                   current_node="a", last_output={"a": ("/path/doc/out.md",)})

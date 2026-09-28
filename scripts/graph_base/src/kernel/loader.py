@@ -57,6 +57,7 @@ def _build_from_raw(
     nodes = _parse_nodes(raw)
     gates = _parse_gates(raw)
     edges = _parse_edges(raw)
+    tick_period_s = _require_tick_period_s(raw)
     try:
         return Graph.build(
             name=name,
@@ -66,10 +67,35 @@ def _build_from_raw(
             nodes=nodes,
             gates=gates,
             edges=edges,
+            tick_period_s=tick_period_s,
             existing_sop_names=existing_sop_names,
         )
     except Exception as exc:
         raise GraphLoadError(str(exc), getattr(exc, "path", "")) from exc
+
+
+def _require_tick_period_s(raw: dict) -> float:
+    """读 tick_period_s 字段（必须显式声明，无默认值）。
+
+    强制显式声明——避免隐式 0.05 类短周期导致 gate 与 worker 写盘之间竞态：
+    tick_period_s 太短时，scheduler tick 频率超过 worker 子进程启动 + 落盘速度，
+    gate 评估看不到最新 exit_cnt，就会多派一次 worker。
+    """
+    if "tick_period_s" not in raw:
+        raise GraphLoadError(
+            "缺少必需字段 「tick_period_s」（调度器轮询周期，秒）",
+            "tick_period_s",
+        )
+    v = raw["tick_period_s"]
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        raise GraphLoadError(
+            "tick_period_s 必须是数字（int/float）", "tick_period_s"
+        )
+    if v <= 0:
+        raise GraphLoadError(
+            "tick_period_s 必须 > 0", "tick_period_s"
+        )
+    return float(v)
 
 
 def _parse_graph_mode(raw: dict) -> GraphMode:
@@ -216,6 +242,12 @@ def _parse_edge(raw: Any, idx: int) -> Edge:
         )
     gate_value = raw["gate_value"]
     cmd = _require_str(raw, "cmd", f"edges[{idx}].cmd")
+    parallel_raw = raw.get("parallel", False)
+    if not isinstance(parallel_raw, bool):
+        raise GraphLoadError(
+            f"edges[{idx}].parallel 必须是 bool，得到 {parallel_raw!r}",
+            f"edges[{idx}].parallel",
+        )
     return Edge(
         name=name,
         inode=inode,
@@ -224,4 +256,5 @@ def _parse_edge(raw: Any, idx: int) -> Edge:
         gate=gate,
         gate_value=gate_value,
         cmd=cmd,
+        parallel=parallel_raw,
     )

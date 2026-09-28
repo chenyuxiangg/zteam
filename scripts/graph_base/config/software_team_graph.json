@@ -1,6 +1,7 @@
 {
     "name": "software_team",
     "graph_mode": "directed_cycle",
+    "tick_period_s": 300,
     "pre_handle": "",
     "post_handle": "",
     "nodes": [

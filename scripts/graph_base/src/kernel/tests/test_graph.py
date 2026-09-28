@@ -33,6 +33,7 @@ def test_build_minimal():
         nodes=[n],
         gates=[g],
         edges=[e],
+        tick_period_s=1.0,
     )
     assert graph.name == "x"
     assert graph.graph_mode is GraphMode.DIRECTED_CYCLE
@@ -64,6 +65,7 @@ def test_build_indices_partition_edges():
         name="x", graph_mode="directed_cycle",
         pre_handle="", post_handle="",
         nodes=[n1, n2], gates=[g], edges=edges,
+        tick_period_s=1.0,
     )
     assert len(graph.edge_by_inode["a"]) == 2
     assert len(graph.edge_by_gate["ga"]) == 2
@@ -87,7 +89,8 @@ def test_build_no_src_raises():
             name="x", graph_mode="directed_cycle",
             pre_handle="", post_handle="",
             nodes=[n1], gates=[g], edges=[e],
-        )
+            tick_period_s=1.0,
+    )
 
 
 def test_build_no_sink_raises():
@@ -108,7 +111,8 @@ def test_build_no_sink_raises():
             name="x", graph_mode="directed_cycle",
             pre_handle="", post_handle="",
             nodes=[n1], gates=[g], edges=[e],
-        )
+            tick_period_s=1.0,
+    )
 
 
 def test_build_dup_node_name_raises():
@@ -128,7 +132,8 @@ def test_build_dup_node_name_raises():
             name="x", graph_mode="directed_cycle",
             pre_handle="", post_handle="",
             nodes=[n1, n2], gates=[], edges=[],
-        )
+            tick_period_s=1.0,
+    )
 
 
 def test_build_bad_edge_endpoint_raises():
@@ -149,7 +154,8 @@ def test_build_bad_edge_endpoint_raises():
             name="x", graph_mode="directed_cycle",
             pre_handle="", post_handle="",
             nodes=[n1], gates=[g], edges=[e],
-        )
+            tick_period_s=1.0,
+    )
 
 
 def test_build_existing_sop_dup_raises():
@@ -171,6 +177,7 @@ def test_build_existing_sop_dup_raises():
             pre_handle="", post_handle="",
             nodes=[n1], gates=[g], edges=[e],
             existing_sop_names=["dup"],
+            tick_period_s=1.0,
         )
 
 
@@ -192,7 +199,8 @@ def test_build_invalid_graph_mode_raises():
             name="x", graph_mode="bogus",  # type: ignore[arg-type]
             pre_handle="", post_handle="",
             nodes=[n1], gates=[g], edges=[e],
-        )
+            tick_period_s=1.0,
+    )
 
 
 def test_cached_property_lazy_compute():
@@ -213,6 +221,7 @@ def test_cached_property_lazy_compute():
         name="x", graph_mode="directed_cycle",
         pre_handle="", post_handle="",
         nodes=[n_a], gates=[g], edges=[e],
+        tick_period_s=1.0,
     )
     assert graph.node_index == {"a": n_a}
     assert graph.gate_index == {"ga": g}

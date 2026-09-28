@@ -104,6 +104,7 @@ def test_match_gate_ambiguous_raises():
             Edge(name="e1", inode="a", onode="a", driver="tick", gate="ga", gate_value=True, cmd="c"),
             Edge(name="e2", inode="a", onode="a", driver="tick", gate="ga", gate_value=True, cmd="c"),
         ),
+        tick_period_s=1.0,
     )
     with pytest.raises(AmbiguousMatchError):
         match_gate(g, "ga", True)

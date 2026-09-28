@@ -116,6 +116,7 @@ def test_load_node_attr_is_src_must_be_bool(tmp_path: Path):
             {
                 "name": "x",
                 "graph_mode": "directed_cycle",
+                "tick_period_s": 0.5,
                 "nodes": [
                     {
                         "name": "a",
@@ -141,4 +142,168 @@ def test_load_node_attr_is_src_must_be_bool(tmp_path: Path):
         encoding="utf-8",
     )
     with pytest.raises(GraphLoadError, match="is_src"):
+        load_graph(p)
+
+
+def test_missing_tick_period_s_raises(tmp_path: Path):
+    """测试名：test_missing_tick_period_s_raises
+
+    测试场景：JSON 缺 tick_period_s 字段时 load 抛 GraphLoadError。
+    前置条件：tmp_path；最小合法图（无 tick_period_s）。
+    是否使用 mock：No。
+    测试步骤：1. 写不带 tick_period_s 的 JSON；2. load_graph(p)。
+    预期结果：抛 GraphLoadError 且 message 含 "tick_period_s"。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    p = tmp_path / "no_tick.json"
+    p.write_text(json.dumps({
+        "name": "x",
+        "graph_mode": "directed_cycle",
+        "nodes": [
+            {"name": "a", "iport": [], "oport": [], "attr": {"is_src": True, "is_sink": True, "role": "r"}}
+        ],
+        "gates": [{"name": "g", "op": "f", "enum_dir": [True]}],
+        "edges": [
+            {"name": "e", "inode": "a", "onode": "a", "driver": "tick", "gate": "g", "gate_value": True, "cmd": "c"}
+        ],
+    }), encoding="utf-8")
+    with pytest.raises(GraphLoadError, match="tick_period_s"):
+        load_graph(p)
+
+
+def test_tick_period_s_zero_or_negative_raises(tmp_path: Path):
+    """测试名：test_tick_period_s_zero_or_negative_raises
+
+    测试场景：tick_period_s <= 0 时 load 抛 GraphLoadError（避免硬编码短周期）。
+    前置条件：tmp_path；JSON 含 tick_period_s=0 / tick_period_s=-1。
+    是否使用 mock：No。
+    测试步骤：分别写 tick_period_s=0 和 tick_period_s=-1 的 JSON，调 load_graph。
+    预期结果：两次都抛 GraphLoadError 且 message 含 "tick_period_s 必须 > 0"。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    for bad_val in (0, -1):
+        p = tmp_path / f"bad_tick_{bad_val}.json"
+        p.write_text(json.dumps({
+            "name": "x",
+            "graph_mode": "directed_cycle",
+            "tick_period_s": bad_val,
+            "nodes": [
+                {"name": "a", "iport": [], "oport": [], "attr": {"is_src": True, "is_sink": True, "role": "r"}}
+            ],
+            "gates": [{"name": "g", "op": "f", "enum_dir": [True]}],
+            "edges": [
+                {"name": "e", "inode": "a", "onode": "a", "driver": "tick", "gate": "g", "gate_value": True, "cmd": "c"}
+            ],
+        }), encoding="utf-8")
+        with pytest.raises(GraphLoadError, match="tick_period_s 必须 > 0"):
+            load_graph(p)
+
+
+def test_tick_period_s_non_numeric_raises(tmp_path: Path):
+    """测试名：test_tick_period_s_non_numeric_raises
+
+    测试场景：tick_period_s 类型非数字（字符串）时 load 抛 GraphLoadError。
+    前置条件：tmp_path；JSON 含 tick_period_s="0.5"（字符串）。
+    是否使用 mock：No。
+    测试步骤：写 tick_period_s="0.5" 的 JSON，调 load_graph。
+    预期结果：抛 GraphLoadError 且 message 含 "tick_period_s 必须是数字"。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    p = tmp_path / "str_tick.json"
+    p.write_text(json.dumps({
+        "name": "x",
+        "graph_mode": "directed_cycle",
+        "tick_period_s": "0.5",  # 字符串，类型错
+        "nodes": [
+            {"name": "a", "iport": [], "oport": [], "attr": {"is_src": True, "is_sink": True, "role": "r"}}
+        ],
+        "gates": [{"name": "g", "op": "f", "enum_dir": [True]}],
+        "edges": [
+            {"name": "e", "inode": "a", "onode": "a", "driver": "tick", "gate": "g", "gate_value": True, "cmd": "c"}
+        ],
+    }), encoding="utf-8")
+    with pytest.raises(GraphLoadError, match="tick_period_s 必须是数字"):
+        load_graph(p)
+
+
+def test_load_parallel_defaults_to_false(tmp_path: Path):
+    """测试名：test_load_parallel_defaults_to_false
+
+    测试场景：edge 不写 parallel 字段时，Edge.parallel 默认 False（向后兼容）。
+    前置条件：tmp_path；JSON 边缺 parallel 字段。
+    是否使用 mock：No。
+    测试步骤：1. 写不带 parallel 字段的 JSON；2. load_graph。
+    预期结果：所有边的 parallel == False。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    p = tmp_path / "no_parallel.json"
+    p.write_text(json.dumps({
+        "name": "x",
+        "graph_mode": "directed_cycle",
+        "tick_period_s": 0.5,
+        "nodes": [
+            {"name": "a", "iport": [], "oport": [], "attr": {"is_src": True, "is_sink": True, "role": "r"}}
+        ],
+        "gates": [{"name": "g", "op": "f", "enum_dir": [True]}],
+        "edges": [
+            {"name": "e", "inode": "a", "onode": "a", "driver": "tick", "gate": "g", "gate_value": True, "cmd": "c"}
+        ],
+    }), encoding="utf-8")
+    g = load_graph(p)
+    assert all(e.parallel is False for e in g.edges)
+
+
+def test_load_parallel_true_parsed(tmp_path: Path):
+    """测试名：test_load_parallel_true_parsed
+
+    测试场景：edge parallel=true 时正确解析为 True。
+    前置条件：tmp_path；JSON 边 parallel=true。
+    是否使用 mock：No。
+    测试步骤：1. 写带 parallel=true 的 JSON；2. load_graph。
+    预期结果：该边的 parallel is True。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    p = tmp_path / "parallel.json"
+    p.write_text(json.dumps({
+        "name": "x",
+        "graph_mode": "directed_cycle",
+        "tick_period_s": 0.5,
+        "nodes": [
+            {"name": "a", "iport": [], "oport": [], "attr": {"is_src": True, "is_sink": True, "role": "r"}}
+        ],
+        "gates": [{"name": "g", "op": "f", "enum_dir": [True]}],
+        "edges": [
+            {"name": "e", "inode": "a", "onode": "a", "driver": "tick",
+             "gate": "g", "gate_value": True, "cmd": "c", "parallel": True}
+        ],
+    }), encoding="utf-8")
+    g = load_graph(p)
+    assert g.edges[0].parallel is True
+
+
+def test_load_parallel_non_bool_raises(tmp_path: Path):
+    """测试名：test_load_parallel_non_bool_raises
+
+    测试场景：edge parallel 字段类型非 bool（字符串）时抛 GraphLoadError。
+    前置条件：tmp_path；JSON 边 parallel="yes"。
+    是否使用 mock：No。
+    测试步骤：1. 写 parallel="yes" 的 JSON；2. load_graph。
+    预期结果：抛 GraphLoadError 且 message 含 "parallel 必须是 bool"。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    p = tmp_path / "bad_parallel.json"
+    p.write_text(json.dumps({
+        "name": "x",
+        "graph_mode": "directed_cycle",
+        "tick_period_s": 0.5,
+        "nodes": [
+            {"name": "a", "iport": [], "oport": [], "attr": {"is_src": True, "is_sink": True, "role": "r"}}
+        ],
+        "gates": [{"name": "g", "op": "f", "enum_dir": [True]}],
+        "edges": [
+            {"name": "e", "inode": "a", "onode": "a", "driver": "tick",
+             "gate": "g", "gate_value": True, "cmd": "c", "parallel": "yes"}
+        ],
+    }), encoding="utf-8")
+    with pytest.raises(GraphLoadError, match="parallel 必须是 bool"):
         load_graph(p)

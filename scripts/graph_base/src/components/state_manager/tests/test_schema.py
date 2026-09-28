@@ -14,14 +14,15 @@ def test_state_default_fields() -> None:
     前置条件：无。
     是否使用 mock：No。
     测试步骤：构造 State(sop_name="s", instance_id="i", graph_name="g")，逐字段断言。
-    预期结果：current_node is None；history/triggered_edges/cycle_counts/last_output 均为空。
+    预期结果：current_node is None；history/triggered_edges/enter_cnt/exit_cnt/last_output 均为空。
     测试后清理：无。
     """
     s = State(sop_name="s", instance_id="i", graph_name="g")
     assert s.current_node is None
     assert s.history == ()
     assert dict(s.triggered_edges) == {}
-    assert dict(s.cycle_counts) == {}
+    assert dict(s.enter_cnt) == {}
+    assert dict(s.exit_cnt) == {}
     assert dict(s.last_output) == {}
 
 

@@ -30,6 +30,7 @@ def _graph_with_node(name: str = "a") -> Graph:
         name="d", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n], gates=[], edges=[],
+        tick_period_s=1.0,
     )
 
 

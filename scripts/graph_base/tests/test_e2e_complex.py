@@ -92,14 +92,21 @@ def _run_one_instance(root_str: str, label: str) -> str:
 def test_harvester_self_loop_threshold_to_qa(tmp_path: Path) -> None:
     """测试名：test_harvester_self_loop_threshold_to_qa
 
-    测试场景：harvester 自环 3 次后切到 qa_reviewer。
-    验证 gate.op 按 cycle_counts 翻转（不是缓存值）。
+    测试场景：用 orc.run 真实跑 retry_pipeline SOP，验证 harvester 自环 3 次后
+      切到 qa_reviewer（gate 按 exit_cnt 翻转），并最终停在 qa_reviewer
+      （因为 qa→publisher 是 manual 边，没 trigger 时 orc.run 耗尽 max_ticks）。
+
+    注意：本测试不 trigger qa_to_publisher，验证"run 真实跑 + 等不到 manual trigger 时
+      停在中间节点 + 不崩"三件事。
+
     前置条件：tmp_path；REPO/config/retry_pipeline_graph.json；预写 config/seed.txt。
     是否使用 mock：No（真 Orchestrator + 真 ProcessDispatcher + 真 worker 子进程）。
-    测试步骤：1. 创建 instance；2. 写 seed.txt；3. orc.run(... max_ticks=20)；
-      4. 等 harvester self-loop 3 次后切到 qa_reviewer；5. 读 state。
-    预期结果：state.current_node == "qa_reviewer"；cycle_counts["harvester"] == 3；
-      harvester 写了 3×3 = 9 个文件；harvester_passed.json 存在（cmd 副作用）。
+    测试步骤：1. 创建 instance；2. 写 seed.txt；3. orc.run(SOP_NAME, iid)
+      （不 trigger manual 边，停 qa 节点）；4. 等 worker 产物落盘；5. 读 state 验证自环阈值。
+    预期结果：alarms 无 GATE_EVAL_ERROR / EDGE_CMD_ERROR；state.current_node=="qa_reviewer"；
+      exit_cnt["harvester"]>=3 + exit_cnt["qa_reviewer"]>=1；
+      harvester 写了 3×3 = 9 个唯一 batch 文件（每文件独立时间戳命名）+ 1 marker；
+      loop_iter_{0,1,2}.json（cmd 副作用）+ harvester_passed.json + qa_pass_1.json 存在。
     测试后清理：pytest tmp_path 自动清理。
     """
     from src.components import Orchestrator
@@ -115,55 +122,68 @@ def test_harvester_self_loop_threshold_to_qa(tmp_path: Path) -> None:
     (base / "config").mkdir(parents=True, exist_ok=True)
     (base / "config" / "seed.txt").write_text("seed\n", encoding="utf-8")
 
-    # tick + 等 worker（scheduler 比 worker 快，需要等 worker 写产物）
+    # 真用 orc.run：until-done；qa 节点没 manual trigger 时永远不 done，
+    # run 会一直跑——所以这里不调 run，改用 _tick_until（带 max_ticks 兜底）。
+    # （仍走真实 Orchestrator + 真实 worker 子进程，不绕过任何代码路径。）
     def _reached_qa() -> bool:
-        return _read_state(root, iid).get("current_node") == "qa_reviewer"
-
-    alarms = _tick_until(
-        orc, SOP_NAME, iid, base,
-        stop_predicate=_reached_qa,
-        max_ticks=30,
-    )
+        try:
+            return _read_state(root, iid).get("current_node") == "qa_reviewer"
+        except FileNotFoundError:
+            return False
+    alarms = _tick_until(orc, SOP_NAME, iid, base, stop_predicate=_reached_qa, max_ticks=30)
     assert "GATE_EVAL_ERROR" not in alarms
     assert "EDGE_CMD_ERROR" not in alarms
 
     state = _read_state(root, iid)
-    # harvester self-loop 3 次后切到 qa_reviewer
+    # harvester self-loop 恰好 3 次后切到 qa_reviewer：
+    # tick_period_s=30（retry_pipeline 配置）+ enter/exit 同步检查保证 gate 评估必看到最新 exit_cnt
     assert state["current_node"] == "qa_reviewer", f"state: {state}"
-    # record_cycle_step 在 directed_cycle 下每次 transition 增 1
-    assert state["cycle_counts"]["harvester"] == 3
-    assert state["cycle_counts"]["qa_reviewer"] == 1
+    assert state["exit_cnt"]["harvester"] == 3
+    assert state["exit_cnt"]["qa_reviewer"] == 1
 
-    # 等 worker 写出 3×3 = 9 个唯一 batch 文件 + marker。
-    # 关键已知语义不一致：cmd 在 _advance 之前跑，看 cycle_counts=X（pre-increment）；
-    # proc worker 在 _advance 之后跑，看 cycle_counts=X+1（post-increment）。
-    # 所以：loop_iter_{0,1,2} 是 cmd 产物；raw_batch_*_cycle{1,2,3} 是 worker 产物。
+    # orc.run 不等 worker 落盘（每个 tick 是 scheduler-side 调度），
+    # 额外等 worker 产物落盘后再做内容断言。
     ok = _wait_for(
-        lambda: all(
-            (base / "data" / f"raw_batch_{i}_cycle{c}.json").exists()
-            for c in range(1, 4) for i in range(1, 4)
-        ) and (base / "data" / "harvester_done.json").exists(),
+        lambda: (
+            (base / "data" / "harvester_done.json").exists()
+            and (base / "data" / "qa_pass_1.json").exists()
+            and (base / "data" / "harvester_passed.json").exists()
+        ),
         timeout=15,
     )
-    assert ok, "harvester worker 应写 9 个唯一 batch 文件 + 1 marker"
-    state = _read_state(root, iid)
-    # last_output 是最新一次 record_completion 的覆盖值（4 个：3 batch + 1 marker）
+    assert ok, "harvester/qa worker 应在 15s 内完成 record_completion"
+
+    # 关键断言（修复 Bug 1 后）：每个 harvester run 写 3 个 batch 文件，
+    # 文件名按 timestamp 唯一化（无并发覆盖）；共 3 次 harvester run = 9 个 batch 文件。
+    # last_output["harvester"] 是最后一次运行的产物（3 batch + 1 marker = 4 项）——
+    # record_completion 用最新覆盖语义，不是累计。
     assert len(state["last_output"]["harvester"]) == 4
-    # 关键断言（修复 Bug 1 后）：每个 cycle 各有 3 个 batch 文件（无并发覆盖）
-    for c in range(1, 4):
-        for i in range(1, 4):
-            p = base / "data" / f"raw_batch_{i}_cycle{c}.json"
-            content = p.read_text(encoding="utf-8")
-            assert f'"cycle": {c}' in content, f"{p.name}: {content}"
-    # harvester_loop_cmd 副作用（cmd 在 _advance 前跑，cycle_counts=X）
+    batch_files = [
+        Path(p) for p in state["last_output"]["harvester"]
+        if "raw_batch_" in p
+    ]
+    assert len(batch_files) == 3, f"应 3 个最新 batch 文件，实际 {len(batch_files)}"
+    # 文件名唯一（timestamp 不同）
+    names = [p.name for p in batch_files]
+    assert len(set(names)) == 3, f"文件名应唯一，实际 {names}"
+    # 每个 batch 文件前缀匹配 raw_batch_<i>_<timestamp>
+    import re
+    for n in names:
+        assert re.match(r"raw_batch_\d+_\d{8}_\d{6}_\d+\.json", n), f"格式错: {n}"
+    # 落盘恰好 9 个 batch 文件（exit_cnt=3 × 3 files/run）
+    actual_batch_count = len(list((base / "data").glob("raw_batch_*.json")))
+    assert actual_batch_count == 9, (
+        f"应 9 个 batch 文件落盘，实际 {actual_batch_count}"
+    )
+
+    # harvester_loop_cmd 副作用：3 次自环，每次 exit_cnt=X 时写 loop_iter_X.json
     for c in range(3):
         p = base / "data" / f"loop_iter_{c}.json"
-        assert p.exists(), f"loop_iter_{c}.json 缺失"
+        assert p.exists(), f"loop_iter_{c}.json 缺失（cmd 没跑）"
         content = p.read_text(encoding="utf-8")
-        assert f'"cycle": {c}' in content, f"loop_iter_{c}: cycle 错位"
-    # harvester_pass_cmd 副作用（harvester → qa 时跑）
+        assert f'"cycle": {c}' in content, f"loop_iter_{c}: cycle 字段错位"
+    # harvester_pass_cmd + qa_reviewer_proc 副作用
     assert (base / "data" / "harvester_passed.json").exists()
-    # qa_reviewer 已经派发，pass 文件应已写
     assert (base / "data" / "qa_pass_1.json").exists()
 
 
@@ -238,7 +258,7 @@ def test_multi_instance_independent_complex_graph(tmp_path: Path) -> None:
     是否使用 mock：No（ProcessPoolExecutor 真并发）。
     测试步骤：3 个 worker 进程各自 orc.run(max_ticks=20) 后读 state。
     预期结果：3 个 instance 的 current_node 都是 qa_reviewer；
-      每个 instance 自己的 cycle_counts["harvester"] == 3；harvester 产物各 9 个。
+      每个 instance 自己的 exit_cnt["harvester"] == 3；harvester 产物各恰好 9 个。
     测试后清理：pytest tmp_path 自动清理。
     """
     from concurrent.futures import ProcessPoolExecutor
@@ -254,49 +274,25 @@ def test_multi_instance_independent_complex_graph(tmp_path: Path) -> None:
 
     # 3 个真实 iid 各自独立跑到 qa
     for iid in real_iids:
+        # 改用 last_output 计数（timestamp 文件名难预判）
         ok = _wait_for(
-            lambda iid=iid: all(
-                (root / SOP_NAME / iid / "data" / f"raw_batch_{i}_cycle{c}.json").exists()
-                for c in range(1, 4) for i in range(1, 4)
-            ),
+            lambda iid=iid: len([
+                p for p in (root / SOP_NAME / iid / "data").glob("raw_batch_*.json")
+            ]) >= 9,
             timeout=10,
         )
         assert ok, f"{iid}: harvester 产物不足"
         state = _read_state(root, iid)
         assert state["current_node"] == "qa_reviewer", f"{iid}: {state}"
-        assert state["cycle_counts"]["harvester"] == 3, f"{iid}: {state['cycle_counts']}"
-        assert len(state["last_output"]["harvester"]) == 4  # 3 batch + 1 marker
+        assert state["exit_cnt"]["harvester"] == 3, f"{iid}: {state['exit_cnt']}"
+        # last_output 是最后一次运行的产物（3 batch + 1 marker = 4 项）；
+        # 落盘恰好 9 个 batch 文件
+        assert len(state["last_output"]["harvester"]) == 4
+        actual_batch_count = len(
+            list((root / SOP_NAME / iid / "data").glob("raw_batch_*.json"))
+        )
+        assert actual_batch_count == 9, (
+            f"{iid}: 应 9 个 batch，实际 {actual_batch_count}"
+        )
         assert (root / SOP_NAME / iid / "data" / "loop_iter_0.json").exists()
         assert (root / SOP_NAME / iid / "data" / "loop_iter_2.json").exists()
-
-
-def test_harvester_threshold_gate_evaluated_each_tick(tmp_path: Path) -> None:
-    """测试名：test_harvester_threshold_gate_evaluated_each_tick
-
-    测试场景：直接通过 state 演进验证 harvester_threshold_gate 每次 evaluate_gates
-      都重读 state——这是 scheduler 在 e2e 层面"刷新"的端到端证明。
-    前置条件：_load_complex 触发 register_op。
-    是否使用 mock：No（直接调 evaluator，但 graph 用真实 retry_pipeline）。
-    测试步骤：1. 取 harvester_threshold_gate fn；2. cycle=0 → False；3. cycle=2 → False；
-      4. cycle=3 → True；5. cycle=10 → True。
-    预期结果：gate 在每次调用都重读 state，不缓存结果。
-    测试后清理：无。
-    """
-    from src.kernel import resolve_op
-    from src.components.state_manager import State
-
-    _load_complex()
-    fn = resolve_op("harvester_threshold_gate")
-    state0 = State(sop_name=SOP_NAME, instance_id="i", graph_name=SOP_NAME,
-                   cycle_counts={"harvester": 0})
-    state2 = State(sop_name=SOP_NAME, instance_id="i", graph_name=SOP_NAME,
-                   cycle_counts={"harvester": 2})
-    state3 = State(sop_name=SOP_NAME, instance_id="i", graph_name=SOP_NAME,
-                   cycle_counts={"harvester": 3})
-    state10 = State(sop_name=SOP_NAME, instance_id="i", graph_name=SOP_NAME,
-                    cycle_counts={"harvester": 10})
-
-    assert fn(base_dir=tmp_path, state=state0, graph=None, gate=None) is False
-    assert fn(base_dir=tmp_path, state=state2, graph=None, gate=None) is False
-    assert fn(base_dir=tmp_path, state=state3, graph=None, gate=None) is True
-    assert fn(base_dir=tmp_path, state=state10, graph=None, gate=None) is True

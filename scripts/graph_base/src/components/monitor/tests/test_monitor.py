@@ -67,7 +67,8 @@ def test_reap_stale_claims_returns_alarms(tmp_path: Path) -> None:
         "current_node": "a",
         "history": [],
         "triggered_edges": {},
-        "cycle_counts": {},
+        "enter_cnt": {},
+        "exit_cnt": {},
         "last_output": {},
         "claim_pid": 9_999_999,  # 不可能存在的 pid
         "claim_ts": 999_999_999_999.0,
@@ -96,7 +97,7 @@ def test_reap_stale_claims_skips_when_no_claim(tmp_path: Path) -> None:
         "sop_name": "sop", "instance_id": "abc", "graph_name": "sop",
         "current_node": "a",
         "history": [], "triggered_edges": {},
-        "cycle_counts": {}, "last_output": {},
+        "enter_cnt": {}, "exit_cnt": {}, "last_output": {},
     }))
     log = _FakeLogger()
     m = Monitor(log)
@@ -123,7 +124,8 @@ def test_detect_progress_reports_manual_pending(tmp_path: Path) -> None:
         "current_node": "a",
         "history": [],
         "triggered_edges": {"e1": "alice"},
-        "cycle_counts": {},
+        "enter_cnt": {},
+        "exit_cnt": {},
         "last_output": {},
         "claim_ts": time.time() - 1000.0,  # 1000 秒前 → age 远超 60
     }))

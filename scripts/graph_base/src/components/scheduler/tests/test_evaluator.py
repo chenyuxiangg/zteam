@@ -13,6 +13,7 @@ from src.components.scheduler.evaluator import (
     match_gate,
     run_edge_cmd,
     select_next_edge,
+    select_next_edges,
     should_run_cmd,
 )
 from src.components.state_manager import State
@@ -49,6 +50,7 @@ def _graph_two_tick_edges() -> Graph:
         name="ev", graph_mode=GraphMode.DIRECTED_CYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a, n_b], gates=[g_ab], edges=[e1, e2],
+        tick_period_s=1.0,
     )
 
 
@@ -105,6 +107,7 @@ def test_should_run_cmd_manual_requires_trigger() -> None:
         name="ev", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a, n_b], gates=[g_ab], edges=[e1],
+        tick_period_s=1.0,
     )
     e = _find_edge(graph, "a_to_b")
     state = State(sop_name="s", instance_id="i", graph_name="g")
@@ -167,6 +170,7 @@ def test_run_edge_cmd_skips_when_cmd_empty(tmp_path: Path) -> None:
         name="x", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n], gates=[g], edges=[e],
+        tick_period_s=1.0,
     )
     state = State(sop_name="s", instance_id="i", graph_name="x")
     run_edge_cmd(graph, e, state, tmp_path)
@@ -220,7 +224,8 @@ def test_evaluate_gates_dedupes_shared_gate_calls(tmp_path: Path) -> None:
         name="ev", graph_mode=GraphMode.DIRECTED_CYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a, n_b, n_c], gates=[g_shared, g_unique],
-        edges=[e1, e2, e3],
+        edges=[e1,e2, e3],
+        tick_period_s=1.0,
     )
     state = State(sop_name="s", instance_id="i", graph_name="g")
     result = evaluate_gates(graph, "a", tmp_path, state)
@@ -232,14 +237,14 @@ def test_evaluate_gates_dedupes_shared_gate_calls(tmp_path: Path) -> None:
 def test_evaluate_gates_refreshes_per_call_with_state(tmp_path: Path) -> None:
     """测试名：test_evaluate_gates_refreshes_per_call_with_state
 
-    测试场景：自环节点的 gate.op 依赖 state（cycle_counts）→ 每次 evaluate_gates
+    测试场景：自环节点的 gate.op 依赖 state（exit_cnt）→ 每次 evaluate_gates
       都重读 state，gate 值随迭代轮次翻转，证明"gate 不缓存、按 tick 刷新"。
-    前置条件：tmp_path；register_op("iter_gate", _iter_gate)（读 state.cycle_counts）。
+    前置条件：tmp_path；register_op("iter_gate", _iter_gate)（读 state.exit_cnt）。
     是否使用 mock：Yes（注册读 state 的 op，模拟依赖当前 state 的 gate）。
     测试步骤：1. 构造图 a→a 自环（gate_value=False，loop 边）+ a→b 出边（gate_value=True，exit 边）；
-      2. 用 cycle_counts={"a":0} state 调 evaluate_gates → 选 loop；
-      3. 用 cycle_counts={"a":1} state 再调 → 选 loop；
-      4. 用 cycle_counts={"a":3} state 再调 → 选 exit；
+      2. 用 exit_cnt={"a":0} state 调 evaluate_gates → 选 loop；
+      3. 用 exit_cnt={"a":1} state 再调 → 选 loop；
+      4. 用 exit_cnt={"a":3} state 再调 → 选 exit；
       5. 校验 gate_value_count（同一 gate 在 3 次 evaluate_gates 调用里被各调 1 次 = 3 次）。
     预期结果：3 次 evaluate_gates 各调 gate.op 1 次（总 3 次，不是 1 次缓存值）；
       前两次 {"iter_gate": False} 选 loop 边；第三次 {"iter_gate": True} 选 exit 边。
@@ -248,9 +253,9 @@ def test_evaluate_gates_refreshes_per_call_with_state(tmp_path: Path) -> None:
     call_count = {"n": 0}
 
     def _iter_gate(base_dir, state, graph, gate) -> bool:
-        """根据 cycle_counts["a"] 决定：< 3 返回 False（走 loop），>= 3 返回 True（走 exit）。"""
+        """根据 exit_cnt["a"] 决定：< 3 返回 False（走 loop），>= 3 返回 True（走 exit）。"""
         call_count["n"] += 1
-        return state.cycle_counts.get("a", 0) >= 3
+        return state.exit_cnt.get("a", 0) >= 3
 
     register_op("iter_gate", _iter_gate)
 
@@ -267,25 +272,26 @@ def test_evaluate_gates_refreshes_per_call_with_state(tmp_path: Path) -> None:
         name="ev", graph_mode=GraphMode.DIRECTED_CYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a, n_b], gates=[g_it], edges=[e_loop, e_exit],
+        tick_period_s=1.0,
     )
 
     # tick 0：循环 0 次 → gate=False → 走 loop 边
     state0 = State(sop_name="s", instance_id="i", graph_name="g",
-                   cycle_counts={"a": 0})
+                   exit_cnt={"a": 0})
     gv0 = evaluate_gates(graph, "a", tmp_path, state0)
     assert gv0 == {"iter_gate": False}
     assert select_next_edge(graph, "a", gv0, state0).name == "a_loop"
 
-    # tick 1：循环 1 次 → gate 仍 False（gate 被重读 state，cycle_counts 已变）
+    # tick 1：循环 1 次 → gate 仍 False（gate 被重读 state，exit_cnt 已变）
     state1 = State(sop_name="s", instance_id="i", graph_name="g",
-                   cycle_counts={"a": 1})
+                   exit_cnt={"a": 1})
     gv1 = evaluate_gates(graph, "a", tmp_path, state1)
     assert gv1 == {"iter_gate": False}
     assert select_next_edge(graph, "a", gv1, state1).name == "a_loop"
 
     # tick 2：循环 3 次 → gate=True → 走 exit 边（不再自环）
     state3 = State(sop_name="s", instance_id="i", graph_name="g",
-                   cycle_counts={"a": 3})
+                   exit_cnt={"a": 3})
     gv3 = evaluate_gates(graph, "a", tmp_path, state3)
     assert gv3 == {"iter_gate": True}
     assert select_next_edge(graph, "a", gv3, state3).name == "a_to_b"
@@ -318,6 +324,7 @@ def test_evaluate_gates_raises_on_op_exception(tmp_path: Path) -> None:
         name="ev", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a], gates=[g_g], edges=[e],
+        tick_period_s=1.0,
     )
     state = State(sop_name="s", instance_id="i", graph_name="g")
     with pytest.raises(GateEvalError, match="op_boom"):
@@ -348,7 +355,107 @@ def test_run_edge_cmd_raises_on_cmd_exception(tmp_path: Path) -> None:
         name="ev", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a], gates=[g_g], edges=[e],
+        tick_period_s=1.0,
     )
     state = State(sop_name="s", instance_id="i", graph_name="g")
     with pytest.raises(EdgeCmdError, match="cmd_boom"):
         run_edge_cmd(graph, e, state, tmp_path)
+
+
+# ───────────── select_next_edges 多边并行测试 ─────────────
+
+
+def _graph_parallel_fanout() -> Graph:
+    """a 节点有 3 条 parallel=True 出边（gate_value=True 共用），均指向不同 onode。
+    """
+    n_a = Node(name="a", iport=(), oport=(("f/a.md",),),
+               attr=NodeAttr(is_src=True, role="r"))
+    n_b = Node(name="b", iport=(), oport=(), attr=NodeAttr(role="r"))
+    n_c = Node(name="c", iport=(), oport=(), attr=NodeAttr(role="r"))
+    n_d = Node(name="d", iport=(), oport=(),
+               attr=NodeAttr(is_sink=True, role="r"))
+    g_ab = Gate(name="g_ab", op="op_ab", enum_dir=(True,))
+    e1 = Edge(name="a_to_b", inode="a", onode="b",
+              driver="tick", gate="g_ab", gate_value=True, cmd="c1",
+              parallel=True)
+    e2 = Edge(name="a_to_c", inode="a", onode="c",
+              driver="tick", gate="g_ab", gate_value=True, cmd="c2",
+              parallel=True)
+    e3 = Edge(name="a_to_d", inode="a", onode="d",
+              driver="tick", gate="g_ab", gate_value=True, cmd="c3",
+              parallel=True)
+    return Graph.build(
+        name="ev", graph_mode=GraphMode.DIRECTED_CYCLE,
+        pre_handle="", post_handle="",
+        nodes=[n_a, n_b, n_c, n_d], gates=[g_ab], edges=[e1, e2, e3],
+        tick_period_s=1.0,
+    )
+
+
+def test_select_next_edges_returns_all_parallel_group() -> None:
+    """测试名：test_select_next_edges_returns_all_parallel_group
+
+    测试场景：inode 的所有匹配边都是 parallel=True 时，select_next_edges 返回整组。
+    前置条件：_graph_parallel_fanout。
+    是否使用 mock：No。
+    测试步骤：select_next_edges(g, "a", {"g_ab": True}, state)。
+    预期结果：返回 3 条边，names 按声明顺序（a_to_b, a_to_c, a_to_d）。
+    测试后清理：无。
+    """
+    g = _graph_parallel_fanout()
+    state = State(sop_name="s", instance_id="i", graph_name="g")
+    edges = select_next_edges(g, "a", {"g_ab": True}, state)
+    assert len(edges) == 3
+    assert [e.name for e in edges] == ["a_to_b", "a_to_c", "a_to_d"]
+
+
+def test_select_next_edges_returns_empty_when_no_match() -> None:
+    """测试名：test_select_next_edges_returns_empty_when_no_match
+
+    测试场景：gate_values 无匹配时 select_next_edges 返回空列表。
+    前置条件：_graph_parallel_fanout；gate_values["g_ab"] = None。
+    是否使用 mock：No。
+    测试步骤：select_next_edges(g, "a", {"g_ab": None}, state)。
+    预期结果：返回 []（与 select_next_edge 返回 None 的语义不同——多边版用空列表）。
+    测试后清理：无。
+    """
+    g = _graph_parallel_fanout()
+    state = State(sop_name="s", instance_id="i", graph_name="g")
+    edges = select_next_edges(g, "a", {"g_ab": None}, state)
+    assert edges == []
+
+
+def test_select_next_edge_returns_first_of_parallel_group() -> None:
+    """测试名：test_select_next_edge_returns_first_of_parallel_group
+
+    测试场景：select_next_edge 是 select_next_edges 的向后兼容便捷封装，
+    返回整组中的第一条（primary）。
+    前置条件：_graph_parallel_fanout。
+    是否使用 mock：No。
+    测试步骤：select_next_edge(g, "a", {"g_ab": True}, state)。
+    预期结果：返回 a_to_b（edges[0]）。
+    测试后清理：无。
+    """
+    g = _graph_parallel_fanout()
+    state = State(sop_name="s", instance_id="i", graph_name="g")
+    edge = select_next_edge(g, "a", {"g_ab": True}, state)
+    assert edge is not None
+    assert edge.name == "a_to_b"
+
+
+def test_select_next_edges_non_parallel_returns_single() -> None:
+    """测试名：test_select_next_edges_non_parallel_returns_single
+
+    测试场景：匹配边非 parallel 时 select_next_edges 只返回首条命中
+    （向后兼容单条语义）。
+    前置条件：_graph_two_tick_edges（a→b True / a→a False，全 parallel=False 默认）。
+    是否使用 mock：No。
+    测试步骤：select_next_edges(g, "a", {"g_ab": True}, state)。
+    预期结果：返回 [a_to_b]（仅 1 条）。
+    测试后清理：无。
+    """
+    g = _graph_two_tick_edges()
+    state = State(sop_name="s", instance_id="i", graph_name="g")
+    edges = select_next_edges(g, "a", {"g_ab": True}, state)
+    assert len(edges) == 1
+    assert edges[0].name == "a_to_b"

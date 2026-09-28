@@ -22,14 +22,17 @@ class CycleProgress:
 
 
 def detect_cycle_progress(graph: Graph, state: State) -> CycleProgress:
-    """cycle 模式：调 kernel.cycle_check 拿所有环；统计 cycle_counts 是否超阈值。"""
+    """cycle 模式：调 kernel.cycle_check 拿所有环；统计 exit_cnt 是否超阈值。
+
+    用 exit_cnt 而非 enter_cnt：只有 worker 真完成的次数算"进度"，in-flight 不算。
+    """
     cycles = cycle_check(graph)
     cycle_nodes: set[str] = set()
     for c in cycles:
         cycle_nodes.update(c)
     if not cycle_nodes:
         return CycleProgress(max_count=0, cycle_nodes=(), over_threshold=False)
-    max_count = max(state.cycle_counts.get(n, 0) for n in cycle_nodes)
+    max_count = max(state.exit_cnt.get(n, 0) for n in cycle_nodes)
     return CycleProgress(
         max_count=max_count,
         cycle_nodes=tuple(sorted(cycle_nodes)),

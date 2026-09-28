@@ -47,7 +47,8 @@ class StateManager:
             current_node=data.get("current_node"),
             history=tuple(tuple(h) for h in data.get("history", [])),
             triggered_edges=dict(data.get("triggered_edges", {})),
-            cycle_counts=dict(data.get("cycle_counts", {})),
+            enter_cnt=dict(data.get("enter_cnt", {})),
+            exit_cnt=dict(data.get("exit_cnt", {})),
             last_output={k: tuple(v) for k, v in data.get("last_output", {}).items()},
         )
 
@@ -61,7 +62,8 @@ class StateManager:
             "current_node": state.current_node,
             "history": [list(h) for h in state.history],
             "triggered_edges": dict(state.triggered_edges),
-            "cycle_counts": dict(state.cycle_counts),
+            "enter_cnt": dict(state.enter_cnt),
+            "exit_cnt": dict(state.exit_cnt),
             "last_output": {k: list(v) for k, v in state.last_output.items()},
         }
         write_state(Path(state_file), payload)
@@ -84,7 +86,7 @@ class StateManager:
 
     @staticmethod
     def rollback(state: State, node_name: str, reason: str, base_dir: Path) -> State:
-        """回退 current_node；清 triggered_edges / claim / last_output 文件；保留 cycle_counts。"""
+        """回退 current_node；清 triggered_edges / claim / last_output 文件；保留 enter_cnt / exit_cnt。"""
         # 1. 找 node_name 的前驱
         prev_idx = -1
         for i, (n, _) in enumerate(state.history):
@@ -145,11 +147,18 @@ class StateManager:
         return kernel_claim(Path(state_file), pid=os.getpid(), owner=owner)
 
     @staticmethod
-    def record_cycle_step(state: State, node_name: str) -> State:
-        """cycle 节点走过 +1。"""
-        new_counts = dict(state.cycle_counts)
-        new_counts[node_name] = new_counts.get(node_name, 0) + 1
-        return state.evolve(cycle_counts=new_counts)
+    def record_enter(state: State, node_name: str) -> State:
+        """worker 进入 node.proc 时调用：enter_cnt[node] += 1。"""
+        new_enter = dict(state.enter_cnt)
+        new_enter[node_name] = new_enter.get(node_name, 0) + 1
+        return state.evolve(enter_cnt=new_enter)
+
+    @staticmethod
+    def record_exit(state: State, node_name: str) -> State:
+        """worker 完成 node.proc 时调用（record_completion 之后）：exit_cnt[node] += 1。"""
+        new_exit = dict(state.exit_cnt)
+        new_exit[node_name] = new_exit.get(node_name, 0) + 1
+        return state.evolve(exit_cnt=new_exit)
 
 
 def _iso_now() -> str:

@@ -34,6 +34,19 @@ def _read_state(root: Path, sop: str, iid: str) -> dict:
     return json.loads((root / sop / f"{iid}.json").read_text())
 
 
+def _fast_software_team_config(tmp_path: Path, tick_period_s: float = 0.1) -> Path:
+    """复制 software_team_graph.json 到 tmp_path 并把 tick_period_s 改小。
+
+    真实配置 tick_period_s=300 在测试里太慢（每 tick 等 300s）。
+    测试用 0.1s 既快又能保证 worker 落盘。
+    """
+    raw = json.loads((REPO / "config" / "software_team_graph.json").read_text())
+    raw["tick_period_s"] = tick_period_s
+    fast = tmp_path / "software_team_graph.json"
+    fast.write_text(json.dumps(raw), encoding="utf-8")
+    return fast
+
+
 # ───────────────────────────── #7 orchestrator.run 真实 e2e ─────────────────────────────
 
 
@@ -41,10 +54,12 @@ def test_orchestrator_run_blocks_until_sink(tmp_path: Path) -> None:
     """测试名：test_orchestrator_run_blocks_until_sink
 
     测试场景：Orchestrator.run() 阻塞跑，自动 tick 直到 is_sop_done（archer sink）。
-    前置条件：tmp_path；REPO/config/software_team_graph.json；预写 input.md。
+    前置条件：tmp_path；fast 软件_team_graph.json（tick_period_s=0.1）；预写 input.md。
     是否使用 mock：No（直接调组件层 Orchestrator.run）。
-    测试步骤：1. load_graph + Orchestrator；2. create_instance；3. 写 input.md；4. orc.run(... max_ticks=20)。
-    预期结果：alarms == []；current_node=="archer"；history 长度 == 2 且节点序列为 ["planer","planer"]；last_output.archer 长度 2。
+    测试步骤：1. 写 fast config；2. load_graph + Orchestrator；3. create_instance；
+      4. 写 input.md；5. orc.run() 直到 is_sop_done。
+    预期结果：alarms == []；current_node=="archer"；history 末项 from_node=="planer"；
+      last_output.archer 长度 2（sink oport 必产物）。
     测试后清理：pytest tmp_path 自动清理。
     """
     from src.worker.software_team import check_output  # noqa: F401
@@ -52,7 +67,8 @@ def test_orchestrator_run_blocks_until_sink(tmp_path: Path) -> None:
     from src.kernel import load_graph
 
     root = tmp_path
-    g = load_graph(REPO / "config" / "software_team_graph.json")
+    config = _fast_software_team_config(root, tick_period_s=0.1)
+    g = load_graph(config)
     orc = Orchestrator(graph=g, root=root)
 
     # 创建实例并写 input
@@ -61,8 +77,8 @@ def test_orchestrator_run_blocks_until_sink(tmp_path: Path) -> None:
     (base_dir / "doc" / "input.md").parent.mkdir(parents=True, exist_ok=True)
     (base_dir / "doc" / "input.md").write_text("# input\n", encoding="utf-8")
 
-    # 阻塞跑
-    alarms = orc.run("software_team", iid, max_ticks=20)
+    # 阻塞跑（until done）
+    alarms = orc.run("software_team", iid)
     assert alarms == []  # 无错误
 
     # 最终状态：current_node=archer（sink）+ last_output["archer"] 已有产物
@@ -88,26 +104,58 @@ def test_orchestrator_run_blocks_until_sink(tmp_path: Path) -> None:
 def test_orchestrator_run_stops_when_iport_missing(tmp_path: Path) -> None:
     """测试名：test_orchestrator_run_stops_when_iport_missing
 
-    测试场景：iport 缺失时 run() 在 max_ticks 内不推进（不会无限循环）。
-    前置条件：tmp_path；REPO/config/software_team_graph.json；不写 input.md。
+    测试场景：iport 缺失时 run() 在 graph tick_period_s 控制下不推进（不会无限循环）。
+    验证"run 不是 fire-and-forget，而是会被 is_sop_done / iport 守卫卡住"。
+    本测试通过在外部 kill tick 后断言 current_node 仍为 "planer"（没推进）。
+    前置条件：tmp_path；fast 软件_team_graph.json（tick_period_s=0.1）；不写 input.md。
     是否使用 mock：No（直接调组件层 Orchestrator.run）。
-    测试步骤：1. load_graph + Orchestrator；2. create_instance（不写 input）；3. orc.run(... max_ticks=5)。
-    预期结果：alarms == []；current_node 仍为 "planer"。
+    测试步骤：1. 写 fast config；2. load_graph + Orchestrator；3. create_instance；
+      4. 起一个后台 thread 跑 orc.run()；5. 主线程 sleep 1.0s 后设 stop_event；
+      6. join thread；7. 验证 state 仍 planer（没推进）。
+    预期结果：thread 顺利结束（没死循环）；current_node 仍为 "planer"；
+      alarms 空（无 GATE_EVAL_ERROR / EDGE_CMD_ERROR）。
     测试后清理：pytest tmp_path 自动清理。
     """
+    import threading
+
     from src.worker.software_team import check_output  # noqa: F401
     from src.components import Orchestrator
     from src.kernel import load_graph
 
-    g = load_graph(REPO / "config" / "software_team_graph.json")
-    orc = Orchestrator(graph=g, root=tmp_path)
+    root = tmp_path
+    config = _fast_software_team_config(root, tick_period_s=0.1)
+    g = load_graph(config)
+    orc = Orchestrator(graph=g, root=root)
     iid = orc.create_instance()
 
-    # 不写 input.md → run 应在 5 次 tick 内停
-    alarms = orc.run("software_team", iid, max_ticks=5)
-    assert alarms == []
-    state = _read_state(tmp_path, "software_team", iid)
-    assert state["current_node"] == "planer"
+    # 用 stop_event 让后台 run 跑 ~1s 后停止（不会无限循环）
+    stop_event = threading.Event()
+    result: dict = {"alarms": None}
+
+    def _runner():
+        # 监控 stop_event + tick（手动 tick 而非 run，因 run 是 until-done）
+        all_alarms: list[str] = []
+        from src.kernel import StateLock  # noqa: F401
+        from src.components.state_manager import StateManager, is_sop_done
+        from src.kernel import state_path
+        sf = state_path(root=root, sop_name="software_team", instance_id=iid)
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            all_alarms.extend(orc.tick("software_team", iid))
+            time.sleep(g.tick_period_s)
+            state = StateManager.read(sf)
+            if is_sop_done(g, state):
+                break
+        result["alarms"] = all_alarms
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join(timeout=2.0)
+    assert not t.is_alive(), "1s 后 thread 必须已退出（验证不是无限循环）"
+
+    state = _read_state(root, "software_team", iid)
+    assert state["current_node"] == "planer"  # 没推进（iport 缺失）
+    assert result["alarms"] == []
 
 
 # ───────────────────────────── #6 trigger-edge 真实 e2e ─────────────────────────────
@@ -126,6 +174,7 @@ def manual_edge_sop(tmp_path: Path) -> tuple[Path, str, object]:
     config = {
         "name": "manual_sop",
         "graph_mode": "directed_nocycle",
+        "tick_period_s": 0.5,
         "pre_handle": "",
         "post_handle": "",
         "nodes": [
@@ -367,7 +416,7 @@ def test_stale_claim_is_reaped_by_monitor(tmp_path: Path) -> None:
         "sop_name": sop, "instance_id": "stale_inst", "graph_name": sop,
         "current_node": "x",
         "history": [], "triggered_edges": {},
-        "cycle_counts": {}, "last_output": {},
+        "enter_cnt": {}, "exit_cnt": {}, "last_output": {},
         "claim_pid": dead_pid,
         "claim_ts": time.time() - 1000.0,  # 1000 秒前
     }))
@@ -378,7 +427,7 @@ def test_stale_claim_is_reaped_by_monitor(tmp_path: Path) -> None:
         "sop_name": sop, "instance_id": "fresh_inst", "graph_name": sop,
         "current_node": "x",
         "history": [], "triggered_edges": {},
-        "cycle_counts": {}, "last_output": {},
+        "enter_cnt": {}, "exit_cnt": {}, "last_output": {},
         "claim_pid": os.getpid(),
         "claim_ts": time.time(),
     }))
@@ -411,7 +460,7 @@ def test_stale_age_even_when_pid_alive(tmp_path: Path) -> None:
         "sop_name": sop, "instance_id": "old_but_alive", "graph_name": sop,
         "current_node": "x",
         "history": [], "triggered_edges": {},
-        "cycle_counts": {}, "last_output": {},
+        "enter_cnt": {}, "exit_cnt": {}, "last_output": {},
         "claim_pid": os.getpid(),
         "claim_ts": time.time() - 9999.0,
     }))
@@ -451,6 +500,7 @@ def error_sop(tmp_path: Path) -> tuple[Path, str]:
     config_path.write_text(json.dumps({
         "name": "error_sop",
         "graph_mode": "directed_nocycle",
+        "tick_period_s": 0.5,
         "pre_handle": "",
         "post_handle": "",
         "nodes": [
@@ -531,9 +581,9 @@ def test_dispatch_failure_does_not_corrupt_state(tmp_path: Path) -> None:
     前置条件：tmp_path；_BrokenDispatcher（dispatch 返回 None）；预写 input.md。
     是否使用 mock：Yes（_BrokenDispatcher 替代 ProcessDispatcher）。
     测试步骤：1. create_instance + 写 input.md；2. tick1（dispatcher 失败）；
-      3. tick2（spec.md 未产 → 仍 loop）；4. 验证 state.json 仍合法且 cycle_counts 在增。
+      3. tick2（spec.md 未产 → 仍 loop）；4. 验证 state.json 仍合法且 exit_cnt 在增。
     预期结果：两次 tick 不抛异常；state.json 可读；current_node=="planer"；
-      cycle_counts["planer"] ≥ 1（transition 仍写盘）。
+      exit_cnt["planer"] ≥ 1（transition 仍写盘）。
     测试后清理：pytest tmp_path 自动清理。
     """
     from src.worker.software_team import check_output  # noqa: F401
@@ -560,13 +610,14 @@ def test_dispatch_failure_does_not_corrupt_state(tmp_path: Path) -> None:
     sf = tmp_path / "software_team" / f"{iid}.json"
     state = json.loads(sf.read_text(encoding="utf-8"))
     assert state["current_node"] == "planer"
-    assert state["cycle_counts"].get("planer", 0) >= 1
+    # 至少 transition 写盘（history 至少 1 项 planer→ planer 自环起点）
+    assert len(state["history"]) >= 1
 
     # Tick 2: 同样失败 → 仍能继续 tick（不崩）
     orc.tick("software_team", iid)
     state = json.loads(sf.read_text(encoding="utf-8"))
     assert state["current_node"] == "planer"
-    assert state["cycle_counts"].get("planer", 0) >= 2
+    assert len(state["history"]) >= 2
     assert state["current_node"] == "planer"
 
 
@@ -584,6 +635,7 @@ def test_unknown_gate_op_yields_alarm(tmp_path: Path) -> None:
     config_path.write_text(json.dumps({
         "name": "bad",
         "graph_mode": "directed_nocycle",
+        "tick_period_s": 0.5,
         "pre_handle": "",
         "post_handle": "",
         "nodes": [

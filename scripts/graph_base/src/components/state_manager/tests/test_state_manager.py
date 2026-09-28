@@ -35,6 +35,7 @@ def _build_graph() -> Graph:
         name="sm", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n1, n2], gates=[g1], edges=[e1],
+        tick_period_s=1.0,
     )
 
 
@@ -135,12 +136,12 @@ def test_record_completion_writes_last_output() -> None:
 def test_rollback_clears_triggered_and_last_output(tmp_path: Path) -> None:
     """测试名：test_rollback_clears_triggered_and_last_output
 
-    测试场景：rollback 清 triggered_edges + last_output；保留 cycle_counts；
+    测试场景：rollback 清 triggered_edges + last_output；保留 enter_cnt / exit_cnt；
       current_node 回到 history 中回退点之前一项。
-    前置条件：tmp_path；state 含 history=[a,b] + triggered_edges + cycle_counts + last_output 假文件路径。
+    前置条件：tmp_path；state 含 history=[a,b] + triggered_edges + enter/exit_cnt + last_output 假文件路径。
     是否使用 mock：No。
     测试步骤：StateManager.rollback(state, "a", "manual", base_dir=tmp_path)。
-    预期结果：current_node is None（a 之前无项）；triggered_edges 清空；cycle_counts 保留；
+    预期结果：current_node is None（a 之前无项）；triggered_edges 清空；enter_cnt / exit_cnt 保留；
       last_output["a"] 被移除。
     测试后清理：pytest tmp_path 自动清理。
     """
@@ -149,14 +150,16 @@ def test_rollback_clears_triggered_and_last_output(tmp_path: Path) -> None:
         sop_name="s", instance_id="i", graph_name="g", current_node="b",
         history=(("a", "2025-01-01T00:00:00"), ("b", "2025-01-01T00:01:00")),
         triggered_edges={"e1": "alice"},
-        cycle_counts={"a": 3},
+        enter_cnt={"a": 3},
+        exit_cnt={"a": 3},
         last_output={"a": ("/tmp/__should_be_deleted__.md",)},
     )
     StateManager.write(state_file, state)
     new_state = StateManager.rollback(state, "a", "manual", base_dir=tmp_path)
     assert new_state.current_node is None  # a 之前没有项
     assert dict(new_state.triggered_edges) == {}
-    assert dict(new_state.cycle_counts) == {"a": 3}  # 保留
+    assert dict(new_state.enter_cnt) == {"a": 3}  # 保留
+    assert dict(new_state.exit_cnt) == {"a": 3}  # 保留
     assert "a" not in new_state.last_output
 
 
@@ -181,19 +184,36 @@ def test_trigger_edge_appends_to_state(tmp_path: Path) -> None:
     assert loaded.triggered_edges["a_to_b"] == "alice"
 
 
-def test_record_cycle_step_increments() -> None:
-    """测试名：test_record_cycle_step_increments
+def test_record_enter_increments_enter_cnt() -> None:
+    """测试名：test_record_enter_increments_enter_cnt
 
-    测试场景：record_cycle_step 把指定节点 cycle_counts +1。
-    前置条件：state cycle_counts={"a":2}。
+    测试场景：record_enter 把指定节点 enter_cnt +1。
+    前置条件：state enter_cnt={"a":2}。
     是否使用 mock：No。
-    测试步骤：StateManager.record_cycle_step(state, "a")。
-    预期结果：new_state.cycle_counts["a"] == 3。
+    测试步骤：StateManager.record_enter(state, "a")。
+    预期结果：new_state.enter_cnt["a"] == 3；exit_cnt 不变。
     测试后清理：无。
     """
-    state = State(sop_name="s", instance_id="i", graph_name="g", cycle_counts={"a": 2})
-    new_state = StateManager.record_cycle_step(state, "a")
-    assert new_state.cycle_counts["a"] == 3
+    state = State(sop_name="s", instance_id="i", graph_name="g", enter_cnt={"a": 2})
+    new_state = StateManager.record_enter(state, "a")
+    assert new_state.enter_cnt["a"] == 3
+    assert dict(new_state.exit_cnt) == {}  # exit 不变
+
+
+def test_record_exit_increments_exit_cnt() -> None:
+    """测试名：test_record_exit_increments_exit_cnt
+
+    测试场景：record_exit 把指定节点 exit_cnt +1。
+    前置条件：state exit_cnt={"a":2}。
+    是否使用 mock：No。
+    测试步骤：StateManager.record_exit(state, "a")。
+    预期结果：new_state.exit_cnt["a"] == 3；enter_cnt 不变。
+    测试后清理：无。
+    """
+    state = State(sop_name="s", instance_id="i", graph_name="g", exit_cnt={"a": 2})
+    new_state = StateManager.record_exit(state, "a")
+    assert new_state.exit_cnt["a"] == 3
+    assert dict(new_state.enter_cnt) == {}  # enter 不变
 
 
 def test_claim_returns_true_when_empty(tmp_path: Path) -> None:

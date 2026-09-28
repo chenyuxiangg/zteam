@@ -55,6 +55,7 @@ def sample_graph() -> Graph:
         nodes=[n1, n2],
         gates=[g1],
         edges=[e1, e2],
+        tick_period_s=1.0,
     )
 
 
@@ -79,4 +80,5 @@ def linear_graph() -> Graph:
         nodes=[n_a, n_b, n_c],
         gates=[g_ab, g_bc],
         edges=[e1, e2],
+        tick_period_s=1.0,
     )

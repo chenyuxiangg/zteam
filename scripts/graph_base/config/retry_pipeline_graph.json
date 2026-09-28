@@ -1,6 +1,7 @@
 {
   "name": "retry_pipeline",
   "graph_mode": "directed_cycle",
+  "tick_period_s": 30,
   "pre_handle": "",
   "post_handle": "",
   "nodes": [

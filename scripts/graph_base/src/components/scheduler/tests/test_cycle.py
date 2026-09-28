@@ -32,6 +32,7 @@ def _cycle_graph() -> Graph:
         name="cy", graph_mode=GraphMode.DIRECTED_CYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a, n_b], gates=[g_g], edges=[e_ab, e_ba],
+        tick_period_s=1.0,
     )
 
 
@@ -51,6 +52,7 @@ def test_detect_cycle_progress_no_cycles_when_dag() -> None:
         name="dag", graph_mode=GraphMode.DIRECTED_NOCYCLE,
         pre_handle="", post_handle="",
         nodes=[n_a], gates=[], edges=[],
+        tick_period_s=1.0,
     )
     state = State(sop_name="s", instance_id="i", graph_name="g")
     prog = detect_cycle_progress(g, state)
@@ -62,8 +64,8 @@ def test_detect_cycle_progress_no_cycles_when_dag() -> None:
 def test_detect_cycle_progress_under_threshold() -> None:
     """测试名：test_detect_cycle_progress_under_threshold
 
-    测试场景：cycle 图节点 cycle_counts < THRESHOLD → max_count=最大值，over_threshold=False。
-    前置条件：_cycle_graph；state cycle_counts={"a":5, "b":7}。
+    测试场景：cycle 图节点 exit_cnt < THRESHOLD → max_count=最大值，over_threshold=False。
+    前置条件：_cycle_graph；state exit_cnt={"a":5, "b":7}。
     是否使用 mock：No。
     测试步骤：detect_cycle_progress(g, state)。
     预期结果：max_count == 7；cycle_nodes 含 "a"/"b"；over_threshold is False。
@@ -72,7 +74,7 @@ def test_detect_cycle_progress_under_threshold() -> None:
     g = _cycle_graph()
     state = State(
         sop_name="s", instance_id="i", graph_name="g",
-        cycle_counts={"a": 5, "b": 7},
+        exit_cnt={"a": 5, "b": 7},
     )
     prog = detect_cycle_progress(g, state)
     assert prog.max_count == 7
@@ -83,8 +85,8 @@ def test_detect_cycle_progress_under_threshold() -> None:
 def test_detect_cycle_progress_over_threshold() -> None:
     """测试名：test_detect_cycle_progress_over_threshold
 
-    测试场景：cycle 节点 cycle_counts 超过 CYCLE_THRESHOLD → over_threshold=True。
-    前置条件：_cycle_graph；state cycle_counts={"a":THRESHOLD+10, "b":1}。
+    测试场景：cycle 节点 exit_cnt 超过 CYCLE_THRESHOLD → over_threshold=True。
+    前置条件：_cycle_graph；state exit_cnt={"a":THRESHOLD+10, "b":1}。
     是否使用 mock：No。
     测试步骤：detect_cycle_progress(g, state)。
     预期结果：over_threshold is True；max_count == THRESHOLD+10。
@@ -93,7 +95,7 @@ def test_detect_cycle_progress_over_threshold() -> None:
     g = _cycle_graph()
     state = State(
         sop_name="s", instance_id="i", graph_name="g",
-        cycle_counts={"a": CYCLE_THRESHOLD + 10, "b": 1},
+        exit_cnt={"a": CYCLE_THRESHOLD + 10, "b": 1},
     )
     prog = detect_cycle_progress(g, state)
     assert prog.over_threshold is True

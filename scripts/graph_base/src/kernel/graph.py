@@ -33,6 +33,10 @@ class Graph:
 
     构造路径仅 Graph.build()。Graph 一旦构造则不可变，不支持运行时
     修改
+
+    tick_period_s：调度器轮询周期（秒）。Orchestrator.run 在两次 tick 之间
+    sleep 此时长，给 worker 子进程足够时间写产物 + record_exit，
+    保证下次 tick 的 gate 评估能看见最新的 exit_cnt。
     """
 
     name: str
@@ -42,6 +46,7 @@ class Graph:
     nodes: tuple[Node, ...]
     gates: tuple[Gate, ...]
     edges: tuple[Edge, ...]
+    tick_period_s: float
 
     @cached_property
     def node_index(self) -> Mapping[str, Node]:
@@ -78,6 +83,7 @@ class Graph:
         nodes: Sequence[Node],
         gates: Sequence[Gate],
         edges: Sequence[Edge],
+        tick_period_s: float,
         existing_sop_names: Sequence[str] | None = None,
     ) -> "Graph":
         """构造 + 校验。失败抛 GraphBuildError。
@@ -85,6 +91,10 @@ class Graph:
         existing_sop_names: 已有 SOP 名集合，用于 E_DUP_GLOBAL 校验。
         派生索引（node_index / gate_index / edge_by_inode / edge_by_gate）
         首次访问时由 @cached_property 即时计算，无需构造时填充。
+
+        tick_period_s：调度器轮询周期（秒）。Orchestrator.run 在两次 tick 之间
+        sleep 此时长。loader 强制要求 JSON 显式声明（无默认值）——避免隐式
+        hardcode 0.05 类短周期导致 gate 与 worker 竞态。
         """
         graph_mode = _to_graph_mode(graph_mode)
         _check_top_level_types(name, pre_handle, post_handle, nodes, gates, edges)
@@ -101,6 +111,7 @@ class Graph:
             nodes=nodes_t,
             gates=gates_t,
             edges=edges_t,
+            tick_period_s=tick_period_s,
         )
         _raise_on_validation_errors(tmp, existing_sop_names)
 
@@ -112,6 +123,7 @@ class Graph:
             nodes=nodes_t,
             gates=gates_t,
             edges=edges_t,
+            tick_period_s=tick_period_s,
         )
 
 

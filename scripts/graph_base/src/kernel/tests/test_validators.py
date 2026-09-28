@@ -26,6 +26,7 @@ def _build(nodes, gates, edges, mode="directed_cycle", name="x"):
         name=name, graph_mode=mode,
         pre_handle="", post_handle="",
         nodes=nodes, gates=gates, edges=edges,
+        tick_period_s=1.0,
     )
 
 
@@ -62,6 +63,7 @@ def test_multi_src_returns_issues():
         nodes=(_n("a", is_src=True), _n("b", is_src=True)),
         gates=(_g("ga"),),
         edges=(_e("e", "a", "b"),),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     codes = [i.code for i in issues]
@@ -94,6 +96,7 @@ def test_multi_sink_returns_issues():
             _e("e1", "a", "b", gate="ga"),
             _e("e2", "b", "c", gate="gb"),
         ),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     codes = [i.code for i in issues]
@@ -119,6 +122,7 @@ def test_no_sink_returns_issue():
         nodes=(_n("a", is_src=True), _n("b")),
         gates=(_g("ga"),),
         edges=(_e("e", "a", "b", gate="ga"),),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     codes = [i.code for i in issues]
@@ -142,6 +146,7 @@ def test_dup_gate_name_returns_issue():
         nodes=(_n("a", is_src=True, is_sink=True),),
         gates=(_g("ga"), _g("ga")),
         edges=(_e("e", "a", "a"),),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     assert any(i.code == "E_DUP_GATE_NAME" for i in issues)
@@ -167,6 +172,7 @@ def test_dup_edge_name_returns_issue():
             _e("e", "a", "a", value=True),
             _e("e", "a", "a", value=False),
         ),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     assert any(i.code == "E_DUP_EDGE_NAME" for i in issues)
@@ -189,6 +195,7 @@ def test_gate_value_not_in_enum():
         nodes=(_n("a", is_src=True, is_sink=True),),
         gates=(_g("ga", enum_dir=(True,)),),
         edges=(_e("e", "a", "a", value="missing"),),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     assert any(i.code == "E_GATE_VALUE_NOT_IN_ENUM" for i in issues)
@@ -214,6 +221,7 @@ def test_cycle_on_nocycle_warns():
             _e("e1", "a", "b", gate="ga", value=True),
             _e("e2", "b", "a", gate="gb", value=True),
         ),
+        tick_period_s=1.0,
     )
     issues = validate(g)
     assert any(i.code == "W_CYCLE_ON_NOCYCLE" for i in issues)
@@ -256,3 +264,155 @@ def test_issue_path_is_string():
     assert i.path == "nodes[2].name"
     i2 = Issue(code="X", level="error", message="m", path="nodes[2].name")
     assert i2.path == "nodes[2].name"
+
+
+# ───────────── parallel 校验测试 ─────────────
+
+
+def test_parallel_group_allows_multi_match_gate():
+    """测试名：test_parallel_group_allows_multi_match_gate
+
+    测试场景：多条边共享 (gate, gate_value) 且全部 parallel=True 时
+    不报 E_MULTI_MATCH_GATE（放宽规则）。
+    前置条件：临时 Graph（a→{b, c} 两条边，gate=ga, value=True，全 parallel=True）。
+    是否使用 mock：No。
+    测试步骤：1. 构造图；2. validate(g)；3. 收集 code 列表。
+    预期结果：codes 中不含 "E_MULTI_MATCH_GATE"。
+    测试后清理：无。
+    """
+    from src.kernel.graph import Graph as G
+    g = G(
+        name="x", graph_mode=GraphMode.DIRECTED_CYCLE,
+        pre_handle="", post_handle="",
+        nodes=(
+            _n("a", is_src=True),
+            _n("b", is_sink=True),
+            _n("c", is_sink=True),
+        ),
+        gates=(_g("ga", enum_dir=(True,)),),
+        edges=(
+            _e("e1", "a", "b", gate="ga", value=True),
+            _e("e2", "a", "c", gate="ga", value=True),
+        ),
+        tick_period_s=1.0,
+    )
+    # 临时改 parallel=True
+    e1 = g.edges[0].__class__(**{**g.edges[0].__dict__, "parallel": True})
+    e2 = g.edges[1].__class__(**{**g.edges[1].__dict__, "parallel": True})
+    g = G(
+        name="x", graph_mode=GraphMode.DIRECTED_CYCLE,
+        pre_handle="", post_handle="",
+        nodes=g.nodes, gates=g.gates, edges=(e1, e2),
+        tick_period_s=1.0,
+    )
+    issues = validate(g)
+    codes = [i.code for i in issues]
+    assert "E_MULTI_MATCH_GATE" not in codes, f"parallel 多边不该报 E_MULTI_MATCH_GATE: {issues}"
+
+
+def test_parallel_group_strict_reports_multi_match_gate():
+    """测试名：test_parallel_group_strict_reports_multi_match_gate
+
+    测试场景：多条边共享 (gate, gate_value) 但全非 parallel 时仍报 E_MULTI_MATCH_GATE
+    （保持原报错语义）。
+    前置条件：临时 Graph（a→{b, c} 两条边，gate=ga, value=True，无 parallel）。
+    是否使用 mock：No。
+    测试步骤：1. 构造图；2. validate(g)；3. 收集 code 列表。
+    预期结果：codes 含 "E_MULTI_MATCH_GATE"。
+    测试后清理：无。
+    """
+    from src.kernel.graph import Graph as G
+    g = G(
+        name="x", graph_mode=GraphMode.DIRECTED_CYCLE,
+        pre_handle="", post_handle="",
+        nodes=(
+            _n("a", is_src=True),
+            _n("b", is_sink=True),
+            _n("c", is_sink=True),
+        ),
+        gates=(_g("ga", enum_dir=(True,)),),
+        edges=(
+            _e("e1", "a", "b", gate="ga", value=True),
+            _e("e2", "a", "c", gate="ga", value=True),
+        ),
+        tick_period_s=1.0,
+    )
+    issues = validate(g)
+    codes = [i.code for i in issues]
+    assert "E_MULTI_MATCH_GATE" in codes, f"非 parallel 多边应报 E_MULTI_MATCH_GATE: {issues}"
+
+
+def test_parallel_mixed_group_reports_error():
+    """测试名：test_parallel_mixed_group_reports_error
+
+    测试场景：同一 inode 匹配组（gate+gate_value 相同）混合 parallel 与非 parallel
+    时报 E_PARALLEL_MIXED（防止用户误判）。
+    前置条件：临时 Graph（a→{b, c}，gate=ga, value=True，一条 parallel=True 一条 False）。
+    是否使用 mock：No。
+    测试步骤：1. 构造图（手工构造 parallel 字段）；2. validate(g)；3. 收集 code 列表。
+    预期结果：codes 含 "E_PARALLEL_MIXED"；不含 "E_MULTI_MATCH_GATE"（因为
+    E_MULTI_MATCH_GATE 放宽规则：mixed 组首先触发 E_PARALLEL_MIXED；放宽规则
+    只允许"全 parallel"通过；mixed 不属于放宽情形但也不属于严格 multi-match——
+    现行实现中 mixed 会同时通过"非全 parallel"分支触发 E_MULTI_MATCH_GATE 报错，
+    这是正确的双向拦截）。
+    测试后清理：无。
+    """
+    from src.kernel.graph import Graph as G
+    # 构造 mixed 组：e1 parallel=True, e2 parallel=False
+    e1 = Edge(name="e1", inode="a", onode="b",
+              driver="tick", gate="ga", gate_value=True, cmd="c", parallel=True)
+    e2 = Edge(name="e2", inode="a", onode="c",
+              driver="tick", gate="ga", gate_value=True, cmd="c", parallel=False)
+    g = G(
+        name="x", graph_mode=GraphMode.DIRECTED_CYCLE,
+        pre_handle="", post_handle="",
+        nodes=(
+            _n("a", is_src=True),
+            _n("b", is_sink=True),
+            _n("c", is_sink=True),
+        ),
+        gates=(_g("ga", enum_dir=(True,)),),
+        edges=(e1, e2),
+        tick_period_s=1.0,
+    )
+    issues = validate(g)
+    codes = [i.code for i in issues]
+    assert "E_PARALLEL_MIXED" in codes, (
+        f"mixed 组应报 E_PARALLEL_MIXED: {issues}"
+    )
+
+
+def test_parallel_mixed_group_per_inode():
+    """测试名：test_parallel_mixed_group_per_inode
+
+    测试场景：E_PARALLEL_MIXED 按 inode 分组检查；不同 inode 的 parallel 组互不干扰。
+    前置条件：临时 Graph（a→b/c parallel 全 True；d→e/f parallel 全 True）。
+    是否使用 mock：No。
+    测试步骤：1. 构造图（两个 inode 各有一组全 parallel 多边）；2. validate(g)。
+    预期结果：issues 中无 E_PARALLEL_MIXED；无 E_MULTI_MATCH_GATE。
+    测试后清理：无。
+    """
+    from src.kernel.graph import Graph as G
+    e1 = Edge(name="e1", inode="a", onode="b",
+              driver="tick", gate="ga", gate_value=True, cmd="c", parallel=True)
+    e2 = Edge(name="e2", inode="a", onode="c",
+              driver="tick", gate="ga", gate_value=True, cmd="c", parallel=True)
+    e3 = Edge(name="e3", inode="d", onode="e",
+              driver="tick", gate="gd", gate_value=True, cmd="c", parallel=True)
+    e4 = Edge(name="e4", inode="d", onode="f",
+              driver="tick", gate="gd", gate_value=True, cmd="c", parallel=True)
+    g = G(
+        name="x", graph_mode=GraphMode.DIRECTED_CYCLE,
+        pre_handle="", post_handle="",
+        nodes=(
+            _n("a", is_src=True), _n("b"), _n("c"),
+            _n("d"), _n("e", is_sink=True), _n("f", is_sink=True),
+        ),
+        gates=(_g("ga", enum_dir=(True,)), _g("gd", enum_dir=(True,))),
+        edges=(e1, e2, e3, e4),
+        tick_period_s=1.0,
+    )
+    issues = validate(g)
+    codes = [i.code for i in issues]
+    assert "E_PARALLEL_MIXED" not in codes, f"不应报 E_PARALLEL_MIXED: {issues}"
+    assert "E_MULTI_MATCH_GATE" not in codes, f"不应报 E_MULTI_MATCH_GATE: {issues}"

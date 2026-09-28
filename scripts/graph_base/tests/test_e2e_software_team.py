@@ -106,12 +106,14 @@ def test_full_tick_dispatches_planer(tmp_path: Path) -> None:
 def test_sop_terminates_after_archer(tmp_path: Path) -> None:
     """测试名：test_sop_terminates_after_archer
 
-    测试场景：planer → archer 后再 tick → SOP_DONE（archer 是 sink）。
+    测试场景：planer → archer 后再 tick → SOP_DONE（archer 是 sink + oport 必产物）。
     前置条件：tmp_path；REPO/config/software_team_graph.json。
     是否使用 mock：No（subprocess 调真实 CLI）。
     测试步骤：1. create + 写 input；2. tick1 → 等 spec；3. tick2 → 等 archer；
-      4. tick3 → SOP_DONE。
-    预期结果：state["current_node"] == "archer"（sink，终止）。
+      4. tick3 触发 sink 推进；5. 等 archer worker 落盘产物；6. 再 tick 验证不再推进。
+    预期结果：archer 产物（architectural_design.md + organizational_structure.md）已落盘；
+      last_output["archer"] 长度 == 2；current_node 保持 "archer"（不重复推进）；
+      history 末项为 ("planer", ts)（=planer→archer 那一跳）。
     测试后清理：pytest tmp_path 自动清理。
     """
     create = _run_cli(
@@ -144,12 +146,36 @@ def test_sop_terminates_after_archer(tmp_path: Path) -> None:
             break
         time.sleep(0.1)
 
-    # Tick 3: archer 是 sink → SOP_DONE
+    # Tick 3: 触发 sink transition（planer→archer）
     _run_cli("tick", "--sop", "software_team",
              "--instance", iid, "--root", str(tmp_path))
-    time.sleep(0.5)
+    # 等 archer worker 落盘产物（CLI 异步 worker）
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        final = json.loads(sf.read_text())
+        if (base_dir / "doc" / "architectural_design.md").exists() \
+                and (base_dir / "doc" / "organizational_structure.md").exists():
+            break
+        time.sleep(0.1)
+
     final = json.loads(sf.read_text())
+    # sink 节点：current_node==archer + oport 产物已落盘 + last_output 写入
     assert final["current_node"] == "archer"
+    assert len(final["last_output"].get("archer", [])) == 2, (
+        f"sink 产物未落盘，state={final}"
+    )
+    # 不变量：history 末项是 planer→archer 那一跳的 from_node
+    assert final["history"][-1][0] == "planer"
+
+    # Tick 4: 终止后再 tick，验证不再推进（无新 history、无新产物）
+    history_len_before = len(final["history"])
+    _run_cli("tick", "--sop", "software_team",
+             "--instance", iid, "--root", str(tmp_path))
+    after = json.loads(sf.read_text())
+    assert after["current_node"] == "archer"
+    assert len(after["history"]) == history_len_before, (
+        f"终止后还产生 history 项：{after['history']}"
+    )
 
 
 def test_list_shows_instance(tmp_path: Path) -> None:

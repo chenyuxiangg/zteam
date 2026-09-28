@@ -57,23 +57,27 @@ class Orchestrator:
         """单实例 tick。"""
         return self._scheduler.tick(sop_name, instance_id)
 
-    def run(self, sop_name: str, instance_id: str, max_ticks: int = 1000) -> list[str]:
-        """阻塞跑：tick 直到 is_sop_done（包含 sink worker 完成检查），或 max_ticks。
+    def run(self, sop_name: str, instance_id: str) -> list[str]:
+        """阻塞跑：tick + sleep tick_period_s 循环，直到 is_sop_done。
 
-        is_sop_done 已包含"sink oport 非空 → last_output 有产物"的检查，
-        所以这里只需一个简单循环 + 必要时短暂 sleep 让 sink worker 落盘。
+        tick_period_s 由 Graph 配置（不是硬编码）——保证两次 tick 之间给
+        worker 子进程足够时间完成 + record_exit，下次 gate 评估能看到最新的
+        exit_cnt。如果用短周期（<1s），scheduler tick 频率超过 worker 落盘速度，
+        gate 会看到过期状态，多派一次 worker。
+
+        is_sop_done 已包含"sink oport 非空 → last_output 有产物"检查，
+        所以无需额外 sleep 等 sink worker 落盘。
         """
         all_alarms: list[str] = []
         sf = self._state_file(sop_name, instance_id)
-        for _ in range(max_ticks):
+        while True:
             alarms = self.tick(sop_name, instance_id)
             all_alarms.extend(alarms)
             state = StateManager.read(sf)
             if is_sop_done(self._graph, state):
                 run_post_handle(self._graph, state, sf.parent / instance_id)
                 break
-            # is_sop_done=False 但 current_node 已是 sink → 等 sink worker 写盘
-            time.sleep(0.05)
+            time.sleep(self._graph.tick_period_s)
         return all_alarms
 
     def trigger_edge(self, sop_name: str, instance_id: str, edge_name: str, approver: str) -> State:

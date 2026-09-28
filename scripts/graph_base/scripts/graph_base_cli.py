@@ -80,7 +80,8 @@ def cmd_show(args) -> int:
         "current_node": state.current_node,
         "history_len": len(state.history),
         "triggered_edges": dict(state.triggered_edges),
-        "cycle_counts": dict(state.cycle_counts),
+        "enter_cnt": dict(state.enter_cnt),
+        "exit_cnt": dict(state.exit_cnt),
     }, ensure_ascii=False, indent=2))
     return 0
 

@@ -77,6 +77,7 @@ def validate(
     _check_sink_uniqueness(graph, issues)
     _check_edge_endpoints(graph, issues)
     _check_gate_refs_and_values(graph, issues)
+    _check_parallel_mixed(graph, issues)
     _check_cycle_on_nocycle(graph, issues)
     return issues
 
@@ -178,9 +179,13 @@ def _check_edge_endpoints(graph: "Graph", issues: list[Issue]) -> None:
 
 
 def _check_gate_refs_and_values(graph: "Graph", issues: list[Issue]) -> None:
-    """门的引用、gate_value 在 enum_dir 内、同 gate 同 value 不重复。"""
+    """门的引用、gate_value 在 enum_dir 内、同 gate 同 value 不重复。
+
+    放宽：多边共享 (gate, gate_value) 仅在所有成员边 parallel=True 时允许。
+    否则保持原 E_MULTI_MATCH_GATE 报错语义。
+    """
     gate_map = {g.name: g for g in graph.gates}
-    gate_value_count: dict[tuple[str, object], int] = {}
+    gate_value_groups: dict[tuple[str, object], list] = {}
     for idx, edge in enumerate(graph.edges):
         gate = gate_map.get(edge.gate)
         if gate is None:
@@ -206,21 +211,65 @@ def _check_gate_refs_and_values(graph: "Graph", issues: list[Issue]) -> None:
                 )
             )
         key = (edge.gate, edge.gate_value)
-        gate_value_count[key] = gate_value_count.get(key, 0) + 1
+        gate_value_groups.setdefault(key, []).append(edge)
 
-    for (gate_name, gv), count in gate_value_count.items():
-        if count <= 1:
+    for (gate_name, gv), group in gate_value_groups.items():
+        if len(group) <= 1:
             continue
+        if all(e.parallel for e in group):
+            continue  # 整组 parallel → 允许
         issues.append(
             Issue(
                 code="E_MULTI_MATCH_GATE",
                 level="error",
                 message=(
-                    f"gate 「{gate_name}」 的 gate_value={gv!r} 上挂了 {count} 条边"
+                    f"gate 「{gate_name}」 的 gate_value={gv!r} 上挂了 {len(group)} 条边"
                 ),
                 path=("gates", _gate_position(graph, gate_name), "enum_dir"),
             )
         )
+
+
+def _check_parallel_mixed(graph: "Graph", issues: list[Issue]) -> None:
+    """同一 inode 的匹配边集合（gate+gate_value 相同视为同一匹配组）必须
+    全 parallel 或全非 parallel。混合（部分 parallel=True + 部分 parallel=False）
+    报 E_PARALLEL_MIXED。
+
+    静态检查：按 inode 分组，再按 (gate, gate_value) 分组检查是否 mixed。
+    """
+    from .edge import Edge  # local import to avoid cycles
+
+    by_inode: dict[str, list[Edge]] = {}
+    for edge in graph.edges:
+        by_inode.setdefault(edge.inode, []).append(edge)
+
+    for inode, edges in by_inode.items():
+        groups: dict[tuple[str, object], list[Edge]] = {}
+        for edge in edges:
+            groups.setdefault((edge.gate, edge.gate_value), []).append(edge)
+        for (gate_name, gv), group in groups.items():
+            if len(group) <= 1:
+                continue
+            parallel_count = sum(1 for e in group if e.parallel)
+            non_parallel_count = len(group) - parallel_count
+            if parallel_count > 0 and non_parallel_count > 0:
+                parallel_names = ", ".join(e.name for e in group if e.parallel)
+                non_parallel_names = ", ".join(
+                    e.name for e in group if not e.parallel
+                )
+                issues.append(
+                    Issue(
+                        code="E_PARALLEL_MIXED",
+                        level="error",
+                        message=(
+                            f"inode 「{inode}」 的 (gate={gate_name!r}, "
+                            f"gate_value={gv!r}) 匹配组混合了 parallel 与"
+                            f"非 parallel：parallel 边 [{parallel_names}] + "
+                            f"非 parallel 边 [{non_parallel_names}]"
+                        ),
+                        path=("edges",),
+                    )
+                )
 
 
 def _check_cycle_on_nocycle(graph: "Graph", issues: list[Issue]) -> None:

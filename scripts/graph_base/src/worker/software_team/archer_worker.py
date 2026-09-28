@@ -24,6 +24,11 @@ def worker_run(args) -> int:
     graph = load_graph(_find_config(sop_name))
     sf = state_path(sop_name=sop_name, instance_id=instance_id)
     state = StateManager.read(sf)
+
+    # proc 入口：enter_cnt++
+    state = StateManager.record_enter(state, node_name)
+    StateManager.write(sf, state)
+
     proc_fn = resolve_op(proc_name)
     try:
         output_files = proc_fn(
@@ -35,6 +40,8 @@ def worker_run(args) -> int:
     new_state = StateManager.record_completion(
         state, node_name, output_files=tuple(output_files or ())
     )
+    # proc 出口：exit_cnt++
+    new_state = StateManager.record_exit(new_state, node_name)
     StateManager.write(sf, new_state)
     return 0
 

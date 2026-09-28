@@ -5,18 +5,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from src.kernel import register_op
 
 
 def harvester_threshold_gate(base_dir, state, graph, gate) -> bool:
-    """harvester 自环阈值门：cycle_counts["harvester"] >= 3 → 切出边。
+    """harvester 自环阈值门：exit_cnt["harvester"] >= 3 → 切出边。
 
     关键：每次 evaluate_gates 都会重读 state（不缓存），所以 harvester
     自环 3 次后这个 gate 才会返回 True。
+    用 exit_cnt 而非 enter_cnt：只有 worker 真完成的次数才算"进度"，
+    in-flight（enter 已 +1 但 exit 未 +1）不算。
     """
-    return state.cycle_counts.get("harvester", 0) >= 3
+    return state.exit_cnt.get("harvester", 0) >= 3
 
 
 def manual_publish_gate(base_dir, state, graph, gate) -> bool:
@@ -24,28 +27,35 @@ def manual_publish_gate(base_dir, state, graph, gate) -> bool:
     return True
 
 
-def harvester_proc(base_dir, state, graph, node_name):
-    """harvester 跑一次：写 3 个批次 JSON 文件 + 1 个固定 marker 文件。
+def _ts_name(prefix: str, idx: int, ext: str = "json") -> str:
+    """生成唯一文件名：<prefix>_<idx>_<timestamp>.<ext>。"""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return f"{prefix}_{idx}_{ts}.{ext}"
 
-    修复 Bug 1：批次文件名按 (cycle, batch_idx) 唯一化避免并发覆盖。
-    同时写一个固定路径的 `harvester_done.json` 作为下游 qa_reviewer 的
-    iport 满足信号（与 cycle 编号解耦）。
+
+def harvester_proc(base_dir, state, graph, node_name):
+    """harvester 跑一次：写 3 个批次 JSON 文件（每个文件独立时间戳）+ 1 个固定 marker 文件。
+
+    每个产物用独立 timestamp 命名——保证多次并发跑不会互相覆盖，且
+    后续历史回溯可精确定位到具体一次产出。
+    marker 文件（`harvester_done.json`）作为下游 qa_reviewer 的 iport
+    满足信号，每次重写覆盖。
     """
     out_dir = base_dir / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
     files = []
-    cycle = state.cycle_counts.get(node_name, 0)
     for i in range(1, 4):
-        p = out_dir / f"raw_batch_{i}_cycle{cycle}.json"
+        name = _ts_name("raw_batch", i)
+        p = out_dir / name
         p.write_text(
-            f'{{"batch": {i}, "node": "{node_name}", "cycle": {cycle}}}\n',
+            f'{{"batch": {i}, "node": "{node_name}", "file": "{name}"}}\n',
             encoding="utf-8",
         )
         files.append(str(p))
     # 固定路径 marker：每次都重写，qa_reviewer iport 信号
     marker = out_dir / "harvester_done.json"
     marker.write_text(
-        f'{{"harvester": "done", "cycle": {cycle}}}\n',
+        f'{{"harvester": "done", "ts": "{datetime.now().isoformat()}"}}\n',
         encoding="utf-8",
     )
     files.append(str(marker))
@@ -72,11 +82,18 @@ def publisher_proc(base_dir, state, graph, node_name):
 
 
 def harvester_loop_cmd(base_dir, state, graph, edge):
-    """harvester 自环 cmd：写一个 debug 标记文件（验证 cmd 跑过）。"""
-    cycle = state.cycle_counts.get("harvester", 0)
+    """harvester 自环 cmd：写一个 debug 标记文件（验证 cmd 跑过）。
+
+    用 exit_cnt 编号（与上面 harvester_proc 的 ts 命名解耦——这里只是
+    debug 标记，无需精确追踪每次产物时间戳）。
+    """
+    cycle = state.exit_cnt.get("harvester", 0)
     dbg = base_dir / "data" / f"loop_iter_{cycle}.json"
     dbg.parent.mkdir(parents=True, exist_ok=True)
-    dbg.write_text(f'{{"edge": "harvester_loop", "cycle": {cycle}}}\n', encoding="utf-8")
+    dbg.write_text(
+        f'{{"edge": "harvester_loop", "cycle": {cycle}}}\n',
+        encoding="utf-8",
+    )
 
 
 def harvester_pass_cmd(base_dir, state, graph, edge):

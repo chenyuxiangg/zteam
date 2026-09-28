@@ -27,9 +27,12 @@ def worker_run(args) -> int:
     # 2. 读 state
     sf = state_path(sop_name=sop_name, instance_id=instance_id)
     state = StateManager.read(sf)
-    # 3. resolve proc
+    # 3. proc 入口：enter_cnt++
+    state = StateManager.record_enter(state, node_name)
+    StateManager.write(sf, state)
+    # 4. resolve proc
     proc_fn = resolve_op(proc_name)
-    # 4. 跑 proc
+    # 5. 跑 proc
     try:
         output_files = proc_fn(
             base_dir=base_dir, state=state, graph=graph, node_name=node_name,
@@ -37,10 +40,12 @@ def worker_run(args) -> int:
     except Exception as exc:
         print(f"proc {proc_name} failed: {exc}", file=sys.stderr)
         return 1
-    # 5. record_completion
+    # 6. record_completion
     new_state = StateManager.record_completion(
         state, node_name, output_files=tuple(output_files or ())
     )
+    # 7. proc 出口：exit_cnt++
+    new_state = StateManager.record_exit(new_state, node_name)
     StateManager.write(sf, new_state)
     return 0
 
