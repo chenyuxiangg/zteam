@@ -1,4 +1,4 @@
-"""retry_pipeline SOP worker 注册中心。
+"""test_for_e2e SOP worker 注册中心。
 
 注册 gate op / proc / cmd 到全局 registry。
 """

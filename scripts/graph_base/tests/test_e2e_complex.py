@@ -1,6 +1,6 @@
 """复杂图 e2e：自环阈值 + manual trigger + 多产物文件 + 跨实例并发。
 
-对应 graph: config/retry_pipeline_graph.json
+对应 graph: config/test_for_e2e_graph.json
   harvester (src, self-loop ×3 → qa_reviewer → publisher (manual, sink))
 
 覆盖的缺失场景：
@@ -23,13 +23,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent  # scripts/graph_base
-CONFIG_NAME = "retry_pipeline_graph.json"
-SOP_NAME = "retry_pipeline"
+CONFIG_NAME = "test_for_e2e_graph.json"
+SOP_NAME = "test_for_e2e"
 
 
 def _load_complex() -> None:
-    """强制 import retry_pipeline worker，触发 register_op。"""
-    from src.worker import retry_pipeline  # noqa: F401
+    """强制 import test_for_e2e worker，触发 register_op。"""
+    from src.worker import test_for_e2e  # noqa: F401
 
 
 def _read_state(root: Path, iid: str) -> dict:
@@ -92,14 +92,14 @@ def _run_one_instance(root_str: str, label: str) -> str:
 def test_harvester_self_loop_threshold_to_qa(tmp_path: Path) -> None:
     """测试名：test_harvester_self_loop_threshold_to_qa
 
-    测试场景：用 orc.run 真实跑 retry_pipeline SOP，验证 harvester 自环 3 次后
+    测试场景：用 orc.run 真实跑 test_for_e2e SOP，验证 harvester 自环 3 次后
       切到 qa_reviewer（gate 按 exit_cnt 翻转），并最终停在 qa_reviewer
       （因为 qa→publisher 是 manual 边，没 trigger 时 orc.run 耗尽 max_ticks）。
 
     注意：本测试不 trigger qa_to_publisher，验证"run 真实跑 + 等不到 manual trigger 时
       停在中间节点 + 不崩"三件事。
 
-    前置条件：tmp_path；REPO/config/retry_pipeline_graph.json；预写 config/seed.txt。
+    前置条件：tmp_path；REPO/config/test_for_e2e_graph.json；预写 config/seed.txt。
     是否使用 mock：No（真 Orchestrator + 真 ProcessDispatcher + 真 worker 子进程）。
     测试步骤：1. 创建 instance；2. 写 seed.txt；3. orc.run(SOP_NAME, iid)
       （不 trigger manual 边，停 qa 节点）；4. 等 worker 产物落盘；5. 读 state 验证自环阈值。
@@ -136,7 +136,7 @@ def test_harvester_self_loop_threshold_to_qa(tmp_path: Path) -> None:
 
     state = _read_state(root, iid)
     # harvester self-loop 恰好 3 次后切到 qa_reviewer：
-    # tick_period_s=30（retry_pipeline 配置）+ enter/exit 同步检查保证 gate 评估必看到最新 exit_cnt
+    # tick_period_s=30（test_for_e2e 配置）+ enter/exit 同步检查保证 gate 评估必看到最新 exit_cnt
     assert state["current_node"] == "qa_reviewer", f"state: {state}"
     assert state["exit_cnt"]["harvester"] == 3
     assert state["exit_cnt"]["qa_reviewer"] == 1
@@ -192,7 +192,7 @@ def test_qa_to_publisher_requires_manual_trigger(tmp_path: Path) -> None:
 
     测试场景：qa→publisher 是 manual 边；未 trigger 时停在 qa，
       trigger 后再 tick 才推进到 publisher（sink）。
-    前置条件：tmp_path；retry_pipeline graph；预写 seed.txt。
+    前置条件：tmp_path；test_for_e2e graph；预写 seed.txt。
     是否使用 mock：No（真 Orchestrator + manual trigger API）。
     测试步骤：1. 跑完 harvester 阶段到 qa；2. tick 多次验证卡在 qa；
       3. trigger_edge(qa_to_publisher)；4. 再 tick。
@@ -252,9 +252,9 @@ def test_qa_to_publisher_requires_manual_trigger(tmp_path: Path) -> None:
 def test_multi_instance_independent_complex_graph(tmp_path: Path) -> None:
     """测试名：test_multi_instance_independent_complex_graph
 
-    测试场景：3 个 instance_id 并发跑同一 retry_pipeline SOP，
+    测试场景：3 个 instance_id 并发跑同一 test_for_e2e SOP，
       各自独立完成 harvester 自环 + 各自停在 qa。
-    前置条件：tmp_path；retry_pipeline graph；预写各 instance 的 seed.txt。
+    前置条件：tmp_path；test_for_e2e graph；预写各 instance 的 seed.txt。
     是否使用 mock：No（ProcessPoolExecutor 真并发）。
     测试步骤：3 个 worker 进程各自 orc.run(max_ticks=20) 后读 state。
     预期结果：3 个 instance 的 current_node 都是 qa_reviewer；

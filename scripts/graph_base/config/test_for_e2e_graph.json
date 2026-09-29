@@ -1,5 +1,5 @@
 {
-  "name": "retry_pipeline",
+  "name": "test_for_e2e",
   "graph_mode": "directed_cycle",
   "tick_period_s": 30,
   "pre_handle": "",
