@@ -11,7 +11,7 @@ from src.components import Scheduler
 from src.components.dispatcher import DispatchResult
 from src.components.monitor import Monitor
 from src.components.scheduler.core import MAX_INFLIGHT_SKIPS, _TickAbort
-from src.components.scheduler.evaluator import EdgeCmdError
+from src.components.scheduler.evaluator import EdgeCmdError, GateEvalError
 from src.components.state_manager import State, StateManager
 from src.kernel import (
     Edge,
@@ -411,8 +411,6 @@ def test_select_ready_edges_reports_gate_eval_error(tmp_path: Path) -> None:
               sch_ev_error 且 where == "evaluate_gates"；.__cause__ 是 GateEvalError。
     测试后清理：pytest tmp_path 自动清理。
     """
-    from src.components.scheduler.evaluator import GateEvalError
-
     g = _build_chain_graph(_raise_gate_op())
     sch, logger = _make_scheduler(g, tmp_path)
 
@@ -685,3 +683,154 @@ def test_tick_sop_done_emits_and_resets_skip_count(tmp_path: Path) -> None:
     assert names.index("sch_ev_sop_done") > names.index("sch_ev_tick")
     assert sch._skip_count == 0
     assert state_file.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# 以下为公开边选择谓词 find_ready_next_node 与 _dispatch_if_any 悬空 onode 兜底的测试。
+# ---------------------------------------------------------------------------
+
+
+def test_find_ready_next_node_returns_empty_when_current_node_is_none(
+    tmp_path: Path,
+) -> None:
+    """测试名：test_find_ready_next_node_returns_empty_when_current_node_is_none
+
+    测试场景：state.current_node 为 None（SOP 未起跑）时直接返回 ([], None)，
+    连 gate.op 都不该被调用——短路发生在求值之前。
+    前置条件：tmp_path；_build_chain_graph(gate op 把求值记录到 calls)。
+    是否使用 mock：No（自建计数 op，非 mock 库）。
+    测试步骤：1. 构造 current_node=None 的 State；2. 调 find_ready_next_node。
+    预期结果：返回 ([], None)；calls == []（gate 未求值）；无任何事件。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    calls: list[str] = []
+
+    def _counting_gate_op(
+        base_dir: Path, state: State, graph: Graph, gate: Gate
+    ) -> bool:
+        calls.append(gate.name)
+        return True
+
+    gate_op = _op_name("gate_count")
+    register_op(gate_op, _counting_gate_op)
+    g = _build_chain_graph(gate_op)
+    sch, logger = _make_scheduler(g, tmp_path)
+
+    edges, primary = sch.find_ready_next_node(_state(current_node=None), tmp_path)
+
+    assert (edges, primary) == ([], None)
+    assert calls == []
+    assert logger.events == []
+
+
+def test_find_ready_next_node_returns_edges_and_primary(tmp_path: Path) -> None:
+    """测试名：test_find_ready_next_node_returns_edges_and_primary
+
+    测试场景：命中边时返回 (edges, primary)，且 primary 必须等于 edges[0].onode
+    ——_select_ready_edges / _advance / tick 的 exit 事件都靠这条契约取 transition 目标。
+    前置条件：tmp_path；_build_chain_graph(恒 True gate)。
+    是否使用 mock：No。
+    测试步骤：1. 构造 current_node="a" 的 State；2. 调 find_ready_next_node。
+    预期结果：边名序列 == ["ab"]；primary == edges[0].onode == "b"；无任何事件。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    g = _build_chain_graph(_true_gate_op())
+    sch, logger = _make_scheduler(g, tmp_path)
+
+    edges, primary = sch.find_ready_next_node(_state(current_node="a"), tmp_path)
+
+    assert [edge.name for edge in edges] == ["ab"]
+    assert primary == edges[0].onode == "b"
+    assert logger.events == []
+
+
+def test_find_ready_next_node_returns_empty_when_no_edge_matches(
+    tmp_path: Path,
+) -> None:
+    """测试名：test_find_ready_next_node_returns_empty_when_no_edge_matches
+
+    测试场景：gate 已求值但不命中任何边 → 返回 ([], None)；与 current_node 为空
+    走的是同一条 "无候选边" 返回路径（告警由 _select_ready_edges 记，此处不记）。
+    前置条件：tmp_path；_build_chain_graph(恒 False gate)。
+    是否使用 mock：No。
+    测试步骤：1. 构造 current_node="a" 的 State；2. 调 find_ready_next_node。
+    预期结果：返回 ([], None)；无任何事件（本函数不记 alarm）。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    g = _build_chain_graph(_false_gate_op())
+    sch, logger = _make_scheduler(g, tmp_path)
+
+    edges, primary = sch.find_ready_next_node(_state(current_node="a"), tmp_path)
+
+    assert (edges, primary) == ([], None)
+    assert logger.events == []
+
+
+def test_find_ready_next_node_propagates_gate_eval_error(tmp_path: Path) -> None:
+    """测试名：test_find_ready_next_node_propagates_gate_eval_error
+
+    测试场景：gate.op 抛异常时 GateEvalError 必须一路冒到调用方 _select_ready_edges
+    （那里负责记 SCH_EV_ERROR + 转成 GATE_EVAL_ERROR 的 _TickAbort）——本函数
+    不吞、不包、不改写。若有人在此处加吞异常的处理，此用例会失败。
+    前置条件：tmp_path；_build_chain_graph(抛异常的 gate op)。
+    是否使用 mock：No。
+    测试步骤：1. 构造 current_node="a" 的 State；2. 调 find_ready_next_node。
+    预期结果：抛 GateEvalError（.__cause__ 是 gate.op 抛的原始异常）；
+              无任何事件（记事件是 _select_ready_edges 的职责）。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    g = _build_chain_graph(_raise_gate_op())
+    sch, logger = _make_scheduler(g, tmp_path)
+
+    with pytest.raises(GateEvalError) as exc:
+        sch.find_ready_next_node(_state(current_node="a"), tmp_path)
+
+    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert logger.events == []
+
+
+def test_dispatch_edges_skips_missing_node_and_emits_error(tmp_path: Path) -> None:
+    """测试名：test_dispatch_edges_skips_missing_node_and_emits_error
+
+    测试场景：边的 onode 不在 node_index 里（正常构造路径被 E_BAD_EDGE_ENDPOINT
+    拦掉，这里直接用 Graph 构造器绕过校验构造该图）——_dispatch_if_any 必须记
+    SCH_EV_ERROR 并跳过这条边、继续派发其余边，而不是抛 KeyError 打死整个 tick。
+    前置条件：tmp_path；手工构造 nodes=(a, b) 而 edges 含 onode="ghost" 的 Graph；
+              _RecordingDispatcher。
+    是否使用 mock：No（自建记录型 dispatcher，非 mock 库）。
+    测试步骤：1. 构造悬空图；2. 调 _dispatch_edges（边序 a_ghost、a_b）。
+    预期结果：不抛异常；dispatched == ["b"]（ghost 被跳过、b 照常派发）；
+              恰好一条 sch_ev_error == {where:"dispatch", reason:"node not found",
+              node:"ghost"}；node_start 只有 {"node":"b","pid":4242}。
+    测试后清理：pytest tmp_path 自动清理。
+    """
+    n_a = Node(name="a", iport=(), oport=(),
+               attr=NodeAttr(is_src=True, role="r"))
+    n_b = Node(name="b", iport=(), oport=(),
+               attr=NodeAttr(is_sink=True, role="r"))
+    # 直接调 Graph 构造器（不走 Graph.build）以绕过 E_BAD_EDGE_ENDPOINT 校验。
+    g = Graph(
+        name="sch_ghost", graph_mode=GraphMode.DIRECTED_NOCYCLE,
+        pre_handle="", post_handle="",
+        nodes=(n_a, n_b), gates=(),
+        edges=(
+            Edge(name="a_ghost", inode="a", onode="ghost", driver="tick",
+                 gate="g_absent", gate_value=True, cmd=""),
+            Edge(name="a_b", inode="a", onode="b", driver="tick",
+                 gate="g_absent", gate_value=True, cmd=""),
+        ),
+        tick_period_s=1.0,
+    )
+    disp = _RecordingDispatcher()
+    sch, logger = _make_scheduler(g, tmp_path, dispatcher=disp)
+
+    result = sch._dispatch_edges(
+        _state(current_node="a"), list(g.edges), "abc", tmp_path
+    )
+
+    assert result is None
+    assert disp.dispatched == ["b"]
+    assert _fields(logger, "sch_ev_error") == [
+        {"where": "dispatch", "reason": "node not found", "node": "ghost"},
+    ]
+    assert _fields(logger, "sch_ev_node_start") == [{"node": "b", "pid": 4242}]
